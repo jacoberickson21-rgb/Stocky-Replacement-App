@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npm install *)",
-      "Bash(npx prisma *)"
+      "Bash(npx prisma *)",
+      "Bash(npm run *)",
+      "Bash(node -e \"const p = require\\('@prisma/client'\\); console.log\\(Object.keys\\(p\\).slice\\(0,20\\)\\)\")",
+      "Bash(node --input-type=module -e 'import { PrismaClient } from '\\\\''@prisma/client'\\\\''; const db = new PrismaClient\\({ datasources: { db: { url: process.env.DATABASE_URL } } }\\); db.user.findMany\\(\\).then\\(r => { console.log\\('\\\\''ok'\\\\'', r.length\\); db.$disconnect\\(\\); }\\).catch\\(e => { console.error\\(e.message\\); db.$disconnect\\(\\); }\\);')"
     ]
   }
 }

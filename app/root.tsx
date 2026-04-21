@@ -5,10 +5,22 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  redirect,
 } from "react-router";
 
 import type { Route } from "./+types/root";
 import "./app.css";
+import { getSession } from "./session.server";
+
+const PUBLIC_PATHS = ["/login"];
+
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  if (PUBLIC_PATHS.includes(url.pathname)) return null;
+  const session = await getSession(request.headers.get("Cookie"));
+  if (!session.get("userId")) throw redirect("/login");
+  return null;
+}
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
