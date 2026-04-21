@@ -1,13 +1,75 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
-  provider = "prisma-client"
-  output   = "../generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+model User {
+  id           Int        @id @default(autoincrement())
+  username     String     @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime   @default(now())
+  auditLogs    AuditLog[]
+}
+
+model Vendor {
+  id          Int       @id @default(autoincrement())
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  createdAt   DateTime  @default(now())
+  invoices    Invoice[]
+  credits     Credit[]
+}
+
+model Invoice {
+  id            Int               @id @default(autoincrement())
+  invoiceNumber String
+  vendor        Vendor            @relation(fields: [vendorId], references: [id])
+  vendorId      Int
+  status        InvoiceStatus     @default(ORDERED)
+  dueDate       DateTime?
+  total         Decimal           @db.Decimal(10, 2)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  lineItems     InvoiceLineItem[]
+}
+
+enum InvoiceStatus {
+  ORDERED
+  RECEIVED
+  PAID
+}
+
+model InvoiceLineItem {
+  id               Int     @id @default(autoincrement())
+  invoice          Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId        Int
+  sku              String
+  description      String
+  quantityOrdered  Int
+  quantityReceived Int     @default(0)
+  unitCost         Decimal @db.Decimal(10, 2)
+}
+
+model Credit {
+  id       Int      @id @default(autoincrement())
+  vendor   Vendor   @relation(fields: [vendorId], references: [id])
+  vendorId Int
+  amount   Decimal  @db.Decimal(10, 2)
+  notes    String?
+  date     DateTime @default(now())
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    Int
+  action    String
+  details   String?
+  timestamp DateTime @default(now())
 }
