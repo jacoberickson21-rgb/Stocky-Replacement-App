@@ -5,6 +5,7 @@
   "scripts": {
     "build": "prisma generate && react-router build",
     "dev": "react-router dev",
+    "postinstall": "prisma generate",
     "start": "react-router-serve ./build/server/index.js",
     "typecheck": "react-router typegen && tsc"
   },
