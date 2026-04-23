@@ -1,0 +1,2 @@
+[deploy]
+startCommand = "npx prisma migrate deploy && npm run start"
