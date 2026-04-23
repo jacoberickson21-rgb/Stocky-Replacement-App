@@ -7,6 +7,7 @@ export default [
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
     route("invoices", "routes/invoices.tsx"),
+    route("invoices/upload", "routes/invoices.upload.tsx"),
     route("invoices/:id", "routes/invoices.$id.tsx"),
     route("vendors", "routes/vendors.tsx"),
     route("vendors/new", "routes/vendors.new.tsx"),

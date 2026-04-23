@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import type { Route } from "./+types/invoices";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
@@ -41,6 +41,7 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
   const { invoices, vendors, vendorParam, statusParam } = loaderData;
+  const navigate = useNavigate();
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
@@ -48,6 +49,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <h2 className="text-xl font-semibold text-gray-800">Purchase Orders</h2>
           <button
             type="button"
+            onClick={() => navigate("/invoices/upload")}
             className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             Upload Invoice
