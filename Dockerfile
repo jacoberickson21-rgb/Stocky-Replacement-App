@@ -16,9 +16,11 @@ WORKDIR /app
 RUN npm run build
 
 FROM node:20-slim
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 COPY ./package.json package-lock.json /app/
 COPY ./prisma /app/prisma
 COPY --from=production-dependencies-env /app/node_modules /app/node_modules
 COPY --from=build-env /app/build /app/build
 WORKDIR /app
+RUN npx prisma generate
 CMD ["npm", "run", "start"]
