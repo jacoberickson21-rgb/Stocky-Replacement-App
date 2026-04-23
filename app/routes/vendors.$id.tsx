@@ -14,20 +14,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
   const { vendor } = loaderData;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-gray-800">Stocky — Vendors</h1>
-        <form method="post" action="/logout">
-          <button
-            type="submit"
-            className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
-          >
-            Sign out
-          </button>
-        </form>
-      </header>
-
-      <main className="p-8 max-w-lg mx-auto">
+    <main className="p-8 max-w-lg mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <Link to="/vendors" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
             ← Vendors
@@ -40,6 +27,5 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
           <p className="text-sm text-gray-400">Vendor detail coming soon.</p>
         </div>
       </main>
-    </div>
   );
 }
