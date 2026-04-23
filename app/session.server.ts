@@ -1,19 +1,23 @@
 import { createCookieSessionStorage, redirect } from "react-router";
 
-if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 16) {
-  throw new Error("SESSION_SECRET must be set to a string of at least 16 characters.");
+function getSessionStorage() {
+  const secret = process.env.SESSION_SECRET;
+  if (!secret || secret.length < 16) {
+    throw new Error("SESSION_SECRET must be set to a string of at least 16 characters.");
+  }
+  return createCookieSessionStorage({
+    cookie: {
+      name: "__session",
+      httpOnly: true,
+      path: "/",
+      sameSite: "lax",
+      secrets: [secret],
+      secure: process.env.NODE_ENV === "production",
+    },
+  });
 }
 
-const sessionStorage = createCookieSessionStorage({
-  cookie: {
-    name: "__session",
-    httpOnly: true,
-    path: "/",
-    sameSite: "lax",
-    secrets: [process.env.SESSION_SECRET!],
-    secure: process.env.NODE_ENV === "production",
-  },
-});
+const sessionStorage = getSessionStorage();
 
 export const { getSession, commitSession, destroySession } = sessionStorage;
 
