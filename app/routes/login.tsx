@@ -11,22 +11,27 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
-  const form = await request.formData();
-  const username = String(form.get("username") ?? "");
-  const password = String(form.get("password") ?? "");
+  try {
+    const form = await request.formData();
+    const username = String(form.get("username") ?? "");
+    const password = String(form.get("password") ?? "");
 
-  const user = await db.user.findUnique({ where: { username } });
+    const user = await db.user.findUnique({ where: { username } });
 
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return data({ error: "Invalid username or password." }, { status: 401 });
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      return data({ error: "Invalid username or password." }, { status: 401 });
+    }
+
+    const session = await getSession(request.headers.get("Cookie"));
+    session.set("userId", user.id);
+
+    return redirect("/dashboard", {
+      headers: { "Set-Cookie": await commitSession(session) },
+    });
+  } catch (error) {
+    console.error("[login] action error:", error);
+    throw error;
   }
-
-  const session = await getSession(request.headers.get("Cookie"));
-  session.set("userId", user.id);
-
-  return redirect("/dashboard", {
-    headers: { "Set-Cookie": await commitSession(session) },
-  });
 }
 
 export default function LoginPage({ actionData }: Route.ComponentProps) {
