@@ -56,6 +56,8 @@ model InvoiceLineItem {
   quantityOrdered  Int
   quantityReceived Int     @default(0)
   unitCost         Decimal @db.Decimal(10, 2)
+  hasDiscrepancy   Boolean @default(false)
+  receivingNote    String?
 }
 
 model Credit {

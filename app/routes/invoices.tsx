@@ -1,8 +1,37 @@
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, Form } from "react-router";
 import type { Route } from "./+types/invoices";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import type { InvoiceStatus } from "@prisma/client";
+
+export async function action({ request }: Route.ActionArgs) {
+  const userId = await requireUserId(request);
+  const formData = await request.formData();
+  const invoiceId = Number(formData.get("invoiceId"));
+  const db = getDb();
+  const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
+  const intent = formData.get("intent");
+
+  if (intent === "markPaid") {
+    if (!invoice || invoice.status !== "RECEIVED") throw new Response("Conflict", { status: 409 });
+    await db.$transaction([
+      db.invoice.update({ where: { id: invoiceId }, data: { status: "PAID" } }),
+      db.auditLog.create({
+        data: { userId, action: "INVOICE_MARKED_PAID", details: `Invoice #${invoice.invoiceNumber} marked as paid` },
+      }),
+    ]);
+  } else if (intent === "unmarkPaid") {
+    if (!invoice || invoice.status !== "PAID") throw new Response("Conflict", { status: 409 });
+    await db.$transaction([
+      db.invoice.update({ where: { id: invoiceId }, data: { status: "RECEIVED" } }),
+      db.auditLog.create({
+        data: { userId, action: "INVOICE_UNMARKED_PAID", details: `Invoice #${invoice.invoiceNumber} payment mark reversed` },
+      }),
+    ]);
+  }
+
+  return null;
+}
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
@@ -24,7 +53,12 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
 
-  return { invoices, vendors, vendorParam, statusParam };
+  return {
+    invoices: invoices.map((inv) => ({ ...inv, total: Number(inv.total) })),
+    vendors,
+    vendorParam,
+    statusParam,
+  };
 }
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
@@ -112,6 +146,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                   <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
                   <th className="text-left px-6 py-3 font-medium text-gray-600">Due Date</th>
                   <th className="text-right px-6 py-3 font-medium text-gray-600">Total</th>
+                  <th className="text-center px-6 py-3 font-medium text-gray-600">Paid?</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,6 +178,30 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                     </td>
                     <td className="px-6 py-4 text-right text-gray-800 font-medium">
                       ${Number(invoice.total).toFixed(2)}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      {invoice.status === "PAID" ? (
+                        <Form method="post">
+                          <input type="hidden" name="invoiceId" value={invoice.id} />
+                          <input type="hidden" name="intent" value="unmarkPaid" />
+                          <input
+                            type="checkbox"
+                            defaultChecked
+                            onChange={(e) => { if (!e.target.checked) e.target.form?.requestSubmit(); }}
+                            className="w-4 h-4 accent-green-600 cursor-pointer"
+                          />
+                        </Form>
+                      ) : invoice.status === "RECEIVED" ? (
+                        <Form method="post">
+                          <input type="hidden" name="invoiceId" value={invoice.id} />
+                          <input type="hidden" name="intent" value="markPaid" />
+                          <input
+                            type="checkbox"
+                            onChange={(e) => { if (e.target.checked) e.target.form?.requestSubmit(); }}
+                            className="w-4 h-4 accent-green-600 cursor-pointer"
+                          />
+                        </Form>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
