@@ -1,11 +1,11 @@
 import { data } from "react-router";
 import type { Route } from "./+types/dashboard";
-import { db } from "../db.server";
+import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   const userId = await requireUserId(request);
-  const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
+  const user = await getDb().user.findUniqueOrThrow({ where: { id: userId } });
   return data({ name: user.name });
 }
 

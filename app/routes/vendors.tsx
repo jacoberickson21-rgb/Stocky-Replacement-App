@@ -1,11 +1,11 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/vendors";
-import { db } from "../db.server";
+import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
-  const vendors = await db.vendor.findMany({ orderBy: { name: "asc" } });
+  const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
   return { vendors };
 }
 

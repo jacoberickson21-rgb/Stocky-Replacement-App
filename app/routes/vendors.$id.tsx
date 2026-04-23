@@ -1,12 +1,12 @@
 import { Link } from "react-router";
 import type { Route } from "./+types/vendors.$id";
-import { db } from "../db.server";
+import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
   await requireUserId(request);
   const id = Number(params.id);
-  const vendor = await db.vendor.findUniqueOrThrow({ where: { id } });
+  const vendor = await getDb().vendor.findUniqueOrThrow({ where: { id } });
   return { vendor };
 }
 

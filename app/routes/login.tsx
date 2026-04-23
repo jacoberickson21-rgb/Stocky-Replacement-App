@@ -1,7 +1,7 @@
 import { redirect, data } from "react-router";
 import bcrypt from "bcryptjs";
 import type { Route } from "./+types/login";
-import { db } from "../db.server";
+import { getDb } from "../db.server";
 import { getSession, commitSession } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -16,7 +16,7 @@ export async function action({ request }: Route.ActionArgs) {
     const username = String(form.get("username") ?? "");
     const password = String(form.get("password") ?? "");
 
-    const user = await db.user.findUnique({ where: { username } });
+    const user = await getDb().user.findUnique({ where: { username } });
 
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       return data({ error: "Invalid username or password." }, { status: 401 });

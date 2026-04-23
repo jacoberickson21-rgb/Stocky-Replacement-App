@@ -1,7 +1,7 @@
 import { redirect, data } from "react-router";
 import { Link } from "react-router";
 import type { Route } from "./+types/vendors.new";
-import { db } from "../db.server";
+import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -22,7 +22,7 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ error: "Vendor name is required." }, { status: 400 });
   }
 
-  await db.vendor.create({ data: { name, contactName, email, phone } });
+  await getDb().vendor.create({ data: { name, contactName, email, phone } });
 
   return redirect("/vendors");
 }
