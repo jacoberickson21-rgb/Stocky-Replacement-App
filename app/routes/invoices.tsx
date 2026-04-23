@@ -45,7 +45,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="p-8 max-w-5xl mx-auto">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold text-gray-800">Invoices</h2>
+          <h2 className="text-xl font-semibold text-gray-800">Purchase Orders</h2>
           <button
             type="button"
             className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
