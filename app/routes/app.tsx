@@ -14,6 +14,7 @@ export default function AppLayout() {
           <NavLink to="/dashboard" className={linkClass}>Dashboard</NavLink>
           <NavLink to="/invoices" className={linkClass}>Purchase Orders</NavLink>
           <NavLink to="/vendors" className={linkClass}>Vendors</NavLink>
+          <NavLink to="/users" className={linkClass}>Users</NavLink>
         </div>
         <form method="post" action="/logout">
           <button
