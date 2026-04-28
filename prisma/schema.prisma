@@ -61,12 +61,13 @@ model InvoiceLineItem {
 }
 
 model Credit {
-  id       Int      @id @default(autoincrement())
-  vendor   Vendor   @relation(fields: [vendorId], references: [id])
-  vendorId Int
-  amount   Decimal  @db.Decimal(10, 2)
-  notes    String?
-  date     DateTime @default(now())
+  id            Int      @id @default(autoincrement())
+  vendor        Vendor   @relation(fields: [vendorId], references: [id])
+  vendorId      Int
+  amount        Decimal  @db.Decimal(10, 2)
+  invoiceNumber String?
+  notes         String?
+  date          DateTime @default(now())
 }
 
 model AuditLog {

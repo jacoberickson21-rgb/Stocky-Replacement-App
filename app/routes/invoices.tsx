@@ -1,4 +1,5 @@
 import { Link, useNavigate, Form } from "react-router";
+import { useState, useRef } from "react";
 import type { Route } from "./+types/invoices";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
@@ -38,11 +39,18 @@ export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const vendorParam = url.searchParams.get("vendor");
   const statusParam = url.searchParams.get("status") as InvoiceStatus | null;
+  const searchParam = url.searchParams.get("search");
 
   const where: Record<string, unknown> = {};
   if (vendorParam) where.vendorId = Number(vendorParam);
   if (statusParam && ["ORDERED", "RECEIVED", "PAID"].includes(statusParam)) {
     where.status = statusParam;
+  }
+  if (searchParam) {
+    where.OR = [
+      { invoiceNumber: { contains: searchParam } },
+      { vendor: { name: { contains: searchParam } } },
+    ];
   }
 
   const invoices = await getDb().invoice.findMany({
@@ -58,6 +66,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     vendors,
     vendorParam,
     statusParam,
+    searchParam,
   };
 }
 
@@ -74,8 +83,47 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
 };
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
-  const { invoices, vendors, vendorParam, statusParam } = loaderData;
+  const { invoices, vendors, vendorParam, statusParam, searchParam } = loaderData;
   const navigate = useNavigate();
+  const [searchValue, setSearchValue] = useState(searchParam ?? "");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleVendorChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const params = new URLSearchParams(window.location.search);
+    if (e.target.value) {
+      params.set("vendor", e.target.value);
+    } else {
+      params.delete("vendor");
+    }
+    navigate(`/invoices?${params.toString()}`);
+  }
+
+  function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const params = new URLSearchParams(window.location.search);
+    if (e.target.value) {
+      params.set("status", e.target.value);
+    } else {
+      params.delete("status");
+    }
+    navigate(`/invoices?${params.toString()}`);
+  }
+
+  function handleSearchChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = e.target.value;
+    setSearchValue(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (value) {
+        params.set("search", value);
+      } else {
+        params.delete("search");
+      }
+      navigate(`/invoices?${params.toString()}`);
+    }, 300);
+  }
+
+  const hasFilters = vendorParam || statusParam || searchParam;
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
@@ -90,10 +138,10 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           </button>
         </div>
 
-        <form method="get" className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-6">
           <select
-            name="vendor"
-            defaultValue={vendorParam ?? ""}
+            value={vendorParam ?? ""}
+            onChange={handleVendorChange}
             className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">All Vendors</option>
@@ -105,8 +153,8 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           </select>
 
           <select
-            name="status"
-            defaultValue={statusParam ?? ""}
+            value={statusParam ?? ""}
+            onChange={handleStatusChange}
             className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">All Statuses</option>
@@ -115,22 +163,24 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
             <option value="PAID">Paid</option>
           </select>
 
-          <button
-            type="submit"
-            className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg px-4 py-2 transition-colors"
-          >
-            Filter
-          </button>
+          <input
+            type="text"
+            placeholder="Search invoice # or vendor..."
+            value={searchValue}
+            onChange={handleSearchChange}
+            className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+          />
 
-          {(vendorParam || statusParam) && (
+          {hasFilters && (
             <Link
               to="/invoices"
+              onClick={() => setSearchValue("")}
               className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
             >
               Clear
             </Link>
           )}
-        </form>
+        </div>
 
         {invoices.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">

@@ -13,6 +13,7 @@ export default [
     route("vendors", "routes/vendors.tsx"),
     route("vendors/new", "routes/vendors.new.tsx"),
     route("vendors/:id", "routes/vendors.$id.tsx"),
+    route("credits", "routes/credits.tsx"),
     route("users", "routes/users.tsx"),
   ]),
 ] satisfies RouteConfig;

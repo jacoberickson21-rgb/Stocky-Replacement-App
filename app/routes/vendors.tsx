@@ -1,16 +1,49 @@
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
+import { useState, useRef } from "react";
 import type { Route } from "./+types/vendors";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
-  const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
-  return { vendors };
+  const url = new URL(request.url);
+  const searchParam = url.searchParams.get("search");
+
+  const where = searchParam
+    ? {
+        OR: [
+          { name: { contains: searchParam } },
+          { contactName: { contains: searchParam } },
+          { email: { contains: searchParam } },
+          { phone: { contains: searchParam } },
+        ],
+      }
+    : {};
+
+  const vendors = await getDb().vendor.findMany({ where, orderBy: { name: "asc" } });
+  return { vendors, searchParam };
 }
 
 export default function VendorsPage({ loaderData }: Route.ComponentProps) {
-  const { vendors } = loaderData;
+  const { vendors, searchParam } = loaderData;
+  const navigate = useNavigate();
+  const [searchValue, setSearchValue] = useState(searchParam ?? "");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handleSearchChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const value = e.target.value;
+    setSearchValue(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (value) {
+        params.set("search", value);
+      } else {
+        params.delete("search");
+      }
+      navigate(`/vendors?${params.toString()}`);
+    }, 300);
+  }
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
@@ -24,8 +57,18 @@ export default function VendorsPage({ loaderData }: Route.ComponentProps) {
           </Link>
         </div>
 
+        <div className="mb-6">
+          <input
+            type="text"
+            placeholder="Search by name, contact, email, or phone..."
+            value={searchValue}
+            onChange={handleSearchChange}
+            className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 w-80"
+          />
+        </div>
+
         {vendors.length === 0 ? (
-          <p className="text-sm text-gray-400">No vendors yet. Add one to get started.</p>
+          <p className="text-sm text-gray-400">{searchParam ? "No vendors match your search." : "No vendors yet. Add one to get started."}</p>
         ) : (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             <table className="w-full text-sm">

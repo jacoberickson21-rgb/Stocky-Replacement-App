@@ -37,6 +37,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     credits: vendor.credits.map((c) => ({
       id: c.id,
       amount: Math.abs(Number(c.amount)),
+      invoiceNumber: c.invoiceNumber,
       notes: c.notes,
       date: c.date.toISOString(),
     })),
@@ -55,6 +56,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   if (intent === "addCredit") {
     const amountRaw = (formData.get("amount") as string) ?? "";
     const dateRaw = (formData.get("date") as string) ?? "";
+    const invoiceNumber = ((formData.get("invoiceNumber") as string) ?? "").trim() || null;
     const notes = ((formData.get("notes") as string) ?? "").trim() || null;
 
     const amount = parseFloat(amountRaw);
@@ -70,7 +72,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
 
     await getDb().credit.create({
-      data: { vendorId, amount: -amount, date, notes },
+      data: { vendorId, amount: -amount, date, invoiceNumber, notes },
     });
     return { success: true };
   }
@@ -264,6 +266,15 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     />
                   </div>
                   <div className="flex flex-col gap-1">
+                    <label className="text-xs font-medium text-gray-600">Invoice # (optional)</label>
+                    <input
+                      name="invoiceNumber"
+                      type="text"
+                      placeholder="e.g. INV-1234"
+                      className={`${inputClass} w-36`}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
                     <label className="text-xs font-medium text-gray-600">Date</label>
                     <input
                       name="date"
@@ -312,6 +323,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-6 py-3 font-medium text-gray-600">Date</th>
                   <th className="text-right px-6 py-3 font-medium text-gray-600">Amount</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600">Invoice #</th>
                   <th className="text-left px-6 py-3 font-medium text-gray-600">Notes</th>
                 </tr>
               </thead>
@@ -331,6 +343,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     <td className="px-6 py-4 text-right font-medium text-green-600">
                       {formatDollars(credit.amount)}
                     </td>
+                    <td className="px-6 py-4 font-mono text-gray-700 text-sm">{credit.invoiceNumber ?? "—"}</td>
                     <td className="px-6 py-4 text-gray-500">{credit.notes ?? "—"}</td>
                   </tr>
                 ))}
