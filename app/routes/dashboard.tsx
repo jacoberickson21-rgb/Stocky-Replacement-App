@@ -7,7 +7,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const db = getDb();
 
-  const [receivedInvoices, discrepantItems] = await Promise.all([
+  const [receivedInvoices, discrepantItems, allCredits] = await Promise.all([
     db.invoice.findMany({
       where: { status: "RECEIVED" },
       include: { vendor: true },
@@ -18,15 +18,17 @@ export async function loader({ request }: Route.LoaderArgs) {
       include: { invoice: { include: { vendor: true } } },
       orderBy: { invoiceId: "desc" },
     }),
+    db.credit.findMany({ select: { vendorId: true, amount: true } }),
   ]);
 
-  const totalOutstanding = receivedInvoices.reduce(
-    (sum, inv) => sum + Number(inv.total),
-    0
-  );
+  const creditByVendor = new Map<number, number>();
+  for (const credit of allCredits) {
+    const existing = creditByVendor.get(credit.vendorId) ?? 0;
+    creditByVendor.set(credit.vendorId, existing + Math.abs(Number(credit.amount)));
+  }
 
   // Group by vendor
-  const byVendor = new Map<number, { vendorName: string; count: number; total: number }>();
+  const byVendor = new Map<number, { vendorName: string; count: number; total: number; netBalance: number }>();
   for (const inv of receivedInvoices) {
     const existing = byVendor.get(inv.vendorId);
     if (existing) {
@@ -37,11 +39,19 @@ export async function loader({ request }: Route.LoaderArgs) {
         vendorName: inv.vendor.name,
         count: 1,
         total: Number(inv.total),
+        netBalance: 0,
       });
     }
   }
+  for (const [vendorId, data] of byVendor) {
+    data.netBalance = data.total - (creditByVendor.get(vendorId) ?? 0);
+  }
   const vendorBreakdown = Array.from(byVendor.values()).sort(
-    (a, b) => b.total - a.total
+    (a, b) => b.netBalance - a.netBalance
+  );
+  const totalOutstanding = vendorBreakdown.reduce(
+    (sum, row) => sum + row.netBalance,
+    0
   );
 
   return {
@@ -124,7 +134,7 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-6 py-3 font-medium text-gray-600">Vendor</th>
                   <th className="text-right px-6 py-3 font-medium text-gray-600">Invoices</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600">Amount Owed</th>
+                  <th className="text-right px-6 py-3 font-medium text-gray-600">Net Balance</th>
                 </tr>
               </thead>
               <tbody>
@@ -136,7 +146,7 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
                     <td className="px-6 py-4 text-gray-800 font-medium">{row.vendorName}</td>
                     <td className="px-6 py-4 text-right text-gray-600">{row.count}</td>
                     <td className="px-6 py-4 text-right font-semibold text-gray-800">
-                      {formatDollars(row.total)}
+                      {formatDollars(row.netBalance)}
                     </td>
                   </tr>
                 ))}
