@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link, useActionData } from "react-router";
+import { Link, useActionData, Form } from "react-router";
 import type { Route } from "./+types/vendors.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
@@ -7,13 +7,21 @@ import { requireUserId } from "../session.server";
 export async function loader({ request, params }: Route.LoaderArgs) {
   await requireUserId(request);
   const id = Number(params.id);
-  const vendor = await getDb().vendor.findUniqueOrThrow({
-    where: { id },
-    include: {
-      invoices: { orderBy: { createdAt: "desc" } },
-      credits: { orderBy: { date: "desc" } },
-    },
-  });
+
+  const [vendor, allSuppliers] = await Promise.all([
+    getDb().vendor.findUniqueOrThrow({
+      where: { id },
+      include: {
+        supplier: { select: { id: true, name: true } },
+        invoices: { orderBy: { createdAt: "desc" } },
+        credits: { orderBy: { date: "desc" } },
+      },
+    }),
+    getDb().supplier.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+  ]);
 
   const totalInvoices = vendor.invoices.reduce((sum, inv) => sum + Number(inv.total), 0);
   const totalCredits = vendor.credits.reduce((sum, c) => sum + Math.abs(Number(c.amount)), 0);
@@ -26,6 +34,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       contactName: vendor.contactName,
       email: vendor.email,
       phone: vendor.phone,
+      supplier: vendor.supplier,
     },
     invoices: vendor.invoices.map((inv) => ({
       id: inv.id,
@@ -44,6 +53,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     totalInvoices,
     totalCredits,
     netBalance,
+    allSuppliers,
   };
 }
 
@@ -52,6 +62,24 @@ export async function action({ request, params }: Route.ActionArgs) {
   const vendorId = Number(params.id);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
+
+  if (intent === "assignSupplier") {
+    const supplierIdRaw = (formData.get("supplierId") as string) ?? "";
+    const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
+    await getDb().vendor.update({
+      where: { id: vendorId },
+      data: { supplierId },
+    });
+    return { success: true };
+  }
+
+  if (intent === "removeSupplier") {
+    await getDb().vendor.update({
+      where: { id: vendorId },
+      data: { supplierId: null },
+    });
+    return { success: true };
+  }
 
   if (intent === "addCredit") {
     const amountRaw = (formData.get("amount") as string) ?? "";
@@ -108,9 +136,11 @@ const inputClass =
   "border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
 
 export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
-  const { vendor, invoices, credits, totalInvoices, totalCredits, netBalance } = loaderData;
+  const { vendor, invoices, credits, totalInvoices, totalCredits, netBalance, allSuppliers } =
+    loaderData;
   const actionData = useActionData() as { error?: string; success?: boolean } | undefined;
   const [showAddCredit, setShowAddCredit] = useState(false);
+  const [showAssignSupplier, setShowAssignSupplier] = useState(false);
 
   useEffect(() => {
     if (actionData?.success) {
@@ -154,11 +184,11 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
-      {/* Contact info */}
-      {(vendor.contactName || vendor.email || vendor.phone) && (
+      {/* Contact info + Supplier */}
+      {(vendor.contactName || vendor.email || vendor.phone || vendor.supplier || allSuppliers.length > 0) && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Contact</h3>
-          <div className="flex gap-8 text-sm text-gray-600">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Details</h3>
+          <div className="flex flex-wrap gap-8 text-sm text-gray-600">
             {vendor.contactName && <span>{vendor.contactName}</span>}
             {vendor.email && (
               <a
@@ -169,6 +199,67 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
               </a>
             )}
             {vendor.phone && <span>{vendor.phone}</span>}
+            <div className="flex items-center gap-3">
+              <span className="text-gray-400 text-xs font-medium uppercase tracking-wide">
+                Supplier:
+              </span>
+              {vendor.supplier ? (
+                <>
+                  <Link
+                    to={`/suppliers/${vendor.supplier.id}`}
+                    className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                  >
+                    {vendor.supplier.name}
+                  </Link>
+                  <Form method="post" className="inline">
+                    <input type="hidden" name="intent" value="removeSupplier" />
+                    <button
+                      type="submit"
+                      className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  </Form>
+                </>
+              ) : showAssignSupplier ? (
+                <Form method="post" className="flex items-center gap-2">
+                  <input type="hidden" name="intent" value="assignSupplier" />
+                  <select
+                    name="supplierId"
+                    required
+                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    <option value="">— Choose supplier —</option>
+                    {allSuppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAssignSupplier(false)}
+                    className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </Form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowAssignSupplier(true)}
+                  className="text-xs text-gray-400 hover:text-blue-600 transition-colors"
+                >
+                  {allSuppliers.length > 0 ? "Assign to supplier" : "None"}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

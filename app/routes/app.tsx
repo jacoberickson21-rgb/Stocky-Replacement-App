@@ -13,6 +13,7 @@ export default function AppLayout() {
           <span className="text-base font-semibold text-gray-800 mr-2">Stocky</span>
           <NavLink to="/dashboard" className={linkClass}>Dashboard</NavLink>
           <NavLink to="/invoices" className={linkClass}>Purchase Orders</NavLink>
+          <NavLink to="/suppliers" className={linkClass}>Suppliers</NavLink>
           <NavLink to="/vendors" className={linkClass}>Vendors</NavLink>
           <NavLink to="/credits" className={linkClass}>Credits</NavLink>
           <NavLink to="/users" className={linkClass}>Users</NavLink>

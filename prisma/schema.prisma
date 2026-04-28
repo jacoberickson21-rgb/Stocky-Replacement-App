@@ -17,12 +17,24 @@ model User {
   auditLogs    AuditLog[]
 }
 
+model Supplier {
+  id          Int      @id @default(autoincrement())
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  createdAt   DateTime @default(now())
+  vendors     Vendor[]
+}
+
 model Vendor {
   id          Int       @id @default(autoincrement())
   name        String
   contactName String?
   email       String?
   phone       String?
+  supplierId  Int?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   createdAt   DateTime  @default(now())
   invoices    Invoice[]
   credits     Credit[]

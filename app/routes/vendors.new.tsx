@@ -6,7 +6,11 @@ import { requireUserId } from "../session.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
-  return null;
+  const suppliers = await getDb().supplier.findMany({
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+  return { suppliers };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -17,17 +21,20 @@ export async function action({ request }: Route.ActionArgs) {
   const contactName = String(form.get("contactName") ?? "").trim() || null;
   const email = String(form.get("email") ?? "").trim() || null;
   const phone = String(form.get("phone") ?? "").trim() || null;
+  const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
+  const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
   if (!name) {
     return data({ error: "Vendor name is required." }, { status: 400 });
   }
 
-  await getDb().vendor.create({ data: { name, contactName, email, phone } });
+  await getDb().vendor.create({ data: { name, contactName, email, phone, supplierId } });
 
   return redirect("/vendors");
 }
 
-export default function NewVendorPage({ actionData }: Route.ComponentProps) {
+export default function NewVendorPage({ actionData, loaderData }: Route.ComponentProps) {
+  const { suppliers } = loaderData;
   return (
     <main className="p-8 max-w-lg mx-auto">
         <div className="flex items-center gap-3 mb-6">
@@ -94,6 +101,26 @@ export default function NewVendorPage({ actionData }: Route.ComponentProps) {
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+
+            {suppliers.length > 0 && (
+              <div>
+                <label htmlFor="supplierId" className="block text-sm font-medium text-gray-700 mb-1">
+                  Supplier
+                </label>
+                <select
+                  id="supplierId"
+                  name="supplierId"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">— None (standalone vendor) —</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <div className="flex gap-3 pt-2">
               <button
