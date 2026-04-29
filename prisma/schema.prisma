@@ -29,16 +29,17 @@ model Supplier {
 }
 
 model Vendor {
-  id          Int       @id @default(autoincrement())
+  id          Int        @id @default(autoincrement())
   name        String
   contactName String?
   email       String?
   phone       String?
   supplierId  Int?
-  supplier    Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  createdAt   DateTime  @default(now())
+  supplier    Supplier?  @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
   invoices    Invoice[]
   credits     Credit[]
+  auditLogs   AuditLog[]
 }
 
 model Invoice {
@@ -90,6 +91,8 @@ model AuditLog {
   action    String
   details   String?
   timestamp DateTime @default(now())
+  vendorId  Int?
+  vendor    Vendor?  @relation(fields: [vendorId], references: [id], onDelete: SetNull)
 }
 
 model FailureLog {

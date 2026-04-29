@@ -40,6 +40,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
               </span>
             )}
           </NavLink>
+          <NavLink to="/audit" className={linkClass}>Audit Log</NavLink>
         </div>
         <form method="post" action="/logout">
           <button

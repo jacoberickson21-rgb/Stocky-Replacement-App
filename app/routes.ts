@@ -19,5 +19,6 @@ export default [
     route("credits", "routes/credits.tsx"),
     route("users", "routes/users.tsx"),
     route("failures", "routes/failures.tsx"),
+    route("audit", "routes/audit.tsx"),
   ]),
 ] satisfies RouteConfig;
