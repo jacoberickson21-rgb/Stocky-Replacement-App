@@ -7,6 +7,7 @@ import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { parsePdfInvoice } from "../services/invoice-parser.server";
 import type { ExtractionResult } from "../services/invoice-parser.server";
+import { logFailure } from "../services/failure-log.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
@@ -101,6 +102,7 @@ export async function action({ request }: Route.ActionArgs) {
       extraction = await parsePdfInvoice(buffer);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
+      await logFailure("PDF_PARSE", pdfFile.name || "Unknown PDF", msg);
       return data(
         { step: "uploadPdf" as const, errors: {}, general: `PDF extraction failed: ${msg}`, extraction: null, vendors: null, matchedVendorId: null },
         { status: 500 }
@@ -485,8 +487,10 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
     );
   }
 
-  const errors = actionData?.step !== "reviewPdf" ? (actionData?.errors ?? {}) : {};
-  const general = actionData?.step !== "reviewPdf" ? (actionData?.general ?? null) : null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ad = actionData as any;
+  const errors = ad?.step !== "reviewPdf" ? (ad?.errors ?? {}) : {};
+  const general = ad?.step !== "reviewPdf" ? (ad?.general ?? null) : null;
 
   return (
     <main className="p-8 max-w-xl mx-auto">

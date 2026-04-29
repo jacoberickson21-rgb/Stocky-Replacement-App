@@ -9,12 +9,13 @@ datasource db {
 }
 
 model User {
-  id           Int        @id @default(autoincrement())
-  username     String     @unique
-  passwordHash String
-  name         String
-  createdAt    DateTime   @default(now())
-  auditLogs    AuditLog[]
+  id               Int          @id @default(autoincrement())
+  username         String       @unique
+  passwordHash     String
+  name             String
+  createdAt        DateTime     @default(now())
+  auditLogs        AuditLog[]
+  failuresResolved FailureLog[]
 }
 
 model Supplier {
@@ -89,4 +90,15 @@ model AuditLog {
   action    String
   details   String?
   timestamp DateTime @default(now())
+}
+
+model FailureLog {
+  id           Int       @id @default(autoincrement())
+  operation    String
+  itemLabel    String
+  errorMessage String
+  occurredAt   DateTime  @default(now())
+  resolvedAt   DateTime?
+  resolvedById Int?
+  resolvedBy   User?     @relation(fields: [resolvedById], references: [id])
 }

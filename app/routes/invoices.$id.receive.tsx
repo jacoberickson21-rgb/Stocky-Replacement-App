@@ -1,8 +1,9 @@
-import { Link, Form, redirect, data, useNavigation } from "react-router";
+import { Link, Form, redirect, data, useNavigation, useActionData } from "react-router";
 import { useState } from "react";
 import type { Route } from "./+types/invoices.$id.receive";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
+import { logFailure } from "../services/failure-log.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -54,37 +55,46 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   const discrepancies: string[] = [];
 
-  await db.$transaction([
-    ...invoice.lineItems.map((item) => {
-      const received = Number(formData.get(`qty_${item.id}`));
-      const note = (formData.get(`note_${item.id}`) as string | null) ?? "";
-      const hasDiscrepancy = received !== item.quantityOrdered;
-      if (hasDiscrepancy) {
-        discrepancies.push(
-          `${item.sku}: expected ${item.quantityOrdered}, received ${received}`
-        );
-      }
-      return db.invoiceLineItem.update({
-        where: { id: item.id },
+  try {
+    await db.$transaction([
+      ...invoice.lineItems.map((item) => {
+        const received = Number(formData.get(`qty_${item.id}`));
+        const note = (formData.get(`note_${item.id}`) as string | null) ?? "";
+        const hasDiscrepancy = received !== item.quantityOrdered;
+        if (hasDiscrepancy) {
+          discrepancies.push(
+            `${item.sku}: expected ${item.quantityOrdered}, received ${received}`
+          );
+        }
+        return db.invoiceLineItem.update({
+          where: { id: item.id },
+          data: {
+            quantityReceived: received,
+            hasDiscrepancy,
+            receivingNote: note || null,
+          },
+        });
+      }),
+      db.invoice.update({ where: { id }, data: { status: "RECEIVED" } }),
+      db.auditLog.create({
         data: {
-          quantityReceived: received,
-          hasDiscrepancy,
-          receivingNote: note || null,
+          userId,
+          action: "INVOICE_RECEIVED",
+          details:
+            discrepancies.length > 0
+              ? `Invoice #${invoice.invoiceNumber} received with discrepancies: ${discrepancies.join("; ")}`
+              : `Invoice #${invoice.invoiceNumber} received — all quantities matched`,
         },
-      });
-    }),
-    db.invoice.update({ where: { id }, data: { status: "RECEIVED" } }),
-    db.auditLog.create({
-      data: {
-        userId,
-        action: "INVOICE_RECEIVED",
-        details:
-          discrepancies.length > 0
-            ? `Invoice #${invoice.invoiceNumber} received with discrepancies: ${discrepancies.join("; ")}`
-            : `Invoice #${invoice.invoiceNumber} received — all quantities matched`,
-      },
-    }),
-  ]);
+      }),
+    ]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    await logFailure("INVOICE_RECEIVE", `Invoice #${invoice.invoiceNumber}`, msg);
+    return data(
+      { error: "Failed to complete receiving. The error has been logged." },
+      { status: 500 }
+    );
+  }
 
   return redirect(`/invoices/${id}`);
 }
@@ -99,6 +109,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
   const { invoice } = loaderData;
   const { vendor, lineItems } = invoice;
   const navigation = useNavigation();
+  const actionData = useActionData() as { error?: string } | undefined;
   const isSubmitting = navigation.state === "submitting";
 
   const [quantities, setQuantities] = useState<Record<number, string>>(() =>
@@ -230,7 +241,11 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
 
         <div className="flex items-center justify-between">
           <p className="text-sm text-gray-500">
-            {!allFilled && "All quantity fields are required."}
+            {actionData?.error
+              ? actionData.error
+              : !allFilled
+              ? "All quantity fields are required."
+              : ""}
           </p>
           <button
             type="submit"
