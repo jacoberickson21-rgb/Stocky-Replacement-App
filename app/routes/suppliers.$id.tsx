@@ -114,6 +114,19 @@ export async function action({ request, params }: Route.ActionArgs) {
     return redirect("/suppliers");
   }
 
+  if (intent === "editSupplier") {
+    const name = String(formData.get("name") ?? "").trim();
+    const contactName = String(formData.get("contactName") ?? "").trim() || null;
+    const email = String(formData.get("email") ?? "").trim() || null;
+    const phone = String(formData.get("phone") ?? "").trim() || null;
+    if (!name) return { error: "Supplier name is required." };
+    await getDb().supplier.update({
+      where: { id: supplierId },
+      data: { name, contactName, email, phone },
+    });
+    return { success: "editSupplier" };
+  }
+
   return null;
 }
 
@@ -143,11 +156,11 @@ export default function SupplierDetailPage({ loaderData }: Route.ComponentProps)
   const actionData = useActionData() as { error?: string; success?: string } | undefined;
   const [showAddVendor, setShowAddVendor] = useState(false);
   const [showCreateVendor, setShowCreateVendor] = useState(false);
+  const [showEditSupplier, setShowEditSupplier] = useState(false);
 
   useEffect(() => {
-    if (actionData?.success === "vendor_created") {
-      setShowCreateVendor(false);
-    }
+    if (actionData?.success === "vendor_created") setShowCreateVendor(false);
+    if (actionData?.success === "editSupplier") setShowEditSupplier(false);
   }, [actionData]);
 
   return (
@@ -161,23 +174,102 @@ export default function SupplierDetailPage({ loaderData }: Route.ComponentProps)
           <span className="text-gray-300">/</span>
           <h2 className="text-xl font-semibold text-gray-800">{supplier.name}</h2>
         </div>
-        <Form
-          method="post"
-          onSubmit={(e) => {
-            if (!confirm(`Delete ${supplier.name}? All vendors will become standalone.`)) {
-              e.preventDefault();
-            }
-          }}
-        >
-          <input type="hidden" name="intent" value="deleteSupplier" />
+        <div className="flex items-center gap-3">
           <button
-            type="submit"
-            className="text-sm text-red-500 hover:text-red-700 transition-colors"
+            type="button"
+            onClick={() => setShowEditSupplier(!showEditSupplier)}
+            className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
           >
-            Delete Supplier
+            {showEditSupplier ? "Cancel Edit" : "Edit Supplier"}
           </button>
-        </Form>
+          <Form
+            method="post"
+            onSubmit={(e) => {
+              if (!confirm(`Delete ${supplier.name}? All vendors will become standalone.`)) {
+                e.preventDefault();
+              }
+            }}
+          >
+            <input type="hidden" name="intent" value="deleteSupplier" />
+            <button
+              type="submit"
+              className="text-sm text-red-500 hover:text-red-700 transition-colors"
+            >
+              Delete Supplier
+            </button>
+          </Form>
+        </div>
       </div>
+
+      {showEditSupplier && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Edit Supplier</p>
+          <Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="editSupplier" />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Supplier Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  name="name"
+                  type="text"
+                  required
+                  defaultValue={supplier.name}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Contact Name
+                </label>
+                <input
+                  name="contactName"
+                  type="text"
+                  defaultValue={supplier.contactName ?? ""}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+                <input
+                  name="email"
+                  type="email"
+                  defaultValue={supplier.email ?? ""}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+                <input
+                  name="phone"
+                  type="tel"
+                  defaultValue={supplier.phone ?? ""}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            {actionData?.error && (
+              <p className="text-sm text-red-600">{actionData.error}</p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                type="submit"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+              >
+                Save Changes
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowEditSupplier(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </Form>
+        </div>
+      )}
 
       {/* Contact info */}
       {(supplier.contactName || supplier.email || supplier.phone) && (

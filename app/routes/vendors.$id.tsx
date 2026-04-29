@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link, useActionData, Form } from "react-router";
+import { redirect, Link, useActionData, Form } from "react-router";
 import type { Route } from "./+types/vendors.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
@@ -105,6 +105,32 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { success: true };
   }
 
+  if (intent === "editVendor") {
+    const name = String(formData.get("name") ?? "").trim();
+    const contactName = String(formData.get("contactName") ?? "").trim() || null;
+    const email = String(formData.get("email") ?? "").trim() || null;
+    const phone = String(formData.get("phone") ?? "").trim() || null;
+    if (!name) return { error: "Vendor name is required." };
+    await getDb().vendor.update({
+      where: { id: vendorId },
+      data: { name, contactName, email, phone },
+    });
+    return { success: "editVendor" };
+  }
+
+  if (intent === "deleteVendor") {
+    const vendor = await getDb().vendor.findUnique({
+      where: { id: vendorId },
+      include: { _count: { select: { invoices: true, credits: true } } },
+    });
+    if (!vendor) return { deleteError: "Vendor not found." };
+    if (vendor._count.invoices > 0 || vendor._count.credits > 0) {
+      return { deleteError: "Cannot delete a vendor that has invoices or credits attached." };
+    }
+    await getDb().vendor.delete({ where: { id: vendorId } });
+    return redirect("/vendors");
+  }
+
   return null;
 }
 
@@ -138,29 +164,132 @@ const inputClass =
 export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
   const { vendor, invoices, credits, totalInvoices, totalCredits, netBalance, allSuppliers } =
     loaderData;
-  const actionData = useActionData() as { error?: string; success?: boolean } | undefined;
+  const actionData = useActionData() as { error?: string; deleteError?: string; success?: boolean | string } | undefined;
   const [showAddCredit, setShowAddCredit] = useState(false);
   const [showAssignSupplier, setShowAssignSupplier] = useState(false);
+  const [showEditVendor, setShowEditVendor] = useState(false);
 
   useEffect(() => {
-    if (actionData?.success) {
-      setShowAddCredit(false);
-    }
+    if (actionData?.success === true) setShowAddCredit(false);
+    if (actionData?.success === "editVendor") setShowEditVendor(false);
   }, [actionData]);
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-3 mb-6">
-        <Link
-          to="/vendors"
-          className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
-        >
-          ← Vendors
-        </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">{vendor.name}</h2>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <Link
+            to="/vendors"
+            className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          >
+            ← Vendors
+          </Link>
+          <span className="text-gray-300">/</span>
+          <h2 className="text-xl font-semibold text-gray-800">{vendor.name}</h2>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setShowEditVendor(!showEditVendor)}
+            className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+          >
+            {showEditVendor ? "Cancel Edit" : "Edit Vendor"}
+          </button>
+          <Form
+            method="post"
+            onSubmit={(e) => {
+              if (!confirm(`Delete ${vendor.name}? This cannot be undone.`)) {
+                e.preventDefault();
+              }
+            }}
+          >
+            <input type="hidden" name="intent" value="deleteVendor" />
+            <button
+              type="submit"
+              className="text-sm text-red-500 hover:text-red-700 transition-colors"
+            >
+              Delete Vendor
+            </button>
+          </Form>
+        </div>
       </div>
+
+      {actionData?.deleteError && (
+        <div className="mb-6 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          {actionData.deleteError}
+        </div>
+      )}
+
+      {showEditVendor && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Edit Vendor</p>
+          <Form method="post" className="space-y-4">
+            <input type="hidden" name="intent" value="editVendor" />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Vendor Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  name="name"
+                  type="text"
+                  required
+                  defaultValue={vendor.name}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Contact Name
+                </label>
+                <input
+                  name="contactName"
+                  type="text"
+                  defaultValue={vendor.contactName ?? ""}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+                <input
+                  name="email"
+                  type="email"
+                  defaultValue={vendor.email ?? ""}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+                <input
+                  name="phone"
+                  type="tel"
+                  defaultValue={vendor.phone ?? ""}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+            </div>
+            {actionData?.error && (
+              <p className="text-sm text-red-600">{actionData.error}</p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                type="submit"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+              >
+                Save Changes
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowEditVendor(false)}
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </Form>
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
