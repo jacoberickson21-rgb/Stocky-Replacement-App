@@ -34,6 +34,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       contactName: vendor.contactName,
       email: vendor.email,
       phone: vendor.phone,
+      shopifyVendorName: vendor.shopifyVendorName,
       supplier: vendor.supplier,
     },
     invoices: vendor.invoices.map((inv) => ({
@@ -110,10 +111,11 @@ export async function action({ request, params }: Route.ActionArgs) {
     const contactName = String(formData.get("contactName") ?? "").trim() || null;
     const email = String(formData.get("email") ?? "").trim() || null;
     const phone = String(formData.get("phone") ?? "").trim() || null;
+    const shopifyVendorName = String(formData.get("shopifyVendorName") ?? "").trim() || null;
     if (!name) return { error: "Vendor name is required." };
     await getDb().vendor.update({
       where: { id: vendorId },
-      data: { name, contactName, email, phone },
+      data: { name, contactName, email, phone, shopifyVendorName },
     });
     return { success: "editVendor" };
   }
@@ -267,6 +269,21 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                   defaultValue={vendor.phone ?? ""}
                   className={`${inputClass} w-full`}
                 />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Shopify Vendor Name
+                </label>
+                <input
+                  name="shopifyVendorName"
+                  type="text"
+                  defaultValue={vendor.shopifyVendorName ?? ""}
+                  placeholder="e.g. Redington"
+                  className={`${inputClass} w-full`}
+                />
+                <p className="mt-1 text-xs text-gray-400">
+                  When set, manual invoice product search will be filtered to this vendor's products only.
+                </p>
               </div>
             </div>
             {actionData?.error && (

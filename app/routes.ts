@@ -4,6 +4,8 @@ export default [
   index("routes/home.tsx"),
   route("login", "routes/login.tsx"),
   route("logout", "routes/logout.tsx"),
+  route("api/shopify/products", "routes/api.shopify.products.tsx"),
+  route("api/line-items/:id/link", "routes/api.line-items.$id.link.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
     route("invoices", "routes/invoices.tsx"),

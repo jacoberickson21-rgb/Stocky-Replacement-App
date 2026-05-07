@@ -1,0 +1,1 @@
+ALTER TABLE "InvoiceLineItem" ALTER COLUMN "sku" DROP NOT NULL;

@@ -1,7 +1,10 @@
-import { Link, Form, redirect } from "react-router";
+import { Link, Form, redirect, useFetcher } from "react-router";
+import { useState, useEffect } from "react";
 import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
+import { logFailure } from "../services/failure-log.server";
+import { updateInventoryItemSku } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -16,9 +19,12 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     invoice: {
       ...invoice,
       total: Number(invoice.total),
+      invoiceDate: invoice.invoiceDate ? invoice.invoiceDate.toISOString() : null,
+      paymentTerms: invoice.paymentTerms ?? null,
       lineItems: invoice.lineItems.map((item) => ({
         ...item,
         unitCost: Number(item.unitCost),
+        retailPrice: item.retailPrice !== null ? Number(item.retailPrice) : null,
       })),
     },
   };
@@ -46,10 +52,64 @@ export async function action({ request, params }: Route.ActionArgs) {
         },
       }),
     ]);
+    return redirect(`/invoices/${id}`);
+  }
+
+  if (intent === "deleteInvoice") {
+    const db = getDb();
+    const invoice = await db.invoice.findUnique({ where: { id } });
+    if (!invoice) throw new Response("Not Found", { status: 404 });
+    await db.$transaction([
+      db.invoice.delete({ where: { id } }),
+      db.auditLog.create({
+        data: {
+          userId,
+          action: "INVOICE_DELETED",
+          details: `Invoice #${invoice.invoiceNumber} deleted`,
+          vendorId: invoice.vendorId,
+        },
+      }),
+    ]);
+    return redirect("/invoices");
+  }
+
+  if (intent === "updateLineSku") {
+    const db = getDb();
+    const lineItemId = Number(formData.get("lineItemId"));
+    const sku = String(formData.get("sku") ?? "").trim();
+
+    const lineItem = await db.invoiceLineItem.findUnique({
+      where: { id: lineItemId },
+      select: { shopifyInventoryItemId: true },
+    });
+
+    await db.invoiceLineItem.update({ where: { id: lineItemId }, data: { sku } });
+
+    if (lineItem?.shopifyInventoryItemId) {
+      try {
+        await updateInventoryItemSku(lineItem.shopifyInventoryItemId, sku);
+      } catch (err) {
+        await logFailure(
+          "shopify:set-sku",
+          sku || `lineItem:${lineItemId}`,
+          `SKU sync failed for inventoryItem ${lineItem.shopifyInventoryItemId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    return { success: true, lineItemId, sku };
   }
 
   return redirect(`/invoices/${id}`);
 }
+
+const PAYMENT_TERMS_LABELS: Record<string, string> = {
+  NET30: "Net 30",
+  NET60: "Net 60",
+  NET90: "Net 90",
+  DUE_ON_RECEIPT: "Due on Receipt",
+  CUSTOM: "Custom",
+};
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
   ORDERED: "Ordered",
@@ -67,6 +127,31 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   const { invoice } = loaderData;
   const { vendor, lineItems } = invoice;
 
+  const skuFetcher = useFetcher<{ success: boolean; lineItemId: number; sku: string }>();
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [skuDraft, setSkuDraft] = useState("");
+  const [savedId, setSavedId] = useState<number | null>(null);
+  const [skuOverrides, setSkuOverrides] = useState<Map<number, string>>(new Map());
+
+  useEffect(() => {
+    if (skuFetcher.state === "idle" && skuFetcher.data?.success) {
+      const { lineItemId, sku } = skuFetcher.data;
+      setSkuOverrides((prev) => new Map(prev).set(lineItemId, sku));
+      setEditingId(null);
+      setSavedId(lineItemId);
+      const timer = setTimeout(() => setSavedId(null), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [skuFetcher.state, skuFetcher.data]);
+
+  function handleSaveSku(lineItemId: number) {
+    const fd = new FormData();
+    fd.append("intent", "updateLineSku");
+    fd.append("lineItemId", String(lineItemId));
+    fd.append("sku", skuDraft);
+    skuFetcher.submit(fd, { method: "post" });
+  }
+
   return (
     <main className="p-8 max-w-5xl mx-auto">
       <div className="flex items-center gap-3 mb-6">
@@ -82,10 +167,28 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
 
       {/* Header card */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
           <div>
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Vendor</p>
             <p className="text-sm font-medium text-gray-800">{vendor.name}</p>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Invoice Date</p>
+            <p className="text-sm text-gray-800">
+              {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : "—"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Due Date</p>
+            <p className="text-sm text-gray-800">
+              {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : "—"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Payment Terms</p>
+            <p className="text-sm text-gray-800">
+              {invoice.paymentTerms ? (PAYMENT_TERMS_LABELS[invoice.paymentTerms] ?? invoice.paymentTerms) : "—"}
+            </p>
           </div>
           <div>
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Status</p>
@@ -94,12 +197,6 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             >
               {STATUS_LABELS[invoice.status]}
             </span>
-          </div>
-          <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Due Date</p>
-            <p className="text-sm text-gray-800">
-              {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : "—"}
-            </p>
           </div>
           <div>
             <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Total</p>
@@ -131,7 +228,35 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             </button>
           </Form>
         )}
+        <Form
+          method="post"
+          className="ml-auto"
+          onSubmit={(e) => {
+            if (!window.confirm(`Delete invoice #${invoice.invoiceNumber} and all its line items? This cannot be undone.`)) {
+              e.preventDefault();
+            }
+          }}
+        >
+          <input type="hidden" name="intent" value="deleteInvoice" />
+          <button
+            type="submit"
+            className="border border-red-300 text-red-600 hover:bg-red-50 text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+          >
+            Delete Invoice
+          </button>
+        </Form>
       </div>
+
+      {/* Unlinked Shopify products notice */}
+      {lineItems.some((li) => !li.shopifyVariantId) && (
+        <div className="mb-6 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold shrink-0 mt-0.5">!</span>
+          <span>
+            <strong>{lineItems.filter((li) => !li.shopifyVariantId).length} line item{lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "s" : ""}</strong> {lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "have" : "has"} no linked Shopify product.
+            {" "}Skeleton creation may still be pending — check the <Link to="/failures" className="underline hover:text-amber-900">failure log</Link> if this persists.
+          </span>
+        </div>
+      )}
 
       {/* Line items table */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
@@ -151,10 +276,70 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               return (
                 <tr
                   key={item.id}
-                  className={i < lineItems.length - 1 ? "border-b border-gray-100" : ""}
+                  className={`group ${i < lineItems.length - 1 ? "border-b border-gray-100" : ""}`}
                 >
-                  <td className="px-6 py-4 font-mono text-gray-700">{item.sku}</td>
-                  <td className="px-6 py-4 text-gray-600">{item.description}</td>
+                  <td className="px-6 py-4 min-w-[140px]">
+                    {editingId === item.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={skuDraft}
+                          onChange={(e) => setSkuDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveSku(item.id);
+                            if (e.key === "Escape") setEditingId(null);
+                          }}
+                          className="font-mono text-sm border border-gray-300 rounded px-2 py-0.5 w-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="SKU"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveSku(item.id)}
+                          disabled={skuFetcher.state !== "idle"}
+                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                        >
+                          {skuFetcher.state !== "idle" ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <span className={`font-mono ${(skuOverrides.get(item.id) ?? item.sku) ? "text-gray-700" : "text-gray-400 italic"}`}>
+                          {(skuOverrides.get(item.id) ?? item.sku) || "— no SKU"}
+                        </span>
+                        {savedId === item.id ? (
+                          <span className="text-green-600 text-xs font-medium">✓</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(item.id);
+                              setSkuDraft(skuOverrides.get(item.id) ?? item.sku ?? "");
+                            }}
+                            className={`text-gray-400 hover:text-gray-600 transition-colors ${(skuOverrides.get(item.id) ?? item.sku) ? "opacity-0 group-hover:opacity-100" : ""}`}
+                            title="Edit SKU"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                              <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.68 1.865a.25.25 0 0 0 .32.32l1.865-.68c.341-.125.65-.318.892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.475ZM3.75 12.5a.25.25 0 0 0-.25.25v.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.25.25 0 0 0-.25-.25h-8.5Z" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 text-gray-600">
+                    <div>{item.description}</div>
+                    {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
+                      <div className="text-xs text-gray-400 mt-0.5">{item.shopifyProductTitle}</div>
+                    )}
+                  </td>
                   <td className="px-6 py-4 text-right text-gray-700">{item.quantityOrdered}</td>
                   <td className="px-6 py-4 text-right text-gray-700">
                     ${Number(item.unitCost).toFixed(2)}

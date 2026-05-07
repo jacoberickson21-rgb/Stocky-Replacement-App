@@ -176,11 +176,8 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
                     </span>
                   </td>
                   <td className="px-6 py-4 font-medium text-gray-800">{f.itemLabel}</td>
-                  <td className="px-6 py-4 text-gray-500 max-w-xs">
-                    <span
-                      className="block truncate"
-                      title={f.errorMessage}
-                    >
+                  <td className="px-6 py-4 text-gray-500 max-w-sm">
+                    <span className="block whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
                       {f.errorMessage}
                     </span>
                   </td>
