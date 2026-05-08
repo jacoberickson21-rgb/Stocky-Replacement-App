@@ -468,11 +468,16 @@ export async function updateInventoryLevel(
       (q) => q.name === "available"
     )?.quantity ?? 0;
 
+  // Build idempotency key from the numeric tail of each GID (e.g. "adjust-12345-67890")
+  const itemId = opts.inventoryItemId.split("/").pop() ?? opts.inventoryItemId;
+  const locId = opts.locationId.split("/").pop() ?? opts.locationId;
+  const idempotencyKey = `adjust-${itemId}-${locId}`;
+
   const data = await shopifyGraphQL<{
     inventoryAdjustQuantities: { userErrors: UserError[] };
   }>(
-    `mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!) {
-      inventoryAdjustQuantities(input: $input) {
+    `mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!, $key: String!) {
+      inventoryAdjustQuantities(input: $input) @idempotent(key: $key) {
         inventoryAdjustmentGroup { id }
         userErrors { field message }
       }
@@ -490,6 +495,7 @@ export async function updateInventoryLevel(
           },
         ],
       },
+      key: idempotencyKey,
     }
   );
 
