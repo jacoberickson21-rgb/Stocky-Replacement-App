@@ -441,11 +441,38 @@ export async function getLocationId(): Promise<string> {
 export async function updateInventoryLevel(
   opts: UpdateInventoryInput
 ): Promise<void> {
-  const data = await shopifyGraphQL<{
-    inventorySetQuantities: { userErrors: UserError[] };
+  // 2026-04 API requires changeFromQuantity for optimistic concurrency.
+  // Query the current available quantity first; default to 0 if not yet stocked at this location.
+  const levelData = await shopifyGraphQL<{
+    inventoryItem: {
+      inventoryLevel: {
+        quantities: { name: string; quantity: number }[];
+      } | null;
+    } | null;
   }>(
-    `mutation SetInventory($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
+    `query GetInventoryLevel($itemId: ID!, $locationId: ID!) {
+      inventoryItem(id: $itemId) {
+        inventoryLevel(locationId: $locationId) {
+          quantities(names: ["available"]) {
+            name
+            quantity
+          }
+        }
+      }
+    }`,
+    { itemId: opts.inventoryItemId, locationId: opts.locationId }
+  );
+
+  const currentQty =
+    levelData.inventoryItem?.inventoryLevel?.quantities.find(
+      (q) => q.name === "available"
+    )?.quantity ?? 0;
+
+  const data = await shopifyGraphQL<{
+    inventoryAdjustQuantities: { userErrors: UserError[] };
+  }>(
+    `mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
         inventoryAdjustmentGroup { id }
         userErrors { field message }
       }
@@ -453,19 +480,20 @@ export async function updateInventoryLevel(
     {
       input: {
         name: "available",
-        reason: "correction",
-        quantities: [
+        reason: "received",
+        changes: [
           {
             inventoryItemId: opts.inventoryItemId,
             locationId: opts.locationId,
-            quantity: opts.quantity,
+            delta: opts.quantity,
+            changeFromQuantity: currentQty,
           },
         ],
       },
     }
   );
 
-  const { userErrors } = data.inventorySetQuantities;
+  const { userErrors } = data.inventoryAdjustQuantities;
   if (userErrors.length > 0) {
     const messages = userErrors
       .map((e) => `${e.field.join(".")}: ${e.message}`)
