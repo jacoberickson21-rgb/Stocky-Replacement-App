@@ -5,7 +5,8 @@ import Papa from "papaparse";
 import type { Route } from "./+types/invoices.upload";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
-import { parsePdfInvoice } from "../services/invoice-parser.server";
+import { callPdfParser } from "../services/pdf-parser-client.server";
+import type { ExtendedExtractionResult } from "../services/pdf-parser-client.server";
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult } from "../services/shopify.server";
@@ -106,10 +107,10 @@ export async function action({ request }: Route.ActionArgs) {
 
     const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
 
-    let extraction: ExtractionResult;
+    let extraction: ExtendedExtractionResult;
     try {
       const buffer = await pdfFile.arrayBuffer();
-      extraction = await parsePdfInvoice(buffer);
+      extraction = await callPdfParser(buffer);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       await logFailure("PDF_PARSE", pdfFile.name || "Unknown PDF", msg);
@@ -159,6 +160,24 @@ export async function action({ request }: Route.ActionArgs) {
     if (lineItems.length === 0) errors.general = "At least one valid line item is required.";
     if (Object.keys(errors).length > 0) {
       return data({ step: "uploadCsv" as const, errors, general: errors.general ?? null }, { status: 400 });
+    }
+
+    // Save vendor profile if staff provided column mappings from the mapping UI.
+    const skuColumn = String(form.get("skuColumn") ?? "").trim() || null;
+    const descColumn = String(form.get("descColumn") ?? "").trim() || null;
+    const qtyColumn = String(form.get("qtyColumn") ?? "").trim() || null;
+    const costColumn = String(form.get("costColumn") ?? "").trim() || null;
+    if (descColumn && vendorId) {
+      await getDb().vendorProfile.upsert({
+        where: { vendorId: Number(vendorId) },
+        create: {
+          vendorId: Number(vendorId),
+          columnMappings: { sku: skuColumn, description: descColumn, quantity: qtyColumn, unitCost: costColumn },
+        },
+        update: {
+          columnMappings: { sku: skuColumn, description: descColumn, quantity: qtyColumn, unitCost: costColumn },
+        },
+      });
     }
 
     const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
@@ -1334,12 +1353,163 @@ function ManualEntryForm({
   );
 }
 
+// ── Column mapping helpers ────────────────────────────────────────────────────
+
+function guessCol(cols: string[], keywords: string[]): string {
+  for (const kw of keywords) {
+    const found = cols.find((c) => c.toLowerCase().includes(kw.toLowerCase()));
+    if (found) return found;
+  }
+  return "";
+}
+
+function applyMapping(
+  rows: Record<string, string>[],
+  skuCol: string,
+  descCol: string,
+  qtyCol: string,
+  costCol: string
+) {
+  return rows
+    .filter((row) => descCol && row[descCol]?.trim())
+    .map((row) => {
+      const rawQty = qtyCol ? row[qtyCol] ?? "1" : "1";
+      const rawCost = costCol ? row[costCol] ?? "0" : "0";
+      const qty = parseInt(rawQty.replace(/[^\d]/g, "") || "1", 10) || 1;
+      const cost = parseFloat(rawCost.replace(/[^\d.]/g, "") || "0") || 0;
+      return {
+        sku: { value: skuCol ? (row[skuCol] ?? "") : "", confidence: 0.95, flagged: false },
+        description: { value: row[descCol] ?? "", confidence: 0.95, flagged: false },
+        quantity: { value: qty, confidence: 0.95, flagged: false },
+        unitCost: { value: cost, confidence: 0.95, flagged: false },
+      };
+    });
+}
+
+// ── LineItemsTable ────────────────────────────────────────────────────────────
+
+type ExtractionField<T> = { value: T; confidence: number; flagged: boolean };
+
+function LineItemsTable({
+  items,
+}: {
+  items: Array<{
+    sku: ExtractionField<string>;
+    description: ExtractionField<string>;
+    quantity: ExtractionField<number>;
+    unitCost: ExtractionField<number>;
+  }>;
+}) {
+  const [values, setValues] = useState(() =>
+    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value }))
+  );
+
+  const totalQty = values.reduce((sum, v) => sum + (Number(v.qty) || 0), 0);
+  const totalUnitCost = values.reduce((sum, v) => sum + (Number(v.unitCost) || 0), 0);
+  const totalAmount = values.reduce(
+    (sum, v) => sum + (Number(v.qty) || 0) * (Number(v.unitCost) || 0),
+    0
+  );
+
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="bg-gray-50 border-b border-gray-200">
+          <th className="text-left px-4 py-3 font-medium text-gray-600">SKU</th>
+          <th className="text-left px-4 py-3 font-medium text-gray-600">Description</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-28">Qty</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Unit Cost</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item, i) => {
+          const qty = Number(values[i]?.qty ?? item.quantity.value) || 0;
+          const cost = Number(values[i]?.unitCost ?? item.unitCost.value) || 0;
+          return (
+            <tr key={i} className={i < items.length - 1 ? "border-b border-gray-100" : ""}>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1">
+                  {item.sku.flagged && <FlagIcon />}
+                  <input
+                    name={`sku_${i}`}
+                    type="text"
+                    defaultValue={item.sku.value}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.sku.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1">
+                  {item.description.flagged && <FlagIcon />}
+                  <input
+                    name={`description_${i}`}
+                    type="text"
+                    defaultValue={item.description.value}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.description.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  {item.quantity.flagged && <FlagIcon />}
+                  <input
+                    name={`quantity_${i}`}
+                    type="number"
+                    min="1"
+                    value={values[i]?.qty ?? item.quantity.value}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setValues((prev) => prev.map((v, j) => (j === i ? { ...v, qty: n } : v)));
+                    }}
+                    className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.quantity.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  {item.unitCost.flagged && <FlagIcon />}
+                  <input
+                    name={`unitCost_${i}`}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={values[i]?.unitCost ?? item.unitCost.value}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setValues((prev) => prev.map((v, j) => (j === i ? { ...v, unitCost: n } : v)));
+                    }}
+                    className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+                ${(qty * cost).toFixed(2)}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr className="bg-gray-100 border-t-2 border-gray-300 text-sm font-semibold">
+          <td className="px-4 py-3 text-gray-500" colSpan={2}>Totals</td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">{totalQty}</td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">${totalUnitCost.toFixed(2)}</td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">${totalAmount.toFixed(2)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+// ── ReviewScreen ──────────────────────────────────────────────────────────────
+
 function ReviewScreen({
   extraction,
   vendors: initialVendors,
   matchedVendorId: initialMatchedVendorId,
 }: {
-  extraction: ExtractionResult;
+  extraction: ExtendedExtractionResult;
   vendors: Vendor[];
   matchedVendorId: number | null;
 }) {
@@ -1356,11 +1526,52 @@ function ReviewScreen({
     initialMatchedVendorId === null ? extraction.vendorName.value : ""
   );
 
+  // Column mapping — only active when the parser flagged low confidence AND
+  // returned raw table data AND there is no saved vendor profile yet.
+  const showMapping =
+    extraction.requiresManualReview &&
+    !extraction.vendorProfileFound &&
+    !!extraction.rawTableData?.length;
+
+  const rawCols = extraction.rawTableData?.length
+    ? Object.keys(extraction.rawTableData[0])
+    : [];
+
+  const [skuCol, setSkuCol] = useState(() =>
+    guessCol(rawCols, ["sku", "item #", "item no", "part #", "code", "product #"])
+  );
+  const [descCol, setDescCol] = useState(() =>
+    guessCol(rawCols, ["description", "desc", "product name", "item name", "name"])
+  );
+  const [qtyCol, setQtyCol] = useState(() =>
+    guessCol(rawCols, ["qty", "quantity", "units", "ordered"])
+  );
+  const [costCol, setCostCol] = useState(() =>
+    guessCol(rawCols, ["unit cost", "unit price", "price each", "each", "cost each"])
+  );
+  // Bumping this key forces the line items table to remount with fresh defaultValues.
+  const [mappingVersion, setMappingVersion] = useState(0);
+
+  function updateMapping(
+    field: "sku" | "desc" | "qty" | "cost",
+    value: string
+  ) {
+    if (field === "sku") setSkuCol(value);
+    else if (field === "desc") setDescCol(value);
+    else if (field === "qty") setQtyCol(value);
+    else setCostCol(value);
+    setMappingVersion((v) => v + 1);
+  }
+
+  const activeLineItems =
+    showMapping && extraction.rawTableData
+      ? applyMapping(extraction.rawTableData, skuCol, descCol, qtyCol, costCol)
+      : extraction.lineItems;
+
   const isCreating = fetcher.state === "submitting";
   const createError = fetcher.data?.error ?? null;
   const vendorNotMatched = initialMatchedVendorId === null && selectedVendorId === "";
 
-  // When fetcher returns a new vendor, append it and auto-select it
   useEffect(() => {
     if (fetcher.data?.step === "vendorCreated" && fetcher.data.vendor) {
       const newVendor = fetcher.data.vendor;
@@ -1393,7 +1604,41 @@ function ReviewScreen({
         <h2 className="text-xl font-semibold text-gray-800">Review Extraction</h2>
       </div>
 
-      {flagCount > 0 && (
+      {showMapping && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-5">
+          <p className="text-sm font-semibold text-amber-800 mb-1">Column mapping required</p>
+          <p className="text-xs text-amber-700 mb-4">
+            Low-confidence extraction — tell us which PDF columns map to each field. The line
+            items table will update live. This mapping is saved automatically when you confirm.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {(
+              [
+                { label: "SKU", value: skuCol, onChange: (v: string) => updateMapping("sku", v) },
+                { label: "Description *", value: descCol, onChange: (v: string) => updateMapping("desc", v) },
+                { label: "Quantity", value: qtyCol, onChange: (v: string) => updateMapping("qty", v) },
+                { label: "Unit Cost", value: costCol, onChange: (v: string) => updateMapping("cost", v) },
+              ] as { label: string; value: string; onChange: (v: string) => void }[]
+            ).map(({ label, value, onChange }) => (
+              <div key={label}>
+                <label className="block text-xs font-medium text-amber-800 mb-1">{label}</label>
+                <select
+                  value={value}
+                  onChange={(e) => onChange(e.target.value)}
+                  className="w-full border border-amber-300 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                >
+                  <option value="">— None —</option>
+                  {rawCols.map((col) => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {flagCount > 0 && !showMapping && (
         <div className="mb-6 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
           <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold">!</span>
           <strong>{flagCount} field{flagCount !== 1 ? "s" : ""} flagged for review.</strong>
@@ -1403,7 +1648,17 @@ function ReviewScreen({
 
       <Form method="post">
         <input type="hidden" name="intent" value="confirmPdf" />
-        <input type="hidden" name="itemCount" value={String(extraction.lineItems.length)} />
+        <input type="hidden" name="itemCount" value={String(activeLineItems.length)} />
+
+        {/* Hidden column mapping inputs — saved as vendor profile on submit */}
+        {showMapping && (
+          <>
+            <input type="hidden" name="skuColumn" value={skuCol} />
+            <input type="hidden" name="descColumn" value={descCol} />
+            <input type="hidden" name="qtyColumn" value={qtyCol} />
+            <input type="hidden" name="costColumn" value={costCol} />
+          </>
+        )}
 
         {/* Header fields */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
@@ -1435,7 +1690,6 @@ function ReviewScreen({
                 ))}
               </select>
 
-              {/* Create new vendor toggle */}
               {!showCreateForm && (
                 <button
                   type="button"
@@ -1446,7 +1700,6 @@ function ReviewScreen({
                 </button>
               )}
 
-              {/* Inline create vendor form — plain div avoids nesting inside the outer <Form> */}
               {showCreateForm && (
                 <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
                   <p className="text-xs font-medium text-gray-700 mb-2">New Vendor Name</p>
@@ -1503,77 +1756,16 @@ function ReviewScreen({
             </div>
 
             <PaymentTermsFields
+              initialInvoiceDate={extraction.invoiceDate?.value ?? ""}
               initialDueDate={extraction.dueDate.value ?? ""}
               dueDateFlagged={extraction.dueDate.flagged}
             />
           </div>
         </div>
 
-        {/* Line items */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-4 py-3 font-medium text-gray-600">SKU</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Description</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600 w-28">Qty</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Unit Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {extraction.lineItems.map((item, i) => (
-                <tr key={i} className={i < extraction.lineItems.length - 1 ? "border-b border-gray-100" : ""}>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      {item.sku.flagged && <FlagIcon />}
-                      <input
-                        name={`sku_${i}`}
-                        type="text"
-                        defaultValue={item.sku.value}
-                        className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.sku.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      {item.description.flagged && <FlagIcon />}
-                      <input
-                        name={`description_${i}`}
-                        type="text"
-                        defaultValue={item.description.value}
-                        className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.description.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {item.quantity.flagged && <FlagIcon />}
-                      <input
-                        name={`quantity_${i}`}
-                        type="number"
-                        min="1"
-                        defaultValue={item.quantity.value}
-                        className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.quantity.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {item.unitCost.flagged && <FlagIcon />}
-                      <input
-                        name={`unitCost_${i}`}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        defaultValue={item.unitCost.value}
-                        className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {/* Line items — key forces remount (and state reset) when column mapping changes */}
+        <div key={mappingVersion} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+          <LineItemsTable items={activeLineItems} />
         </div>
 
         <div className="flex gap-3">
@@ -1611,7 +1803,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
     return (
       <main className="p-8">
         <ReviewScreen
-          extraction={actionData.extraction as ExtractionResult}
+          extraction={actionData.extraction as ExtendedExtractionResult}
           vendors={(actionData.vendors ?? vendors) as Vendor[]}
           matchedVendorId={actionData.matchedVendorId as number | null}
         />
@@ -1712,7 +1904,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
               />
               {errors.pdfFile && <p className="mt-1 text-xs text-red-600">{errors.pdfFile}</p>}
               <p className="mt-1.5 text-xs text-gray-400">
-                Claude AI will extract vendor, invoice number, due date, and all line items.
+                Extracts vendor, invoice number, date, due date, and all line items automatically.
               </p>
             </div>
 

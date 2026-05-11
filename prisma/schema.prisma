@@ -29,18 +29,29 @@ model Supplier {
 }
 
 model Vendor {
-  id                 Int        @id @default(autoincrement())
+  id                 Int            @id @default(autoincrement())
   name               String
   contactName        String?
   email              String?
   phone              String?
   shopifyVendorName  String?
   supplierId         Int?
-  supplier           Supplier?  @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  createdAt          DateTime   @default(now())
+  supplier           Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdAt          DateTime       @default(now())
   invoices           Invoice[]
   credits            Credit[]
   auditLogs          AuditLog[]
+  vendorProfile      VendorProfile?
+}
+
+model VendorProfile {
+  id              String   @id @default(cuid())
+  vendorId        Int      @unique
+  vendor          Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  columnMappings  Json
+  extractionHints Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model Invoice {
