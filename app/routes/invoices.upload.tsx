@@ -5,11 +5,12 @@ import Papa from "papaparse";
 import type { Route } from "./+types/invoices.upload";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
-import { parsePdfInvoice } from "../services/invoice-parser.server";
+import { callPdfParser } from "../services/pdf-parser-client.server";
+import type { ExtendedExtractionResult } from "../services/pdf-parser-client.server";
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult } from "../services/shopify.server";
-import { updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants } from "../services/shopify.server";
+import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -106,10 +107,10 @@ export async function action({ request }: Route.ActionArgs) {
 
     const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
 
-    let extraction: ExtractionResult;
+    let extraction: ExtendedExtractionResult;
     try {
       const buffer = await pdfFile.arrayBuffer();
-      extraction = await parsePdfInvoice(buffer);
+      extraction = await callPdfParser(buffer);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       await logFailure("PDF_PARSE", pdfFile.name || "Unknown PDF", msg);
@@ -145,20 +146,39 @@ export async function action({ request }: Route.ActionArgs) {
     if (!vendorId) errors.vendorId = "Vendor is required.";
     if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
 
-    type LineItem = { sku: string; description: string; quantity: number; unitCost: number };
+    type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null };
     const lineItems: LineItem[] = [];
     for (let i = 0; i < itemCount; i++) {
       const sku = String(form.get(`sku_${i}`) ?? "").trim();
       const description = String(form.get(`description_${i}`) ?? "").trim();
       const quantity = parseInt(String(form.get(`quantity_${i}`) ?? ""), 10);
       const unitCost = parseFloat(String(form.get(`unitCost_${i}`) ?? ""));
+      const barcode = String(form.get(`barcode_${i}`) ?? "").trim() || null;
       if (!sku || !description || isNaN(quantity) || isNaN(unitCost) || quantity <= 0 || unitCost < 0) continue;
-      lineItems.push({ sku, description, quantity, unitCost });
+      lineItems.push({ sku, description, quantity, unitCost, barcode });
     }
 
     if (lineItems.length === 0) errors.general = "At least one valid line item is required.";
     if (Object.keys(errors).length > 0) {
       return data({ step: "uploadCsv" as const, errors, general: errors.general ?? null }, { status: 400 });
+    }
+
+    // Save vendor profile if staff provided column mappings from the mapping UI.
+    const skuColumn = String(form.get("skuColumn") ?? "").trim() || null;
+    const descColumn = String(form.get("descColumn") ?? "").trim() || null;
+    const qtyColumn = String(form.get("qtyColumn") ?? "").trim() || null;
+    const costColumn = String(form.get("costColumn") ?? "").trim() || null;
+    if (descColumn && vendorId) {
+      await getDb().vendorProfile.upsert({
+        where: { vendorId: Number(vendorId) },
+        create: {
+          vendorId: Number(vendorId),
+          columnMappings: { sku: skuColumn, description: descColumn, quantity: qtyColumn, unitCost: costColumn },
+        },
+        update: {
+          columnMappings: { sku: skuColumn, description: descColumn, quantity: qtyColumn, unitCost: costColumn },
+        },
+      });
     }
 
     const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
@@ -177,10 +197,42 @@ export async function action({ request }: Route.ActionArgs) {
           description: item.description,
           quantityOrdered: item.quantity,
           unitCost: item.unitCost,
+          barcode: item.barcode,
         })),
       });
       return created;
     });
+
+    // Auto-match line items against Shopify by exact SKU (best-effort)
+    const savedItems = await getDb().invoiceLineItem.findMany({
+      where: { invoiceId: invoice.id, sku: { not: null } },
+      select: { id: true, sku: true, barcode: true },
+    });
+    if (savedItems.length > 0) {
+      const matchResults = await Promise.allSettled(
+        savedItems.map((item) => lookupProduct({ sku: item.sku! }))
+      );
+      for (let i = 0; i < savedItems.length; i++) {
+        const result = matchResults[i];
+        if (result.status === "fulfilled" && result.value) {
+          const product = result.value;
+          const variant = product.variants[0];
+          if (variant) {
+            await getDb().invoiceLineItem.update({
+              where: { id: savedItems[i].id },
+              data: {
+                shopifyProductTitle: product.title,
+                shopifyVariantId: variant.id,
+                shopifyInventoryItemId: variant.inventoryItemId,
+                ...(!savedItems[i].barcode && variant.barcode
+                  ? { barcode: variant.barcode }
+                  : {}),
+              },
+            });
+          }
+        }
+      }
+    }
 
     return redirect(`/invoices/${invoice.id}`);
   }
@@ -221,6 +273,7 @@ export async function action({ request }: Route.ActionArgs) {
       variantOptions: { name: string; value: string }[] | null;
       productTitle: string | null;
       variantTitle: string | null;
+      barcode?: string;
     };
 
     let lineItems: ManualLineItem[] = [];
@@ -265,6 +318,7 @@ export async function action({ request }: Route.ActionArgs) {
           quantityOrdered: item.quantity,
           unitCost: item.unitCost,
           retailPrice: item.retailPrice ?? null,
+          barcode: item.barcode || null,
           shopifyProductTitle: item.variantTitle || (item.variantId ? item.description : null),
           shopifyVariantId: item.variantId ?? null,
           shopifyInventoryItemId: item.inventoryItemId ?? null,
@@ -413,6 +467,19 @@ type LineItemRow = {
   variantOptions: { name: string; value: string }[] | null;
   productTitle: string | null;
   variantTitle: string | null;
+  barcode: string;
+};
+
+// Items added via AddItemSection in the PDF review screen
+type ReviewAddedItem = {
+  key: string;
+  sku: string;
+  description: string;
+  quantity: number;
+  unitCost: number;
+  barcode: string;
+  variantId: string | null;
+  inventoryItemId: string | null;
 };
 
 function cartesian<T>(arrays: T[][]): T[][] {
@@ -604,6 +671,57 @@ function ConfidencePct({ value }: { value: number }) {
   return <span className="text-xs text-gray-400 ml-1">({Math.round(value * 100)}%)</span>;
 }
 
+function BarcodeIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <rect x="2" y="4" width="3" height="16" rx="0.5" />
+      <rect x="7" y="4" width="1.5" height="16" rx="0.5" />
+      <rect x="10.5" y="4" width="3" height="16" rx="0.5" />
+      <rect x="15.5" y="4" width="1.5" height="16" rx="0.5" />
+      <rect x="19" y="4" width="3" height="16" rx="0.5" />
+    </svg>
+  );
+}
+
+function BarcodeInput({
+  value,
+  onChange,
+  onCommit,
+  name,
+  placeholder = "Scan or type barcode…",
+  inputClassName = "",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onCommit?: (v: string) => void;
+  name?: string;
+  placeholder?: string;
+  inputClassName?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <BarcodeIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+      <input
+        type="text"
+        name={name}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onCommit ? onCommit(value) : undefined;
+          } else if (e.key === "Tab" && onCommit) {
+            onCommit(value);
+          }
+        }}
+        onBlur={() => onCommit && onCommit(value)}
+        className={inputClassName}
+      />
+    </div>
+  );
+}
+
 function ManualEntryForm({
   vendors,
   errors,
@@ -680,6 +798,7 @@ function ManualEntryForm({
   function addSelected() {
     const toAdd = searchResults.filter((r) => selectedIds.has(r.variantId));
     if (toAdd.length === 0) return;
+    toAdd.forEach((r) => console.log(`[addSelected] sku=${r.sku} barcode=${r.barcode}`));
     setLineItems((prev) => [
       ...prev,
       ...toAdd.map((result) => ({
@@ -697,6 +816,7 @@ function ManualEntryForm({
         variantOptions: null,
         productTitle: null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
+        barcode: result.barcode ?? "",
       })),
     ]);
     setSelectedIds(new Set());
@@ -711,11 +831,13 @@ function ManualEntryForm({
   const [manualQty, setManualQty] = useState("1");
   const [manualCost, setManualCost] = useState("0.00");
   const [manualRetailPrice, setManualRetailPrice] = useState("");
+  const [manualBarcode, setManualBarcode] = useState("");
   const [showVariants, setShowVariants] = useState(false);
   const [manualOptions, setManualOptions] = useState<{ name: string; values: string[] }[]>([]);
   const [optionValueInputs, setOptionValueInputs] = useState<string[]>([]);
 
   function addShopifyItem(result: ProductSearchResult) {
+    console.log(`[addShopifyItem] sku=${result.sku} barcode=${result.barcode}`);
     setLineItems((prev) => [
       ...prev,
       {
@@ -733,6 +855,7 @@ function ManualEntryForm({
         variantOptions: null,
         productTitle: null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
+        barcode: result.barcode ?? "",
       },
     ]);
     setSearchQuery("");
@@ -808,6 +931,7 @@ function ManualEntryForm({
               variantOptions: combo,
               productTitle: desc,
               variantTitle: null,
+              barcode: "",
             })),
           ]);
           setManualSku("");
@@ -815,6 +939,7 @@ function ManualEntryForm({
           setManualQty("1");
           setManualCost("0.00");
           setManualRetailPrice("");
+          setManualBarcode("");
           setShowVariants(false);
           setManualOptions([]);
           setOptionValueInputs([]);
@@ -841,6 +966,7 @@ function ManualEntryForm({
         variantOptions: null,
         productTitle: null,
         variantTitle: null,
+        barcode: manualBarcode.trim(),
       },
     ]);
     setManualSku("");
@@ -848,6 +974,7 @@ function ManualEntryForm({
     setManualQty("1");
     setManualCost("0.00");
     setManualRetailPrice("");
+    setManualBarcode("");
     setShowManualAdd(false);
   }
 
@@ -858,6 +985,12 @@ function ManualEntryForm({
   function updateItem(key: string, field: "quantity" | "unitCost", value: number) {
     setLineItems((prev) =>
       prev.map((item) => (item.key === key ? { ...item, [field]: value } : item))
+    );
+  }
+
+  function updateItemBarcode(key: string, value: string) {
+    setLineItems((prev) =>
+      prev.map((item) => (item.key === key ? { ...item, barcode: value } : item))
     );
   }
 
@@ -875,6 +1008,7 @@ function ManualEntryForm({
     setManualQty("1");
     setManualCost("0.00");
     setManualRetailPrice("");
+    setManualBarcode("");
     setShowVariants(false);
     setManualOptions([]);
     setOptionValueInputs([]);
@@ -1188,7 +1322,7 @@ function ManualEntryForm({
               </div>
             </div>
 
-            {/* Retail Price */}
+            {/* Retail Price + Barcode */}
             <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -1202,6 +1336,17 @@ function ManualEntryForm({
                   onChange={(e) => setManualRetailPrice(e.target.value)}
                   placeholder="0.00"
                   className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Barcode <span className="text-xs text-gray-400 font-normal">(optional)</span>
+                </label>
+                <BarcodeInput
+                  value={manualBarcode}
+                  onChange={setManualBarcode}
+                  placeholder="Scan or type barcode…"
+                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
@@ -1243,6 +1388,7 @@ function ManualEntryForm({
                   <th className="text-left px-4 py-2.5 font-medium text-gray-600">Product / SKU</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 w-28">Qty</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 w-32">Unit Cost</th>
+                  <th className="text-left px-4 py-2.5 font-medium text-gray-600 w-44">Barcode</th>
                   <th className="w-10" />
                 </tr>
               </thead>
@@ -1292,6 +1438,14 @@ function ManualEntryForm({
                           </label>
                         )}
                     </td>
+                    <td className="px-4 py-2.5">
+                      <BarcodeInput
+                        value={item.barcode}
+                        onChange={(v) => updateItemBarcode(item.key, v)}
+                        placeholder="Scan or type…"
+                        inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </td>
                     <td className="px-4 py-2.5 text-center">
                       <button
                         type="button"
@@ -1334,12 +1488,519 @@ function ManualEntryForm({
   );
 }
 
+// ── Column mapping helpers ────────────────────────────────────────────────────
+
+function guessCol(cols: string[], keywords: string[]): string {
+  for (const kw of keywords) {
+    const found = cols.find((c) => c.toLowerCase().includes(kw.toLowerCase()));
+    if (found) return found;
+  }
+  return "";
+}
+
+function applyMapping(
+  rows: Record<string, string>[],
+  skuCol: string,
+  descCol: string,
+  qtyCol: string,
+  costCol: string
+) {
+  return rows
+    .filter((row) => descCol && row[descCol]?.trim())
+    .map((row) => {
+      const rawQty = qtyCol ? row[qtyCol] ?? "1" : "1";
+      const rawCost = costCol ? row[costCol] ?? "0" : "0";
+      const qty = parseInt(rawQty.replace(/[^\d]/g, "") || "1", 10) || 1;
+      const cost = parseFloat(rawCost.replace(/[^\d.]/g, "") || "0") || 0;
+      return {
+        sku: { value: skuCol ? (row[skuCol] ?? "") : "", confidence: 0.95, flagged: false },
+        description: { value: row[descCol] ?? "", confidence: 0.95, flagged: false },
+        quantity: { value: qty, confidence: 0.95, flagged: false },
+        unitCost: { value: cost, confidence: 0.95, flagged: false },
+      };
+    });
+}
+
+// ── LineItemsTable ────────────────────────────────────────────────────────────
+
+type ExtractionField<T> = { value: T; confidence: number; flagged: boolean };
+
+function LineItemsTable({
+  items,
+  addedItems = [],
+  onRemoveAdded,
+  onUpdateAdded,
+}: {
+  items: Array<{
+    sku: ExtractionField<string>;
+    description: ExtractionField<string>;
+    quantity: ExtractionField<number>;
+    unitCost: ExtractionField<number>;
+  }>;
+  addedItems?: ReviewAddedItem[];
+  onRemoveAdded?: (key: string) => void;
+  onUpdateAdded?: (key: string, field: "quantity" | "unitCost" | "barcode", value: string | number) => void;
+}) {
+  const [values, setValues] = useState(() =>
+    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value, barcode: "" }))
+  );
+
+  const extractedTotal = values.reduce(
+    (sum, v) => sum + (Number(v.qty) || 0) * (Number(v.unitCost) || 0),
+    0
+  );
+  const addedTotal = addedItems.reduce(
+    (sum, a) => sum + a.quantity * a.unitCost,
+    0
+  );
+  const totalQty =
+    values.reduce((sum, v) => sum + (Number(v.qty) || 0), 0) +
+    addedItems.reduce((sum, a) => sum + a.quantity, 0);
+  const totalAmount = extractedTotal + addedTotal;
+
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="bg-gray-50 border-b border-gray-200">
+          <th className="text-left px-4 py-3 font-medium text-gray-600">SKU</th>
+          <th className="text-left px-4 py-3 font-medium text-gray-600">Description</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-28">Qty</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Unit Cost</th>
+          <th className="text-left px-4 py-3 font-medium text-gray-600 w-44">Barcode</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((item, i) => {
+          const qty = Number(values[i]?.qty ?? item.quantity.value) || 0;
+          const cost = Number(values[i]?.unitCost ?? item.unitCost.value) || 0;
+          const barcode = values[i]?.barcode ?? "";
+          return (
+            <tr key={i} className="border-b border-gray-100">
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1">
+                  {item.sku.flagged && <FlagIcon />}
+                  <input
+                    name={`sku_${i}`}
+                    type="text"
+                    defaultValue={item.sku.value}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.sku.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1">
+                  {item.description.flagged && <FlagIcon />}
+                  <input
+                    name={`description_${i}`}
+                    type="text"
+                    defaultValue={item.description.value}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.description.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  {item.quantity.flagged && <FlagIcon />}
+                  <input
+                    name={`quantity_${i}`}
+                    type="number"
+                    min="1"
+                    value={values[i]?.qty ?? item.quantity.value}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setValues((prev) => prev.map((v, j) => (j === i ? { ...v, qty: n } : v)));
+                    }}
+                    className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.quantity.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <div className="flex items-center justify-end gap-1">
+                  {item.unitCost.flagged && <FlagIcon />}
+                  <input
+                    name={`unitCost_${i}`}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={values[i]?.unitCost ?? item.unitCost.value}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      setValues((prev) => prev.map((v, j) => (j === i ? { ...v, unitCost: n } : v)));
+                    }}
+                    className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <BarcodeInput
+                  name={`barcode_${i}`}
+                  value={barcode}
+                  onChange={(v) => setValues((prev) => prev.map((val, j) => (j === i ? { ...val, barcode: v } : val)))}
+                  placeholder="Scan or type…"
+                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </td>
+              <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+                ${(qty * cost).toFixed(2)}
+              </td>
+            </tr>
+          );
+        })}
+        {addedItems.map((item, j) => {
+          const idx = items.length + j;
+          return (
+            <tr key={item.key} className="border-b border-gray-100 bg-blue-50/30">
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-blue-600 bg-blue-100 border border-blue-200 rounded px-1 py-0.5 shrink-0">Added</span>
+                  <input
+                    name={`sku_${idx}`}
+                    type="text"
+                    defaultValue={item.sku}
+                    className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </td>
+              <td className="px-4 py-3">
+                <input
+                  name={`description_${idx}`}
+                  type="text"
+                  defaultValue={item.description}
+                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </td>
+              <td className="px-4 py-3">
+                <input
+                  name={`quantity_${idx}`}
+                  type="number"
+                  min="1"
+                  value={item.quantity}
+                  onChange={(e) => onUpdateAdded?.(item.key, "quantity", Number(e.target.value))}
+                  className="w-24 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </td>
+              <td className="px-4 py-3">
+                <input
+                  name={`unitCost_${idx}`}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={item.unitCost}
+                  onChange={(e) => onUpdateAdded?.(item.key, "unitCost", Number(e.target.value))}
+                  className="w-28 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </td>
+              <td className="px-4 py-3">
+                <BarcodeInput
+                  name={`barcode_${idx}`}
+                  value={item.barcode}
+                  onChange={(v) => onUpdateAdded?.(item.key, "barcode", v)}
+                  placeholder="Scan or type…"
+                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </td>
+              <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+                <div className="flex items-center justify-end gap-2">
+                  ${(item.quantity * item.unitCost).toFixed(2)}
+                  <button
+                    type="button"
+                    onClick={() => onRemoveAdded?.(item.key)}
+                    aria-label="Remove added item"
+                    className="text-gray-400 hover:text-red-500 transition-colors text-lg leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr className="bg-gray-100 border-t-2 border-gray-300 text-sm font-semibold">
+          <td className="px-4 py-3 text-gray-500" colSpan={2}>Totals</td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">{totalQty}</td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums" colSpan={2}></td>
+          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">${totalAmount.toFixed(2)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  );
+}
+
+// ── AddItemSection ────────────────────────────────────────────────────────────
+
+function AddItemSection({
+  vendors,
+  selectedVendorId,
+  onAdd,
+}: {
+  vendors: Vendor[];
+  selectedVendorId: string;
+  onAdd: (item: ReviewAddedItem) => void;
+}) {
+  const [tab, setTab] = useState<"search" | "manual">("search");
+  const keyCounter = useRef(0);
+
+  const selectedVendor = vendors.find((v) => String(v.id) === selectedVendorId) ?? null;
+
+  // Search state
+  const searchFetcher = useFetcher<ProductSearchResult[]>();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchVendorFilter, setSearchVendorFilter] = useState(selectedVendor?.shopifyVendorName ?? "");
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  useEffect(() => {
+    setSearchVendorFilter(selectedVendor?.shopifyVendorName ?? "");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVendorId]);
+
+  useEffect(() => {
+    if (searchQuery.length < 2) { setShowDropdown(false); return; }
+    const timer = setTimeout(() => {
+      let url = `/api/shopify/products?q=${encodeURIComponent(searchQuery)}`;
+      if (searchVendorFilter) url += `&vendorName=${encodeURIComponent(searchVendorFilter)}`;
+      searchFetcher.load(url);
+      setShowDropdown(true);
+    }, 300);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, searchVendorFilter]);
+
+  const rawResults: ProductSearchResult[] = Array.isArray(searchFetcher.data) ? searchFetcher.data : [];
+  const isSearching = searchFetcher.state === "loading";
+  const searchResults = [...rawResults].sort((a, b) => {
+    const q = searchQuery.toLowerCase();
+    function score(r: ProductSearchResult) {
+      const title = (r.productTitle ?? "").toLowerCase();
+      const sku = (r.sku ?? "").toLowerCase();
+      if (title === q || sku === q) return 3;
+      if (title.startsWith(q) || sku.startsWith(q)) return 2;
+      return 1;
+    }
+    return score(b) - score(a);
+  });
+
+  // Manual add state
+  const [manualSku, setManualSku] = useState("");
+  const [manualDesc, setManualDesc] = useState("");
+  const [manualQty, setManualQty] = useState("1");
+  const [manualCost, setManualCost] = useState("0.00");
+  const [manualBarcode, setManualBarcode] = useState("");
+
+  const shopifyVendorNames = [...new Set(
+    vendors.map((v) => v.shopifyVendorName).filter((n): n is string => !!n)
+  )].sort();
+
+  function addFromSearch(result: ProductSearchResult) {
+    onAdd({
+      key: String(++keyCounter.current),
+      sku: result.sku,
+      description: result.productTitle,
+      quantity: 1,
+      unitCost: result.unitCost ?? 0,
+      barcode: result.barcode ?? "",
+      variantId: result.variantId,
+      inventoryItemId: result.inventoryItemId,
+    });
+    setSearchQuery("");
+    setShowDropdown(false);
+  }
+
+  function addManually() {
+    const qty = parseInt(manualQty, 10);
+    const cost = parseFloat(manualCost);
+    if (!manualSku.trim() || !manualDesc.trim() || isNaN(qty) || qty < 1 || isNaN(cost) || cost < 0) return;
+    onAdd({
+      key: String(++keyCounter.current),
+      sku: manualSku.trim(),
+      description: manualDesc.trim(),
+      quantity: qty,
+      unitCost: cost,
+      barcode: manualBarcode.trim(),
+      variantId: null,
+      inventoryItemId: null,
+    });
+    setManualSku("");
+    setManualDesc("");
+    setManualQty("1");
+    setManualCost("0.00");
+    setManualBarcode("");
+  }
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+      <h3 className="text-sm font-semibold text-gray-700 mb-4">Add Item</h3>
+
+      <div className="flex gap-1 mb-5 border-b border-gray-200">
+        <button
+          type="button"
+          onClick={() => setTab("search")}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            tab === "search" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Search Shopify
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("manual")}
+          className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            tab === "manual" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Add manually
+        </button>
+      </div>
+
+      {tab === "search" && (
+        <div>
+          {shopifyVendorNames.length > 0 && (
+            <div className="mb-2">
+              <select
+                value={searchVendorFilter}
+                onChange={(e) => setSearchVendorFilter(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="">All vendors</option>
+                {shopifyVendorNames.map((name) => (
+                  <option key={name} value={name}>{name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => searchQuery.length >= 2 && setShowDropdown(true)}
+              onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+              placeholder="Search Shopify products by name or SKU…"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {isSearching && (
+              <span className="absolute right-3 top-2.5 text-xs text-gray-400">Searching…</span>
+            )}
+            {showDropdown && searchQuery.length >= 2 && (
+              <div
+                className="absolute z-10 mt-1 w-full bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden"
+                onMouseDown={(e) => e.preventDefault()}
+              >
+                <div className="max-h-56 overflow-y-auto">
+                  {searchResults.length === 0 && !isSearching && (
+                    <p className="px-4 py-3 text-sm text-gray-500">No products found.</p>
+                  )}
+                  {searchResults.map((result) => {
+                    const displayName =
+                      result.variantTitle && result.variantTitle !== "Default Title"
+                        ? `${result.productTitle} — ${result.variantTitle}`
+                        : result.productTitle;
+                    return (
+                      <div
+                        key={result.variantId}
+                        onClick={() => addFromSearch(result)}
+                        className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm font-medium text-gray-800 leading-snug">{displayName}</span>
+                          {result.sku && (
+                            <span className="ml-2 text-gray-400 font-mono text-xs">{result.sku}</span>
+                          )}
+                        </div>
+                        <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400"}`}>
+                          {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === "manual" && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">SKU <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                value={manualSku}
+                onChange={(e) => setManualSku(e.target.value)}
+                placeholder="e.g. SIM-001"
+                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Description <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                value={manualDesc}
+                onChange={(e) => setManualDesc(e.target.value)}
+                placeholder="e.g. Simms Waders"
+                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Qty <span className="text-red-500">*</span></label>
+              <input
+                type="number"
+                min="1"
+                value={manualQty}
+                onChange={(e) => setManualQty(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Unit Cost <span className="text-red-500">*</span></label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={manualCost}
+                onChange={(e) => setManualCost(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Barcode</label>
+              <BarcodeInput
+                value={manualBarcode}
+                onChange={setManualBarcode}
+                onCommit={() => addManually()}
+                placeholder="Scan or type…"
+                inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={addManually}
+            disabled={!manualSku.trim() || !manualDesc.trim()}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
+          >
+            Add
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ReviewScreen ──────────────────────────────────────────────────────────────
+
 function ReviewScreen({
   extraction,
   vendors: initialVendors,
   matchedVendorId: initialMatchedVendorId,
 }: {
-  extraction: ExtractionResult;
+  extraction: ExtendedExtractionResult;
   vendors: Vendor[];
   matchedVendorId: number | null;
 }) {
@@ -1356,11 +2017,69 @@ function ReviewScreen({
     initialMatchedVendorId === null ? extraction.vendorName.value : ""
   );
 
+  // Column mapping — only active when the parser flagged low confidence AND
+  // returned raw table data AND there is no saved vendor profile yet.
+  const showMapping =
+    extraction.requiresManualReview &&
+    !extraction.vendorProfileFound &&
+    !!extraction.rawTableData?.length;
+
+  const rawCols = extraction.rawTableData?.length
+    ? Object.keys(extraction.rawTableData[0])
+    : [];
+
+  const [skuCol, setSkuCol] = useState(() =>
+    guessCol(rawCols, ["sku", "item #", "item no", "part #", "code", "product #"])
+  );
+  const [descCol, setDescCol] = useState(() =>
+    guessCol(rawCols, ["description", "desc", "product name", "item name", "name"])
+  );
+  const [qtyCol, setQtyCol] = useState(() =>
+    guessCol(rawCols, ["qty", "quantity", "units", "ordered"])
+  );
+  const [costCol, setCostCol] = useState(() =>
+    guessCol(rawCols, ["unit cost", "unit price", "price each", "each", "cost each"])
+  );
+  // Bumping this key forces the line items table to remount with fresh defaultValues.
+  const [mappingVersion, setMappingVersion] = useState(0);
+
+  function updateMapping(
+    field: "sku" | "desc" | "qty" | "cost",
+    value: string
+  ) {
+    if (field === "sku") setSkuCol(value);
+    else if (field === "desc") setDescCol(value);
+    else if (field === "qty") setQtyCol(value);
+    else setCostCol(value);
+    setMappingVersion((v) => v + 1);
+  }
+
+  const activeLineItems =
+    showMapping && extraction.rawTableData
+      ? applyMapping(extraction.rawTableData, skuCol, descCol, qtyCol, costCol)
+      : extraction.lineItems;
+
+  // Items added via AddItemSection
+  const [addedItems, setAddedItems] = useState<ReviewAddedItem[]>([]);
+
+  function handleAddItem(item: ReviewAddedItem) {
+    setAddedItems((prev) => [...prev, item]);
+  }
+
+  function handleRemoveAdded(key: string) {
+    setAddedItems((prev) => prev.filter((i) => i.key !== key));
+  }
+
+  function handleUpdateAdded(key: string, field: "quantity" | "unitCost" | "barcode", value: string | number) {
+    setAddedItems((prev) =>
+      prev.map((i) => (i.key === key ? { ...i, [field]: value } : i))
+    );
+  }
+
   const isCreating = fetcher.state === "submitting";
   const createError = fetcher.data?.error ?? null;
   const vendorNotMatched = initialMatchedVendorId === null && selectedVendorId === "";
 
-  // When fetcher returns a new vendor, append it and auto-select it
   useEffect(() => {
     if (fetcher.data?.step === "vendorCreated" && fetcher.data.vendor) {
       const newVendor = fetcher.data.vendor;
@@ -1393,7 +2112,41 @@ function ReviewScreen({
         <h2 className="text-xl font-semibold text-gray-800">Review Extraction</h2>
       </div>
 
-      {flagCount > 0 && (
+      {showMapping && (
+        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-5">
+          <p className="text-sm font-semibold text-amber-800 mb-1">Column mapping required</p>
+          <p className="text-xs text-amber-700 mb-4">
+            Low-confidence extraction — tell us which PDF columns map to each field. The line
+            items table will update live. This mapping is saved automatically when you confirm.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {(
+              [
+                { label: "SKU", value: skuCol, onChange: (v: string) => updateMapping("sku", v) },
+                { label: "Description *", value: descCol, onChange: (v: string) => updateMapping("desc", v) },
+                { label: "Quantity", value: qtyCol, onChange: (v: string) => updateMapping("qty", v) },
+                { label: "Unit Cost", value: costCol, onChange: (v: string) => updateMapping("cost", v) },
+              ] as { label: string; value: string; onChange: (v: string) => void }[]
+            ).map(({ label, value, onChange }) => (
+              <div key={label}>
+                <label className="block text-xs font-medium text-amber-800 mb-1">{label}</label>
+                <select
+                  value={value}
+                  onChange={(e) => onChange(e.target.value)}
+                  className="w-full border border-amber-300 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                >
+                  <option value="">— None —</option>
+                  {rawCols.map((col) => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {flagCount > 0 && !showMapping && (
         <div className="mb-6 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
           <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold">!</span>
           <strong>{flagCount} field{flagCount !== 1 ? "s" : ""} flagged for review.</strong>
@@ -1403,7 +2156,17 @@ function ReviewScreen({
 
       <Form method="post">
         <input type="hidden" name="intent" value="confirmPdf" />
-        <input type="hidden" name="itemCount" value={String(extraction.lineItems.length)} />
+        <input type="hidden" name="itemCount" value={String(activeLineItems.length + addedItems.length)} />
+
+        {/* Hidden column mapping inputs — saved as vendor profile on submit */}
+        {showMapping && (
+          <>
+            <input type="hidden" name="skuColumn" value={skuCol} />
+            <input type="hidden" name="descColumn" value={descCol} />
+            <input type="hidden" name="qtyColumn" value={qtyCol} />
+            <input type="hidden" name="costColumn" value={costCol} />
+          </>
+        )}
 
         {/* Header fields */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
@@ -1435,7 +2198,6 @@ function ReviewScreen({
                 ))}
               </select>
 
-              {/* Create new vendor toggle */}
               {!showCreateForm && (
                 <button
                   type="button"
@@ -1446,7 +2208,6 @@ function ReviewScreen({
                 </button>
               )}
 
-              {/* Inline create vendor form — plain div avoids nesting inside the outer <Form> */}
               {showCreateForm && (
                 <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
                   <p className="text-xs font-medium text-gray-700 mb-2">New Vendor Name</p>
@@ -1503,78 +2264,28 @@ function ReviewScreen({
             </div>
 
             <PaymentTermsFields
+              initialInvoiceDate={extraction.invoiceDate?.value ?? ""}
               initialDueDate={extraction.dueDate.value ?? ""}
               dueDateFlagged={extraction.dueDate.flagged}
             />
           </div>
         </div>
 
-        {/* Line items */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-4 py-3 font-medium text-gray-600">SKU</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Description</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600 w-28">Qty</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Unit Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {extraction.lineItems.map((item, i) => (
-                <tr key={i} className={i < extraction.lineItems.length - 1 ? "border-b border-gray-100" : ""}>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      {item.sku.flagged && <FlagIcon />}
-                      <input
-                        name={`sku_${i}`}
-                        type="text"
-                        defaultValue={item.sku.value}
-                        className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.sku.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      {item.description.flagged && <FlagIcon />}
-                      <input
-                        name={`description_${i}`}
-                        type="text"
-                        defaultValue={item.description.value}
-                        className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.description.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {item.quantity.flagged && <FlagIcon />}
-                      <input
-                        name={`quantity_${i}`}
-                        type="number"
-                        min="1"
-                        defaultValue={item.quantity.value}
-                        className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.quantity.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      {item.unitCost.flagged && <FlagIcon />}
-                      <input
-                        name={`unitCost_${i}`}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        defaultValue={item.unitCost.value}
-                        className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        {/* Line items — key forces remount (and state reset) when column mapping changes */}
+        <div key={mappingVersion} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+          <LineItemsTable
+            items={activeLineItems}
+            addedItems={addedItems}
+            onRemoveAdded={handleRemoveAdded}
+            onUpdateAdded={handleUpdateAdded}
+          />
         </div>
+
+        <AddItemSection
+          vendors={vendorsList}
+          selectedVendorId={selectedVendorId}
+          onAdd={handleAddItem}
+        />
 
         <div className="flex gap-3">
           <button
@@ -1611,7 +2322,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
     return (
       <main className="p-8">
         <ReviewScreen
-          extraction={actionData.extraction as ExtractionResult}
+          extraction={actionData.extraction as ExtendedExtractionResult}
           vendors={(actionData.vendors ?? vendors) as Vendor[]}
           matchedVendorId={actionData.matchedVendorId as number | null}
         />
@@ -1712,7 +2423,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
               />
               {errors.pdfFile && <p className="mt-1 text-xs text-red-600">{errors.pdfFile}</p>}
               <p className="mt-1.5 text-xs text-gray-400">
-                Claude AI will extract vendor, invoice number, due date, and all line items.
+                Extracts vendor, invoice number, date, due date, and all line items automatically.
               </p>
             </div>
 

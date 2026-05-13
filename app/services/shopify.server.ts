@@ -74,6 +74,7 @@ export type ProductSearchResult = {
   inventoryItemId: string;
   inventoryQty: number | null;
   unitCost: number | null;
+  barcode: string | null;
 };
 
 // ─── Raw GraphQL Node Types ───────────────────────────────────────────────────
@@ -82,6 +83,7 @@ type RawSearchVariantNode = {
   id: string;
   title: string;
   sku: string;
+  barcode: string | null;
   inventoryItem: {
     id: string;
     unitCost: { amount: string } | null;
@@ -441,11 +443,43 @@ export async function getLocationId(): Promise<string> {
 export async function updateInventoryLevel(
   opts: UpdateInventoryInput
 ): Promise<void> {
-  const data = await shopifyGraphQL<{
-    inventorySetQuantities: { userErrors: UserError[] };
+  // 2026-04 API requires changeFromQuantity for optimistic concurrency.
+  // Query the current available quantity first; default to 0 if not yet stocked at this location.
+  const levelData = await shopifyGraphQL<{
+    inventoryItem: {
+      inventoryLevel: {
+        quantities: { name: string; quantity: number }[];
+      } | null;
+    } | null;
   }>(
-    `mutation SetInventory($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
+    `query GetInventoryLevel($itemId: ID!, $locationId: ID!) {
+      inventoryItem(id: $itemId) {
+        inventoryLevel(locationId: $locationId) {
+          quantities(names: ["available"]) {
+            name
+            quantity
+          }
+        }
+      }
+    }`,
+    { itemId: opts.inventoryItemId, locationId: opts.locationId }
+  );
+
+  const currentQty =
+    levelData.inventoryItem?.inventoryLevel?.quantities.find(
+      (q) => q.name === "available"
+    )?.quantity ?? 0;
+
+  // Build idempotency key from the numeric tail of each GID (e.g. "adjust-12345-67890")
+  const itemId = opts.inventoryItemId.split("/").pop() ?? opts.inventoryItemId;
+  const locId = opts.locationId.split("/").pop() ?? opts.locationId;
+  const idempotencyKey = `adjust-${itemId}-${locId}`;
+
+  const data = await shopifyGraphQL<{
+    inventoryAdjustQuantities: { userErrors: UserError[] };
+  }>(
+    `mutation AdjustInventory($input: InventoryAdjustQuantitiesInput!, $key: String!) {
+      inventoryAdjustQuantities(input: $input) @idempotent(key: $key) {
         inventoryAdjustmentGroup { id }
         userErrors { field message }
       }
@@ -453,19 +487,21 @@ export async function updateInventoryLevel(
     {
       input: {
         name: "available",
-        reason: "correction",
-        quantities: [
+        reason: "received",
+        changes: [
           {
             inventoryItemId: opts.inventoryItemId,
             locationId: opts.locationId,
-            quantity: opts.quantity,
+            delta: opts.quantity,
+            changeFromQuantity: currentQty,
           },
         ],
       },
+      key: idempotencyKey,
     }
   );
 
-  const { userErrors } = data.inventorySetQuantities;
+  const { userErrors } = data.inventoryAdjustQuantities;
   if (userErrors.length > 0) {
     const messages = userErrors
       .map((e) => `${e.field.join(".")}: ${e.message}`)
@@ -515,6 +551,28 @@ export async function updateInventoryItemSku(
   if (userErrors.length > 0) {
     const messages = userErrors.map((e) => e.message).join("; ");
     throw new ShopifyUserError(`Inventory item SKU update failed: ${messages}`);
+  }
+}
+
+export async function updateVariantBarcode(
+  variantId: string,
+  barcode: string
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productVariantUpdate: { productVariant: { id: string } | null; userErrors: UserError[] };
+  }>(
+    `mutation UpdateVariantBarcode($input: ProductVariantInput!) {
+      productVariantUpdate(input: $input) {
+        productVariant { id }
+        userErrors { field message }
+      }
+    }`,
+    { input: { id: variantId, barcode } }
+  );
+  const { userErrors } = data.productVariantUpdate;
+  if (userErrors.length > 0) {
+    const messages = userErrors.map((e) => e.message).join("; ");
+    throw new ShopifyUserError(`Variant barcode update failed: ${messages}`);
   }
 }
 
@@ -758,6 +816,7 @@ export async function searchProducts(
                   id
                   title
                   sku
+                  barcode
                   inventoryItem {
                     id
                     unitCost {
@@ -796,6 +855,7 @@ export async function searchProducts(
         null;
       const unitCostRaw = variant.inventoryItem.unitCost?.amount;
       const unitCost = unitCostRaw != null ? parseFloat(unitCostRaw) : null;
+      console.log(`[search] variant ${variant.sku} barcode: ${variant.barcode}`);
       results.push({
         productTitle: product.title,
         variantTitle: variant.title,
@@ -804,6 +864,7 @@ export async function searchProducts(
         inventoryItemId: variant.inventoryItem.id,
         inventoryQty,
         unitCost,
+        barcode: variant.barcode ?? null,
       });
     }
   }

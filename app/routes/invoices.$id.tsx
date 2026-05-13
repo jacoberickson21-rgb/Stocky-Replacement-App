@@ -4,7 +4,7 @@ import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
-import { updateInventoryItemSku } from "../services/shopify.server";
+import { updateInventoryItemSku, updateVariantBarcode } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -97,7 +97,37 @@ export async function action({ request, params }: Route.ActionArgs) {
       }
     }
 
-    return { success: true, lineItemId, sku };
+    return { success: true, intent: "updateLineSku" as const, lineItemId, sku };
+  }
+
+  if (intent === "updateBarcode") {
+    const db = getDb();
+    const lineItemId = Number(formData.get("lineItemId"));
+    const barcode = String(formData.get("barcode") ?? "").trim();
+
+    const lineItem = await db.invoiceLineItem.findUnique({
+      where: { id: lineItemId },
+      select: { shopifyVariantId: true, sku: true },
+    });
+
+    await db.invoiceLineItem.update({
+      where: { id: lineItemId },
+      data: { barcode: barcode || null },
+    });
+
+    if (lineItem?.shopifyVariantId && barcode) {
+      try {
+        await updateVariantBarcode(lineItem.shopifyVariantId, barcode);
+      } catch (err) {
+        await logFailure(
+          "shopify:set-barcode",
+          lineItem.sku || `lineItem:${lineItemId}`,
+          `Barcode sync failed for variant ${lineItem.shopifyVariantId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    return { success: true, intent: "updateBarcode" as const, lineItemId, barcode };
   }
 
   return redirect(`/invoices/${id}`);
@@ -123,23 +153,36 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
   PAID: "bg-gray-100 text-gray-600",
 };
 
+function BarcodeIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <rect x="2" y="4" width="3" height="16" rx="0.5" />
+      <rect x="7" y="4" width="1.5" height="16" rx="0.5" />
+      <rect x="10.5" y="4" width="3" height="16" rx="0.5" />
+      <rect x="15.5" y="4" width="1.5" height="16" rx="0.5" />
+      <rect x="19" y="4" width="3" height="16" rx="0.5" />
+    </svg>
+  );
+}
+
 export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) {
   const { invoice } = loaderData;
   const { vendor, lineItems } = invoice;
 
-  const skuFetcher = useFetcher<{ success: boolean; lineItemId: number; sku: string }>();
+  // SKU inline edit
+  const skuFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; sku: string }>();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [skuDraft, setSkuDraft] = useState("");
-  const [savedId, setSavedId] = useState<number | null>(null);
+  const [savedSkuId, setSavedSkuId] = useState<number | null>(null);
   const [skuOverrides, setSkuOverrides] = useState<Map<number, string>>(new Map());
 
   useEffect(() => {
-    if (skuFetcher.state === "idle" && skuFetcher.data?.success) {
+    if (skuFetcher.state === "idle" && skuFetcher.data?.success && skuFetcher.data.intent === "updateLineSku") {
       const { lineItemId, sku } = skuFetcher.data;
       setSkuOverrides((prev) => new Map(prev).set(lineItemId, sku));
       setEditingId(null);
-      setSavedId(lineItemId);
-      const timer = setTimeout(() => setSavedId(null), 2000);
+      setSavedSkuId(lineItemId);
+      const timer = setTimeout(() => setSavedSkuId(null), 2000);
       return () => clearTimeout(timer);
     }
   }, [skuFetcher.state, skuFetcher.data]);
@@ -150,6 +193,32 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     fd.append("lineItemId", String(lineItemId));
     fd.append("sku", skuDraft);
     skuFetcher.submit(fd, { method: "post" });
+  }
+
+  // Barcode inline edit
+  const barcodeFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; barcode: string }>();
+  const [editingBarcodeId, setEditingBarcodeId] = useState<number | null>(null);
+  const [barcodeDraft, setBarcodeDraft] = useState("");
+  const [savedBarcodeId, setSavedBarcodeId] = useState<number | null>(null);
+  const [barcodeOverrides, setBarcodeOverrides] = useState<Map<number, string | null>>(new Map());
+
+  useEffect(() => {
+    if (barcodeFetcher.state === "idle" && barcodeFetcher.data?.success && barcodeFetcher.data.intent === "updateBarcode") {
+      const { lineItemId, barcode } = barcodeFetcher.data;
+      setBarcodeOverrides((prev) => new Map(prev).set(lineItemId, barcode || null));
+      setEditingBarcodeId(null);
+      setSavedBarcodeId(lineItemId);
+      const timer = setTimeout(() => setSavedBarcodeId(null), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [barcodeFetcher.state, barcodeFetcher.data]);
+
+  function handleSaveBarcode(lineItemId: number) {
+    const fd = new FormData();
+    fd.append("intent", "updateBarcode");
+    fd.append("lineItemId", String(lineItemId));
+    fd.append("barcode", barcodeDraft);
+    barcodeFetcher.submit(fd, { method: "post" });
   }
 
   return (
@@ -267,6 +336,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               <th className="text-left px-6 py-3 font-medium text-gray-600">Description</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600">Qty Ordered</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600">Unit Cost</th>
+              <th className="text-left px-6 py-3 font-medium text-gray-600">Barcode</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600">Line Total</th>
             </tr>
           </thead>
@@ -314,7 +384,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                         <span className={`font-mono ${(skuOverrides.get(item.id) ?? item.sku) ? "text-gray-700" : "text-gray-400 italic"}`}>
                           {(skuOverrides.get(item.id) ?? item.sku) || "— no SKU"}
                         </span>
-                        {savedId === item.id ? (
+                        {savedSkuId === item.id ? (
                           <span className="text-green-600 text-xs font-medium">✓</span>
                         ) : (
                           <button
@@ -344,6 +414,70 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   <td className="px-6 py-4 text-right text-gray-700">
                     ${Number(item.unitCost).toFixed(2)}
                   </td>
+                  <td className="px-6 py-4 min-w-[160px]">
+                    {editingBarcodeId === item.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 text-gray-400 shrink-0" aria-hidden="true">
+                          <rect x="2" y="4" width="3" height="16" rx="0.5" />
+                          <rect x="7" y="4" width="1.5" height="16" rx="0.5" />
+                          <rect x="10.5" y="4" width="3" height="16" rx="0.5" />
+                          <rect x="15.5" y="4" width="1.5" height="16" rx="0.5" />
+                          <rect x="19" y="4" width="3" height="16" rx="0.5" />
+                        </svg>
+                        <input
+                          autoFocus
+                          type="text"
+                          value={barcodeDraft}
+                          onChange={(e) => setBarcodeDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); handleSaveBarcode(item.id); }
+                            if (e.key === "Escape") setEditingBarcodeId(null);
+                          }}
+                          className="font-mono text-sm border border-gray-300 rounded px-2 py-0.5 w-32 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Barcode"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveBarcode(item.id)}
+                          disabled={barcodeFetcher.state !== "idle"}
+                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                        >
+                          {barcodeFetcher.state !== "idle" ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingBarcodeId(null)}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        {savedBarcodeId === item.id ? (
+                          <span className="text-green-600 text-xs font-medium">✓</span>
+                        ) : null}
+                        <span
+                          className={`font-mono text-sm ${(barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) ? "text-gray-700" : "text-gray-400 italic"}`}
+                        >
+                          {(barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) || "— no barcode"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBarcodeId(item.id);
+                            setBarcodeDraft((barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) ?? "");
+                          }}
+                          className="text-gray-400 hover:text-gray-600 transition-colors opacity-0 group-hover:opacity-100"
+                          title="Edit barcode"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                            <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.68 1.865a.25.25 0 0 0 .32.32l1.865-.68c.341-.125.65-.318.892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.475ZM3.75 12.5a.25.25 0 0 0-.25.25v.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.25.25 0 0 0-.25-.25h-8.5Z" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td className="px-6 py-4 text-right font-medium text-gray-800">
                     ${lineTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
@@ -353,7 +487,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           </tbody>
           <tfoot>
             <tr className="border-t border-gray-200 bg-gray-50">
-              <td colSpan={4} className="px-6 py-3 text-sm font-medium text-gray-600 text-right">
+              <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 text-right">
                 Total
               </td>
               <td className="px-6 py-3 text-right font-semibold text-gray-800">
