@@ -87,6 +87,7 @@ model InvoiceLineItem {
   retailPrice            Decimal? @db.Decimal(10, 2)
   hasDiscrepancy         Boolean  @default(false)
   receivingNote          String?
+  barcode                String?
   shopifyProductTitle    String?
   shopifyVariantId       String?
   shopifyInventoryItemId String?

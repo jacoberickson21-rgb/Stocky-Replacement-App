@@ -74,6 +74,7 @@ export type ProductSearchResult = {
   inventoryItemId: string;
   inventoryQty: number | null;
   unitCost: number | null;
+  barcode: string | null;
 };
 
 // ─── Raw GraphQL Node Types ───────────────────────────────────────────────────
@@ -82,6 +83,7 @@ type RawSearchVariantNode = {
   id: string;
   title: string;
   sku: string;
+  barcode: string | null;
   inventoryItem: {
     id: string;
     unitCost: { amount: string } | null;
@@ -552,6 +554,28 @@ export async function updateInventoryItemSku(
   }
 }
 
+export async function updateVariantBarcode(
+  variantId: string,
+  barcode: string
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productVariantUpdate: { productVariant: { id: string } | null; userErrors: UserError[] };
+  }>(
+    `mutation UpdateVariantBarcode($input: ProductVariantInput!) {
+      productVariantUpdate(input: $input) {
+        productVariant { id }
+        userErrors { field message }
+      }
+    }`,
+    { input: { id: variantId, barcode } }
+  );
+  const { userErrors } = data.productVariantUpdate;
+  if (userErrors.length > 0) {
+    const messages = userErrors.map((e) => e.message).join("; ");
+    throw new ShopifyUserError(`Variant barcode update failed: ${messages}`);
+  }
+}
+
 // ─── Multi-variant Draft Product ─────────────────────────────────────────────
 
 export type DraftProductVariantInput = {
@@ -792,6 +816,7 @@ export async function searchProducts(
                   id
                   title
                   sku
+                  barcode
                   inventoryItem {
                     id
                     unitCost {
@@ -830,6 +855,7 @@ export async function searchProducts(
         null;
       const unitCostRaw = variant.inventoryItem.unitCost?.amount;
       const unitCost = unitCostRaw != null ? parseFloat(unitCostRaw) : null;
+      console.log(`[search] variant ${variant.sku} barcode: ${variant.barcode}`);
       results.push({
         productTitle: product.title,
         variantTitle: variant.title,
@@ -838,6 +864,7 @@ export async function searchProducts(
         inventoryItemId: variant.inventoryItem.id,
         inventoryQty,
         unitCost,
+        barcode: variant.barcode ?? null,
       });
     }
   }

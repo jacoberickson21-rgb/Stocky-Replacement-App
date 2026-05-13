@@ -43,18 +43,24 @@ export async function loader({ request, params }: Route.LoaderArgs) {
         const product = result.value;
         const variant = product.variants[0];
         if (variant) {
+          const barcodeUpdate =
+            !unlinked[i].barcode && variant.barcode
+              ? { barcode: variant.barcode }
+              : {};
           await db.invoiceLineItem.update({
             where: { id: unlinked[i].id },
             data: {
               shopifyProductTitle: product.title,
               shopifyVariantId: variant.id,
               shopifyInventoryItemId: variant.inventoryItemId,
+              ...barcodeUpdate,
             },
           });
           Object.assign(unlinked[i], {
             shopifyProductTitle: product.title,
             shopifyVariantId: variant.id,
             shopifyInventoryItemId: variant.inventoryItemId,
+            ...barcodeUpdate,
           });
         }
       }
