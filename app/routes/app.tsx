@@ -25,6 +25,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         <div className="flex items-center gap-8">
           <span className="text-base font-semibold text-gray-800 mr-2">Stocky</span>
           <NavLink to="/dashboard" className={linkClass}>Dashboard</NavLink>
+          <NavLink to="/products" className={linkClass}>Products</NavLink>
           <NavLink to="/invoices" className={linkClass}>Purchase Orders</NavLink>
           <NavLink to="/suppliers" className={linkClass}>Suppliers</NavLink>
           <NavLink to="/vendors" className={linkClass}>Vendors</NavLink>

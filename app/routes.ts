@@ -8,6 +8,8 @@ export default [
   route("api/line-items/:id/link", "routes/api.line-items.$id.link.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
+    route("products", "routes/products.tsx"),
+    route("products/:id", "routes/products.$id.tsx"),
     route("invoices", "routes/invoices.tsx"),
     route("invoices/upload", "routes/invoices.upload.tsx"),
     route("invoices/:id", "routes/invoices.$id.tsx"),

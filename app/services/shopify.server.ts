@@ -77,6 +77,11 @@ export type ProductSearchResult = {
   barcode: string | null;
 };
 
+export type Publication = {
+  id: string;
+  name: string;
+};
+
 // ─── Raw GraphQL Node Types ───────────────────────────────────────────────────
 
 type RawSearchVariantNode = {
@@ -778,6 +783,407 @@ export async function createDraftProductWithVariants(
   };
 }
 
+// ─── Product List & Detail ────────────────────────────────────────────────────
+
+export type ProductListItem = {
+  id: string;
+  title: string;
+  vendor: string;
+  status: string;
+  totalVariants: number;
+  featuredImageUrl: string | null;
+};
+
+export type ProductListPage = {
+  products: ProductListItem[];
+  hasNextPage: boolean;
+  endCursor: string | null;
+};
+
+export type ProductDetailVariant = {
+  id: string;
+  title: string;
+  price: string;
+  compareAtPrice: string | null;
+  sku: string;
+  barcode: string | null;
+  inventoryQuantity: number;
+  inventoryItemId: string;
+  cost: number | null;
+  imageUrl: string | null;
+  imageId: string | null;
+};
+
+export type ProductImage = {
+  id: string;
+  url: string;
+  altText: string | null;
+  position: number;
+};
+
+export type ProductDetail = {
+  id: string;
+  title: string;
+  descriptionHtml: string;
+  productType: string;
+  vendor: string;
+  tags: string[];
+  status: string;
+  variants: ProductDetailVariant[];
+  images: ProductImage[];
+};
+
+export async function getProductList(
+  query: string,
+  cursor: string | null
+): Promise<ProductListPage> {
+  type RawNode = {
+    id: string;
+    title: string;
+    vendor: string;
+    status: string;
+    totalVariants: number;
+    featuredImage: { url: string } | null;
+  };
+  const data = await shopifyGraphQL<{
+    products: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: RawNode[];
+    };
+  }>(
+    `query GetProductList($first: Int!, $after: String, $query: String) {
+      products(first: $first, after: $after, query: $query) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id title vendor status totalVariants
+          featuredImage { url }
+        }
+      }
+    }`,
+    { first: 50, after: cursor ?? null, query: query || null }
+  );
+
+  return {
+    products: data.products.nodes.map((n) => ({
+      id: n.id,
+      title: n.title,
+      vendor: n.vendor,
+      status: n.status,
+      totalVariants: n.totalVariants,
+      featuredImageUrl: n.featuredImage?.url ?? null,
+    })),
+    hasNextPage: data.products.pageInfo.hasNextPage,
+    endCursor: data.products.pageInfo.endCursor,
+  };
+}
+
+export async function getProductById(id: string): Promise<ProductDetail | null> {
+  type RawVariant = {
+    id: string;
+    title: string;
+    price: string;
+    compareAtPrice: string | null;
+    sku: string;
+    barcode: string | null;
+    inventoryQuantity: number;
+    inventoryItem: { id: string; unitCost: { amount: string } | null };
+    image: { id: string; url: string } | null;
+  };
+  type RawImage = { id: string; url: string; altText: string | null };
+  type RawDetail = {
+    id: string;
+    title: string;
+    descriptionHtml: string;
+    productType: string;
+    vendor: string;
+    tags: string[];
+    status: string;
+    variants: { nodes: RawVariant[] };
+    images: { nodes: RawImage[] };
+  };
+
+  const data = await shopifyGraphQL<{ product: RawDetail | null }>(
+    `query GetProduct($id: ID!) {
+      product(id: $id) {
+        id title descriptionHtml productType vendor tags status
+        variants(first: 100) {
+          nodes {
+            id title price compareAtPrice sku barcode inventoryQuantity
+            inventoryItem { id unitCost { amount } }
+            image { id url }
+          }
+        }
+        images(first: 30) {
+          nodes { id url altText }
+        }
+      }
+    }`,
+    { id }
+  );
+
+  const p = data.product;
+  if (!p) return null;
+
+  return {
+    id: p.id,
+    title: p.title,
+    descriptionHtml: p.descriptionHtml,
+    productType: p.productType,
+    vendor: p.vendor,
+    tags: p.tags,
+    status: p.status,
+    variants: p.variants.nodes.map((v) => ({
+      id: v.id,
+      title: v.title,
+      price: v.price,
+      compareAtPrice: v.compareAtPrice,
+      sku: v.sku,
+      barcode: v.barcode,
+      inventoryQuantity: v.inventoryQuantity,
+      inventoryItemId: v.inventoryItem.id,
+      cost: v.inventoryItem.unitCost ? parseFloat(v.inventoryItem.unitCost.amount) : null,
+      imageUrl: v.image?.url ?? null,
+      imageId: v.image?.id ?? null,
+    })),
+    images: p.images.nodes.map((img, idx) => ({
+      id: img.id,
+      url: img.url,
+      altText: img.altText,
+      position: idx + 1,
+    })),
+  };
+}
+
+export async function getProductTypes(): Promise<string[]> {
+  const data = await shopifyGraphQL<{
+    productTypes: { edges: { node: string }[] };
+  }>(
+    `query GetProductTypes {
+      productTypes(first: 250) {
+        edges { node }
+      }
+    }`
+  );
+  return data.productTypes.edges.map((e) => e.node).filter(Boolean).sort();
+}
+
+export async function getVendors(): Promise<string[]> {
+  const data = await shopifyGraphQL<{
+    productVendors: { edges: { node: string }[] };
+  }>(
+    `query GetVendors {
+      productVendors(first: 250) {
+        edges { node }
+      }
+    }`
+  );
+  return data.productVendors.edges.map((e) => e.node).filter(Boolean).sort();
+}
+
+export async function getProductTags(): Promise<string[]> {
+  const data = await shopifyGraphQL<{
+    productTags: { edges: { node: string }[] };
+  }>(
+    `query GetProductTags {
+      productTags(first: 250) {
+        edges { node }
+      }
+    }`
+  );
+  return data.productTags.edges.map((e) => e.node).filter(Boolean).sort();
+}
+
+export async function assignVariantImage(
+  variantId: string,
+  imageId: string
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productVariantUpdate: { userErrors: UserError[] };
+  }>(
+    `mutation AssignVariantImage($input: ProductVariantInput!) {
+      productVariantUpdate(input: $input) {
+        productVariant { id }
+        userErrors { field message }
+      }
+    }`,
+    { input: { id: variantId, imageId } }
+  );
+  const { userErrors } = data.productVariantUpdate;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function updateProductMetadata(
+  productId: string,
+  fields: {
+    title: string;
+    descriptionHtml: string;
+    productType: string;
+    vendor: string;
+    tags: string[];
+    status: string;
+  }
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productUpdate: { userErrors: UserError[] };
+  }>(
+    `mutation UpdateProduct($input: ProductInput!) {
+      productUpdate(input: $input) {
+        product { id }
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: {
+        id: productId,
+        title: fields.title,
+        descriptionHtml: fields.descriptionHtml,
+        productType: fields.productType,
+        vendor: fields.vendor,
+        tags: fields.tags,
+        status: fields.status,
+      },
+    }
+  );
+  const { userErrors } = data.productUpdate;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function updateVariantPrice(
+  variantId: string,
+  price: string,
+  compareAtPrice: string | null
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productVariantUpdate: { userErrors: UserError[] };
+  }>(
+    `mutation UpdateVariantPrice($input: ProductVariantInput!) {
+      productVariantUpdate(input: $input) {
+        productVariant { id }
+        userErrors { field message }
+      }
+    }`,
+    { input: { id: variantId, price, compareAtPrice: compareAtPrice || null } }
+  );
+  const { userErrors } = data.productVariantUpdate;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function stagedUploadCreate(
+  filename: string,
+  mimeType: string,
+  fileSize: number
+): Promise<{ url: string; parameters: { name: string; value: string }[] }> {
+  const data = await shopifyGraphQL<{
+    stagedUploadsCreate: {
+      stagedTargets: {
+        url: string;
+        parameters: { name: string; value: string }[];
+      }[];
+      userErrors: UserError[];
+    };
+  }>(
+    `mutation StagedUpload($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets { url parameters { name value } }
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: [
+        {
+          filename,
+          mimeType,
+          fileSize: String(fileSize),
+          resource: "IMAGE",
+          httpMethod: "POST",
+        },
+      ],
+    }
+  );
+  const { stagedTargets, userErrors } = data.stagedUploadsCreate;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+  const target = stagedTargets[0];
+  if (!target) throw new ShopifyGraphQLError("No staged upload target returned");
+  return target;
+}
+
+export async function createProductMedia(
+  productId: string,
+  stagedUploadPath: string,
+  filename: string
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productCreateMedia: { userErrors: UserError[] };
+  }>(
+    `mutation CreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+      productCreateMedia(productId: $productId, media: $media) {
+        media { ... on MediaImage { id } }
+        userErrors { field message }
+      }
+    }`,
+    {
+      productId,
+      media: [{ originalSource: stagedUploadPath, mediaContentType: "IMAGE", alt: filename }],
+    }
+  );
+  const { userErrors } = data.productCreateMedia;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function deleteProductImage(
+  productId: string,
+  imageId: string
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productDeleteImages: { deletedImageIds: string[]; userErrors: UserError[] };
+  }>(
+    `mutation DeleteImage($productId: ID!, $imageIds: [ID!]!) {
+      productDeleteImages(id: $productId, imageIds: $imageIds) {
+        deletedImageIds
+        userErrors { field message }
+      }
+    }`,
+    { productId, imageIds: [imageId] }
+  );
+  const { userErrors } = data.productDeleteImages;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function reorderProductImages(
+  productId: string,
+  moves: { id: string; newPosition: string }[]
+): Promise<void> {
+  const data = await shopifyGraphQL<{
+    productReorderImages: { userErrors: UserError[] };
+  }>(
+    `mutation ReorderImages($id: ID!, $moves: [MoveInput!]!) {
+      productReorderImages(id: $id, moves: $moves) {
+        job { id }
+        userErrors { field message }
+      }
+    }`,
+    { id: productId, moves }
+  );
+  const { userErrors } = data.productReorderImages;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+// ─── Search (existing) ────────────────────────────────────────────────────────
+
 function buildShopifyQuery(input: string, vendorFilter?: string): string {
   const normalized = input.replace(/[-–—/\\|]+/g, " ");
   const words = normalized.trim().split(/\s+/).filter((w) => w.length > 1);
@@ -870,3 +1276,80 @@ export async function searchProducts(
   }
   return results;
 }
+
+// ─── Publications (Sales Channels) ───────────────────────────────────────────
+
+export async function getPublications(): Promise<Publication[]> {
+  const data = await shopifyGraphQL<{
+    publications: { nodes: { id: string; name: string }[] };
+  }>(
+    `query GetPublications {
+      publications(first: 20) {
+        nodes { id name }
+      }
+    }`
+  );
+  return data.publications.nodes;
+}
+
+export async function getProductPublicationIds(productId: string): Promise<string[]> {
+  const data = await shopifyGraphQL<{
+    product: {
+      resourcePublications: {
+        nodes: { publication: { id: string }; isPublished: boolean }[];
+      };
+    } | null;
+  }>(
+    `query GetProductPublications($id: ID!) {
+      product(id: $id) {
+        resourcePublications(first: 20) {
+          nodes {
+            publication { id }
+            isPublished
+          }
+        }
+      }
+    }`,
+    { id: productId }
+  );
+  return (data.product?.resourcePublications.nodes ?? [])
+    .filter((n) => n.isPublished)
+    .map((n) => n.publication.id);
+}
+
+export async function publishProduct(productId: string, publicationIds: string[]): Promise<void> {
+  const data = await shopifyGraphQL<{
+    publishablePublish: { userErrors: UserError[] };
+  }>(
+    `mutation PublishProduct($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        publishable { ... on Product { id } }
+        userErrors { field message }
+      }
+    }`,
+    { id: productId, input: publicationIds.map((publicationId) => ({ publicationId })) }
+  );
+  const { userErrors } = data.publishablePublish;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
+export async function unpublishProduct(productId: string, publicationIds: string[]): Promise<void> {
+  const data = await shopifyGraphQL<{
+    publishableUnpublish: { userErrors: UserError[] };
+  }>(
+    `mutation UnpublishProduct($id: ID!, $input: [PublicationInput!]!) {
+      publishableUnpublish(id: $id, input: $input) {
+        publishable { ... on Product { id } }
+        userErrors { field message }
+      }
+    }`,
+    { id: productId, input: publicationIds.map((publicationId) => ({ publicationId })) }
+  );
+  const { userErrors } = data.publishableUnpublish;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+}
+
