@@ -121,21 +121,21 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="p-8 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-800">Audit Log</h2>
-        <span className="text-sm text-gray-400">
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Audit Log</h2>
+        <span className="text-sm text-gray-400 dark:text-gray-500">
           {total} {total === 1 ? "entry" : "entries"}
         </span>
       </div>
 
       {/* Filters */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 mb-6">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-4 mb-6">
         <form method="get" className="flex flex-wrap gap-3 items-end">
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Staff Member</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Staff Member</label>
             <select
               name="userId"
               defaultValue={filters.userIdParam}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[150px]"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 min-w-[150px]"
             >
               <option value="">All Staff</option>
               {users.map((u) => (
@@ -147,11 +147,11 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Action Type</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Action Type</label>
             <select
               name="action"
               defaultValue={filters.actionParam}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[180px]"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 min-w-[180px]"
             >
               <option value="">All Actions</option>
               {actionTypes.map((a) => (
@@ -163,11 +163,11 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Vendor</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Vendor</label>
             <select
               name="vendorId"
               defaultValue={filters.vendorIdParam}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white min-w-[150px]"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 min-w-[150px]"
             >
               <option value="">All Vendors</option>
               {vendors.map((v) => (
@@ -179,58 +179,58 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">From Date</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">From Date</label>
             <input
               type="date"
               name="dateFrom"
               defaultValue={filters.dateFrom}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
             />
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">To Date</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">To Date</label>
             <input
               type="date"
               name="dateTo"
               defaultValue={filters.dateTo}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
             />
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Invoice #</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Invoice #</label>
             <input
               type="text"
               name="invoiceNumber"
               defaultValue={filters.invoiceNumber}
               placeholder="e.g. 1042"
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white w-28"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 w-28"
             />
           </div>
 
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500">Search Details</label>
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Search Details</label>
             <input
               type="text"
               name="search"
               defaultValue={filters.search}
               placeholder="Search..."
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white w-44"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 w-44"
             />
           </div>
 
           <div className="flex items-end gap-2 pb-0">
             <button
               type="submit"
-              className="border border-gray-300 rounded-lg px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 hover:bg-gray-50 transition-colors"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
             >
               Apply
             </button>
             {hasFilters && (
               <Link
                 to="/audit"
-                className="border border-gray-200 rounded-lg px-4 py-2 text-sm font-medium text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+                className="border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-2 text-sm font-medium text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
               >
                 Clear
               </Link>
@@ -241,8 +241,8 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
 
       {/* Table */}
       {logs.length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 px-6 py-12 text-center">
-          <p className="text-sm text-gray-400">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-12 text-center">
+          <p className="text-sm text-gray-400 dark:text-gray-500">
             {hasFilters
               ? "No audit log entries match the selected filters."
               : "No audit log entries yet."}
@@ -250,24 +250,24 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
         </div>
       ) : (
         <>
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 w-44">Timestamp</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 w-36">Staff Member</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 w-52">Action</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 w-36">Vendor</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Details</th>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-44">Timestamp</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">Staff Member</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-52">Action</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">Vendor</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Details</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.map((log, i) => (
                   <tr
                     key={log.id}
-                    className={i < logs.length - 1 ? "border-b border-gray-100" : ""}
+                    className={i < logs.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
                   >
-                    <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400 whitespace-nowrap">
                       {new Date(log.timestamp).toLocaleString("en-US", {
                         month: "short",
                         day: "numeric",
@@ -276,17 +276,17 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
                         minute: "2-digit",
                       })}
                     </td>
-                    <td className="px-6 py-4 font-medium text-gray-800">{log.userName}</td>
+                    <td className="px-6 py-4 font-medium text-gray-800 dark:text-gray-100">{log.userName}</td>
                     <td className="px-6 py-4">
-                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 whitespace-nowrap">
+                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 whitespace-nowrap">
                         {log.action}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-gray-500">
-                      {log.vendorName ?? <span className="text-gray-300">—</span>}
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400">
+                      {log.vendorName ?? <span className="text-gray-300 dark:text-gray-600">—</span>}
                     </td>
-                    <td className="px-6 py-4 text-gray-500">
-                      {log.details ?? <span className="text-gray-300">—</span>}
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400">
+                      {log.details ?? <span className="text-gray-300 dark:text-gray-600">—</span>}
                     </td>
                   </tr>
                 ))}
@@ -303,13 +303,13 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
                 className={[
                   "text-sm font-medium px-4 py-2 rounded-lg border transition-colors",
                   page <= 1
-                    ? "border-gray-100 text-gray-300 pointer-events-none"
-                    : "border-gray-300 text-gray-600 hover:text-gray-800 hover:bg-gray-50",
+                    ? "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none"
+                    : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800",
                 ].join(" ")}
               >
                 ← Previous
               </Link>
-              <span className="text-sm text-gray-500">
+              <span className="text-sm text-gray-500 dark:text-gray-400">
                 Page {page} of {pageCount}
               </span>
               <Link
@@ -318,8 +318,8 @@ export default function AuditPage({ loaderData }: Route.ComponentProps) {
                 className={[
                   "text-sm font-medium px-4 py-2 rounded-lg border transition-colors",
                   page >= pageCount
-                    ? "border-gray-100 text-gray-300 pointer-events-none"
-                    : "border-gray-300 text-gray-600 hover:text-gray-800 hover:bg-gray-50",
+                    ? "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none"
+                    : "border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-800",
                 ].join(" ")}
               >
                 Next →

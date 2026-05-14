@@ -22,6 +22,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   return null;
 }
 
+export const meta: Route.MetaFunction = () => [{ title: "Receively" }];
+
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
@@ -35,12 +37,15 @@ export const links: Route.LinksFunction = () => [
   },
 ];
 
+const darkModeScript = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(t===null&&window.matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}})()`;
+
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <script dangerouslySetInnerHTML={{ __html: darkModeScript }} />
         <Meta />
         <Links />
       </head>

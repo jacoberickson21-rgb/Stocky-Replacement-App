@@ -236,10 +236,10 @@ function stripHtml(html: string): string {
 // ─── Shared styles ────────────────────────────────────────────────────────────
 
 const inputClass =
-  "border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+  "border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800";
 
 const btnPrimary =
-  "bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors disabled:opacity-50";
+  "bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors disabled:opacity-50";
 
 // ─── Shared types ─────────────────────────────────────────────────────────────
 
@@ -256,8 +256,8 @@ type ActionResult = {
 // ─── SaveFeedback ─────────────────────────────────────────────────────────────
 
 function SaveFeedback({ success, error }: { success?: boolean; error?: string }) {
-  if (success) return <span className="text-sm text-green-600 font-medium">Saved</span>;
-  if (error) return <span className="text-sm text-red-600">{error}</span>;
+  if (success) return <span className="text-sm text-green-600 dark:text-green-400 font-medium">Saved</span>;
+  if (error) return <span className="text-sm text-red-600 dark:text-red-400">{error}</span>;
   return null;
 }
 
@@ -289,7 +289,7 @@ function ComboboxField({
 
   return (
     <div ref={containerRef} className="relative">
-      <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{label}</label>
       <input type="hidden" name={name} value={inputValue} />
       <input
         type="text"
@@ -301,12 +301,12 @@ function ComboboxField({
         autoComplete="off"
       />
       {open && filtered.length > 0 && (
-        <ul className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+        <ul className="absolute z-20 mt-1 w-full bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
           {filtered.map((opt) => (
             <li
               key={opt}
               onMouseDown={() => select(opt)}
-              className="px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer"
+              className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
             >
               {opt}
             </li>
@@ -358,19 +358,19 @@ function TagInput({
 
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-600 mb-1">Tags</label>
+      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Tags</label>
       <input type="hidden" name="tags" value={chips.join(",")} />
       <div className={`${inputClass} w-full min-h-[42px] flex flex-wrap gap-1.5 items-center cursor-text`}>
         {chips.map((chip) => (
           <span
             key={chip}
-            className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs font-medium rounded-full px-2.5 py-1"
+            className="inline-flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded-full px-2.5 py-1"
           >
             {chip}
             <button
               type="button"
               onClick={() => removeTag(chip)}
-              className="text-blue-400 hover:text-blue-700 leading-none"
+              className="text-indigo-400 dark:text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 leading-none"
               aria-label={`Remove ${chip}`}
             >
               ×
@@ -386,16 +386,16 @@ function TagInput({
             onBlur={() => setTimeout(() => setOpen(false), 150)}
             onKeyDown={handleKeyDown}
             placeholder={chips.length === 0 ? "Add tags…" : ""}
-            className="w-full bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
+            className="w-full bg-transparent outline-none text-sm text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
             autoComplete="off"
           />
           {open && available.length > 0 && (
-            <ul className="absolute z-20 top-full mt-1 left-0 w-56 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+            <ul className="absolute z-20 top-full mt-1 left-0 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
               {available.map((tag) => (
                 <li
                   key={tag}
                   onMouseDown={() => addTag(tag)}
-                  className="px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 cursor-pointer"
+                  className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer"
                 >
                   {tag}
                 </li>
@@ -404,7 +404,7 @@ function TagInput({
           )}
         </div>
       </div>
-      <p className="mt-1 text-xs text-gray-400">Type and press Enter or comma to add. Click × to remove.</p>
+      <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">Type and press Enter or comma to add. Click × to remove.</p>
     </div>
   );
 }
@@ -435,14 +435,14 @@ function BasicInfoSection({
   const plainDescription = stripHtml(product.descriptionHtml);
 
   return (
-    <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Basic Info</h3>
+    <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Basic Info</h3>
       <form method="post" className="space-y-4">
         <input type="hidden" name="intent" value="updateProduct" />
 
         <div className="grid grid-cols-2 gap-4">
           <div className="col-span-2">
-            <label className="block text-xs font-medium text-gray-600 mb-1">
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
               Title <span className="text-red-500">*</span>
             </label>
             <input
@@ -455,7 +455,7 @@ function BasicInfoSection({
           </div>
 
           <div className="col-span-2">
-            <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description</label>
             <textarea
               name="descriptionText"
               rows={5}
@@ -484,7 +484,7 @@ function BasicInfoSection({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Status</label>
             <select name="status" defaultValue={product.status} className={`${inputClass} w-full`}>
               <option value="ACTIVE">Active</option>
               <option value="DRAFT">Draft</option>
@@ -532,30 +532,30 @@ function VariantRow({ variant }: { variant: Variant }) {
   const label = `${variant.title} (${variant.sku || variant.id})`;
 
   return (
-    <div className="border border-gray-100 rounded-xl p-4 space-y-3">
+    <div className="border border-gray-100 dark:border-gray-700 rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           {variant.imageUrl ? (
             <img
               src={variant.imageUrl}
               alt={variant.title}
-              className="w-9 h-9 rounded-lg object-cover border border-gray-100 shrink-0"
+              className="w-9 h-9 rounded-lg object-cover border border-gray-100 dark:border-gray-700 shrink-0"
             />
           ) : (
-            <div className="w-9 h-9 rounded-lg bg-gray-100 border border-gray-200 shrink-0" />
+            <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 shrink-0" />
           )}
-          <span className="text-sm font-medium text-gray-700">{variant.title}</span>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">{variant.title}</span>
         </div>
-        <span className="text-xs text-gray-400 shrink-0">
+        <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
           Inventory:{" "}
-          <span className="font-medium text-gray-600">{variant.inventoryQuantity}</span>
-          <span className="text-gray-300 ml-1">(updated via receiving)</span>
+          <span className="font-medium text-gray-600 dark:text-gray-300">{variant.inventoryQuantity}</span>
+          <span className="text-gray-300 dark:text-gray-600 ml-1">(updated via receiving)</span>
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Price</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Price</label>
           <priceFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantPrice" />
             <input type="hidden" name="variantId" value={variant.id} />
@@ -572,7 +572,7 @@ function VariantRow({ variant }: { variant: Variant }) {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Cost</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Cost</label>
           <costFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantCost" />
             <input type="hidden" name="inventoryItemId" value={variant.inventoryItemId} />
@@ -588,7 +588,7 @@ function VariantRow({ variant }: { variant: Variant }) {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">SKU</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU</label>
           <skuFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantSku" />
             <input type="hidden" name="inventoryItemId" value={variant.inventoryItemId} />
@@ -604,7 +604,7 @@ function VariantRow({ variant }: { variant: Variant }) {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Barcode</label>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
           <barcodeFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantBarcode" />
             <input type="hidden" name="variantId" value={variant.id} />
@@ -627,8 +627,8 @@ function VariantRow({ variant }: { variant: Variant }) {
 
 function VariantsSection({ variants }: { variants: Variant[] }) {
   return (
-    <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Variants</h3>
+    <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Variants</h3>
       <div className="space-y-3">
         {variants.map((v) => (
           <VariantRow key={v.id} variant={v} />
@@ -733,16 +733,16 @@ function ImagesSection({
   const assignResult = assignFetcher.data as ActionResult;
 
   return (
-    <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+    <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-gray-700">Images</h3>
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Images</h3>
         {reorderResult?.intent === "reorderImages" && (
           <SaveFeedback success={reorderResult.success} error={reorderResult.error} />
         )}
       </div>
 
       {images.length === 0 && (
-        <p className="text-sm text-gray-400 mb-4">No images. Add one below.</p>
+        <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">No images. Add one below.</p>
       )}
 
       {images.length > 0 && (
@@ -758,7 +758,7 @@ function ImagesSection({
               onDragStart={() => setDraggingId(img.id)}
               onDragOver={(e) => handleDragOver(e, img.id)}
               className={`relative group rounded-xl overflow-hidden border-2 cursor-grab ${
-                draggingId === img.id ? "border-blue-400 opacity-50" : "border-gray-200"
+                draggingId === img.id ? "border-indigo-400 opacity-50" : "border-gray-200 dark:border-gray-700"
               }`}
             >
               <img src={img.url} alt={img.altText ?? ""} className="w-full aspect-square object-cover" />
@@ -795,13 +795,13 @@ function ImagesSection({
               </div>
 
               {assigningImageId === img.id && (
-                <div data-variant-picker className="absolute inset-x-0 bottom-0 bg-white border-t border-gray-200 rounded-b-xl p-2 z-10">
+                <div data-variant-picker className="absolute inset-x-0 bottom-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-700 rounded-b-xl p-2 z-10">
                   <div className="flex items-center justify-between mb-1.5">
-                    <p className="text-xs font-medium text-gray-600">Assign to:</p>
+                    <p className="text-xs font-medium text-gray-600 dark:text-gray-400">Assign to:</p>
                     <button
                       type="button"
                       onClick={() => setAssigningImageId(null)}
-                      className="text-gray-400 hover:text-gray-600 text-sm leading-none px-1"
+                      className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 text-sm leading-none px-1"
                       aria-label="Close"
                     >
                       ✕
@@ -814,17 +814,17 @@ function ImagesSection({
                         type="button"
                         disabled={assignFetcher.state !== "idle"}
                         onClick={() => submitAssign(v.id, img.id, `${v.title} (${v.sku})`)}
-                        className="w-full text-left text-xs text-gray-700 hover:text-blue-700 hover:bg-blue-50 rounded px-2 py-1 transition-colors disabled:opacity-50 flex items-center gap-2"
+                        className="w-full text-left text-xs text-gray-700 dark:text-gray-300 hover:text-indigo-700 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded px-2 py-1 transition-colors disabled:opacity-50 flex items-center gap-2"
                       >
                         {v.imageId === img.id && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
                         )}
                         {v.title}
                       </button>
                     ))}
                   </div>
                   {assignResult?.intent === "assignVariantImage" && assignResult.error && (
-                    <p className="text-xs text-red-600 mt-1">{assignResult.error}</p>
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">{assignResult.error}</p>
                   )}
                 </div>
               )}
@@ -840,7 +840,7 @@ function ImagesSection({
           type="file"
           name="image"
           accept="image/*"
-          className="text-sm text-gray-600 border border-gray-200 rounded-lg px-3 py-2 bg-white file:mr-3 file:text-sm file:font-medium file:text-blue-600 file:border-0 file:bg-blue-50 file:rounded file:px-2 file:py-1 file:cursor-pointer hover:file:bg-blue-100 transition-colors"
+          className="text-sm text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 file:mr-3 file:text-sm file:font-medium file:text-indigo-600 dark:file:text-indigo-400 file:border-0 file:bg-indigo-50 dark:file:bg-indigo-950/40 file:rounded file:px-2 file:py-1 file:cursor-pointer hover:file:bg-indigo-100 dark:hover:file:bg-indigo-950/60 transition-colors"
         />
         <button type="submit" disabled={uploadFetcher.state !== "idle"} className={btnPrimary}>
           {uploadFetcher.state !== "idle" ? "Uploading…" : "Upload"}
@@ -851,11 +851,11 @@ function ImagesSection({
       </uploadFetcher.Form>
 
       {deleteResult?.intent === "deleteImage" && deleteResult.error && (
-        <p className="mt-2 text-sm text-red-600">{deleteResult.error}</p>
+        <p className="mt-2 text-sm text-red-600 dark:text-red-400">{deleteResult.error}</p>
       )}
 
       {images.length > 1 && (
-        <p className="mt-2 text-xs text-gray-400">Drag images to reorder. Changes save automatically on drop.</p>
+        <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">Drag images to reorder. Changes save automatically on drop.</p>
       )}
     </section>
   );
@@ -873,7 +873,6 @@ function SalesChannelsSection({
   const fetcher = useFetcher<ActionResult>();
   const result = fetcher.data as ActionResult;
 
-  // Optimistically track which channel is toggling and in what direction
   const [optimistic, setOptimistic] = useState<{ id: string; publish: boolean } | null>(null);
 
   const toggling = fetcher.state !== "idle" && optimistic !== null;
@@ -901,25 +900,25 @@ function SalesChannelsSection({
   if (publications.length === 0) return null;
 
   return (
-    <section className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Sales Channels</h3>
+    <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Sales Channels</h3>
       <div className="space-y-2">
         {publications.map((pub) => {
           const isPublished = publishedSet.has(pub.id);
           const isThisToggling = toggling && optimistic?.id === pub.id;
           return (
-            <div key={pub.id} className="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
-              <span className="text-sm text-gray-700">{pub.name}</span>
+            <div key={pub.id} className="flex items-center justify-between py-2 border-b border-gray-50 dark:border-gray-800 last:border-0">
+              <span className="text-sm text-gray-700 dark:text-gray-300">{pub.name}</span>
               <div className="flex items-center gap-3">
                 {result?.intent === "toggleChannel" && result.publicationId === pub.id && result.error && (
-                  <span className="text-xs text-red-600">{result.error}</span>
+                  <span className="text-xs text-red-600 dark:text-red-400">{result.error}</span>
                 )}
                 <button
                   type="button"
                   disabled={isThisToggling}
                   onClick={() => toggle(pub.id, isPublished)}
                   className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 ${
-                    isPublished ? "bg-blue-600" : "bg-gray-200"
+                    isPublished ? "bg-indigo-600" : "bg-gray-200 dark:bg-gray-600"
                   }`}
                   aria-label={isPublished ? `Unpublish from ${pub.name}` : `Publish to ${pub.name}`}
                 >
@@ -929,7 +928,7 @@ function SalesChannelsSection({
                     }`}
                   />
                 </button>
-                <span className={`text-xs font-medium w-16 ${isPublished ? "text-blue-600" : "text-gray-400"}`}>
+                <span className={`text-xs font-medium w-16 ${isPublished ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`}>
                   {isPublished ? "Published" : "Hidden"}
                 </span>
               </div>
@@ -950,12 +949,12 @@ export default function ProductDetailPage({ loaderData }: Route.ComponentProps) 
   return (
     <main className="p-8 max-w-5xl mx-auto">
       <div className="flex items-center gap-3 mb-6">
-        <Link to="/products" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
+        <Link to="/products" className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors">
           ← Products
         </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">{product.title}</h2>
-        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">{product.title}</h2>
+        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
           {product.status.charAt(0) + product.status.slice(1).toLowerCase()}
         </span>
       </div>

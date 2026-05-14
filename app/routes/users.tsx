@@ -82,7 +82,7 @@ type ActionData = {
 };
 
 const inputClass =
-  "border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+  "border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800";
 
 export default function UsersPage({ loaderData }: Route.ComponentProps) {
   const { users, currentUserId } = loaderData;
@@ -102,19 +102,19 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="p-8 max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-800">Staff Accounts</h2>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Staff Accounts</h2>
         <button
           type="button"
           onClick={() => setShowAddForm(!showAddForm)}
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
         >
           {showAddForm ? "Cancel" : "Add Staff"}
         </button>
       </div>
 
       {showAddForm && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">New Staff Account</h3>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-4">New Staff Account</h3>
           <form method="post">
             <input type="hidden" name="intent" value="create" />
             <div className="flex flex-col gap-3">
@@ -143,13 +143,13 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
               </div>
               <div className="flex items-center justify-between">
                 {actionData?.intent === "create" && actionData.error ? (
-                  <p className="text-sm text-red-600">{actionData.error}</p>
+                  <p className="text-sm text-red-600 dark:text-red-400">{actionData.error}</p>
                 ) : (
                   <span />
                 )}
                 <button
                   type="submit"
-                  className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
                 >
                   Create Account
                 </button>
@@ -159,29 +159,29 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
         </div>
       )}
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
         {users.length === 0 ? (
-          <p className="text-sm text-gray-400 p-6">No staff accounts found.</p>
+          <p className="text-sm text-gray-400 dark:text-gray-500 p-6">No staff accounts found.</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Name</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Username</th>
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Name</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Username</th>
                 <th className="px-6 py-3" />
               </tr>
             </thead>
             <tbody>
               {users.map((user) => (
                 <Fragment key={user.id}>
-                  <tr className="border-b border-gray-100">
-                    <td className="px-6 py-4 font-medium text-gray-800">
+                  <tr className="border-b border-gray-100 dark:border-gray-700">
+                    <td className="px-6 py-4 font-medium text-gray-800 dark:text-gray-100">
                       {user.name}
                       {user.id === currentUserId && (
-                        <span className="ml-2 text-xs font-normal text-gray-400">(you)</span>
+                        <span className="ml-2 text-xs font-normal text-gray-400 dark:text-gray-500">(you)</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">{user.username}</td>
+                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{user.username}</td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-5">
                         <button
@@ -191,12 +191,12 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
                               openPasswordUserId === user.id ? null : user.id
                             )
                           }
-                          className="text-blue-600 hover:text-blue-800 transition-colors"
+                          className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition-colors"
                         >
                           Change Password
                         </button>
                         {user.id === currentUserId ? (
-                          <span className="text-gray-300 text-xs select-none" title="You cannot delete your own account">
+                          <span className="text-gray-300 dark:text-gray-600 text-xs select-none" title="You cannot delete your own account">
                             Delete
                           </span>
                         ) : (
@@ -205,7 +205,7 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
                             <input type="hidden" name="userId" value={user.id} />
                             <button
                               type="submit"
-                              className="text-red-500 hover:text-red-700 transition-colors"
+                              className="text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
                               onClick={(e) => {
                                 if (!confirm(`Delete account for ${user.name}?`)) {
                                   e.preventDefault();
@@ -220,12 +220,12 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
                     </td>
                   </tr>
                   {openPasswordUserId === user.id && (
-                    <tr className="bg-blue-50 border-b border-gray-100">
+                    <tr className="bg-indigo-50 dark:bg-indigo-950/40 border-b border-gray-100 dark:border-gray-700">
                       <td colSpan={3} className="px-6 py-4">
                         <Form method="post" className="flex items-center gap-3 flex-wrap">
                           <input type="hidden" name="intent" value="changePassword" />
                           <input type="hidden" name="userId" value={user.id} />
-                          <span className="text-sm text-gray-600 whitespace-nowrap">
+                          <span className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">
                             New password for <strong>{user.name}</strong>:
                           </span>
                           <input
@@ -237,14 +237,14 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
                           />
                           <button
                             type="submit"
-                            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-3 py-2 transition-colors whitespace-nowrap"
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-3 py-2 transition-colors whitespace-nowrap"
                           >
                             Update Password
                           </button>
                           <button
                             type="button"
                             onClick={() => setOpenPasswordUserId(null)}
-                            className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
                           >
                             Cancel
                           </button>
@@ -252,7 +252,7 @@ export default function UsersPage({ loaderData }: Route.ComponentProps) {
                             actionData.targetUserId === user.id && (
                               <>
                                 {actionData.error && (
-                                  <p className="text-sm text-red-600">{actionData.error}</p>
+                                  <p className="text-sm text-red-600 dark:text-red-400">{actionData.error}</p>
                                 )}
                               </>
                             )}

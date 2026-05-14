@@ -257,12 +257,12 @@ function ProductCell({ item }: { item: LineItem }) {
 
   return (
     <div>
-      <span className="font-mono text-gray-700">{item.sku}</span>
+      <span className="font-mono text-gray-700 dark:text-gray-300">{item.sku}</span>
 
       {linked.title ? (
         <div className="flex items-center gap-1.5 mt-0.5">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
-          <span className="text-xs text-green-700 leading-tight">
+          <span className="text-xs text-green-700 dark:text-green-400 leading-tight">
             {linked.title}
           </span>
         </div>
@@ -274,15 +274,15 @@ function ProductCell({ item }: { item: LineItem }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Name or SKU…"
-            className="w-48 border border-blue-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+            className="w-48 border border-indigo-300 dark:border-indigo-600 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-400 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
           />
           {searchFetcher.state === "loading" && query.trim().length >= 2 && (
-            <p className="text-xs text-gray-400 mt-1">Searching…</p>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">Searching…</p>
           )}
           {showResults && (
-            <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-xl w-72 max-h-56 overflow-y-auto">
+            <div className="absolute left-0 top-full mt-1 z-20 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl w-72 max-h-56 overflow-y-auto">
               {searchFetcher.data!.length === 0 ? (
-                <p className="px-3 py-2 text-xs text-gray-400">
+                <p className="px-3 py-2 text-xs text-gray-400 dark:text-gray-500">
                   No products found
                 </p>
               ) : (
@@ -291,12 +291,12 @@ function ProductCell({ item }: { item: LineItem }) {
                     key={result.variantId}
                     type="button"
                     onClick={() => handleSelect(result)}
-                    className="w-full text-left px-3 py-2 hover:bg-gray-50 border-b border-gray-100 last:border-0 transition-colors"
+                    className="w-full text-left px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-700 last:border-0 transition-colors"
                   >
-                    <div className="text-xs font-medium text-gray-800 truncate">
+                    <div className="text-xs font-medium text-gray-800 dark:text-gray-100 truncate">
                       {result.productTitle}
                     </div>
-                    <div className="text-xs text-gray-400 mt-0.5">
+                    <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
                       SKU: {result.sku || "—"} · On hand:{" "}
                       {result.inventoryQty ?? "–"}
                     </div>
@@ -311,7 +311,7 @@ function ProductCell({ item }: { item: LineItem }) {
               setSearchOpen(false);
               setQuery("");
             }}
-            className="block text-xs text-gray-400 hover:text-gray-600 mt-1"
+            className="block text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 mt-1"
           >
             Cancel
           </button>
@@ -320,7 +320,7 @@ function ProductCell({ item }: { item: LineItem }) {
         <button
           type="button"
           onClick={() => setSearchOpen(true)}
-          className="block mt-0.5 text-xs text-blue-600 hover:text-blue-800 hover:underline underline-offset-2"
+          className="block mt-0.5 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline underline-offset-2"
         >
           Link Product
         </button>
@@ -332,9 +332,9 @@ function ProductCell({ item }: { item: LineItem }) {
 // ─── Status badge map ─────────────────────────────────────────────────────────
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
-  ORDERED: "bg-blue-100 text-blue-700",
-  RECEIVED: "bg-green-100 text-green-700",
-  PAID: "bg-gray-100 text-gray-600",
+  ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
+  PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -362,35 +362,35 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
       <div className="flex items-center gap-3 mb-6">
         <Link
           to={`/invoices/${invoice.id}`}
-          className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
         >
           ← {invoice.invoiceNumber}
         </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
           Receive Shipment
         </h2>
       </div>
 
       {/* Header card */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
               Vendor
             </p>
-            <p className="text-sm font-medium text-gray-800">{vendor.name}</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor.name}</p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
               Invoice
             </p>
-            <p className="text-sm font-medium text-gray-800">
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">
               {invoice.invoiceNumber}
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
               Status
             </p>
             <span
@@ -404,23 +404,23 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
 
       {/* Receiving form */}
       <Form method="post">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-visible mb-6">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-visible mb-6">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-6 py-3 font-medium text-gray-600">
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   SKU / Product
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Description
                 </th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600">
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Expected
                 </th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600 w-36">
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">
                   Received
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Note
                 </th>
                 <th className="px-4 py-3 w-10"></th>
@@ -438,9 +438,9 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                     key={item.id}
                     className={[
                       i < lineItems.length - 1
-                        ? "border-b border-gray-100"
+                        ? "border-b border-gray-100 dark:border-gray-700"
                         : "",
-                      hasDiscrepancy ? "bg-amber-50" : "",
+                      hasDiscrepancy ? "bg-amber-50 dark:bg-amber-950/30" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
@@ -448,10 +448,10 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                     <td className="px-6 py-4 align-top">
                       <ProductCell item={item} />
                     </td>
-                    <td className="px-6 py-4 text-gray-600 align-top">
+                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300 align-top">
                       {item.description}
                     </td>
-                    <td className="px-6 py-4 text-right text-gray-700 tabular-nums align-top">
+                    <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-300 tabular-nums align-top">
                       {item.quantityOrdered}
                     </td>
                     <td className="px-6 py-4 text-right align-top">
@@ -468,10 +468,10 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                           }))
                         }
                         className={[
-                          "w-24 text-right border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 transition-colors",
+                          "w-24 text-right border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 transition-colors dark:text-gray-100",
                           hasDiscrepancy
-                            ? "border-amber-400 focus:ring-amber-300 bg-white"
-                            : "border-gray-300 focus:ring-blue-300",
+                            ? "border-amber-400 dark:border-amber-600 focus:ring-amber-300 bg-white dark:bg-gray-800"
+                            : "border-gray-300 dark:border-gray-600 focus:ring-indigo-300 bg-white dark:bg-gray-800",
                         ].join(" ")}
                         placeholder="0"
                       />
@@ -481,7 +481,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                         type="text"
                         name={`note_${item.id}`}
                         placeholder="Optional note"
-                        className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 transition-colors"
+                        className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 transition-colors bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                       />
                     </td>
                     <td className="px-4 py-4 align-top">
@@ -502,7 +502,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
         </div>
 
         <div className="flex items-center justify-between">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
             {actionData?.error
               ? actionData.error
               : !allFilled
@@ -512,7 +512,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
           <button
             type="submit"
             disabled={!allFilled || isSubmitting}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
           >
             {isSubmitting ? "Saving…" : "Complete Receiving"}
           </button>

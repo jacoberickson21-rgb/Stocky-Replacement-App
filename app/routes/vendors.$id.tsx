@@ -149,9 +149,9 @@ function todayString() {
 }
 
 const statusStyles: Record<string, string> = {
-  ORDERED: "bg-gray-100 text-gray-600",
-  RECEIVED: "bg-amber-100 text-amber-700",
-  PAID: "bg-green-100 text-green-700",
+  ORDERED: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
+  RECEIVED: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  PAID: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
 };
 
 const statusLabels: Record<string, string> = {
@@ -161,7 +161,7 @@ const statusLabels: Record<string, string> = {
 };
 
 const inputClass =
-  "border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+  "border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800";
 
 export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
   const { vendor, invoices, credits, totalInvoices, totalCredits, netBalance, allSuppliers } =
@@ -183,18 +183,18 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
         <div className="flex items-center gap-3">
           <Link
             to="/vendors"
-            className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
           >
             ← Vendors
           </Link>
-          <span className="text-gray-300">/</span>
-          <h2 className="text-xl font-semibold text-gray-800">{vendor.name}</h2>
+          <span className="text-gray-300 dark:text-gray-600">/</span>
+          <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">{vendor.name}</h2>
         </div>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => setShowEditVendor(!showEditVendor)}
-            className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+            className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-4 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
           >
             {showEditVendor ? "Cancel Edit" : "Edit Vendor"}
           </button>
@@ -209,7 +209,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
             <input type="hidden" name="intent" value="deleteVendor" />
             <button
               type="submit"
-              className="text-sm text-red-500 hover:text-red-700 transition-colors"
+              className="text-sm text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
             >
               Delete Vendor
             </button>
@@ -218,19 +218,19 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
       </div>
 
       {actionData?.deleteError && (
-        <div className="mb-6 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+        <div className="mb-6 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
           {actionData.deleteError}
         </div>
       )}
 
       {showEditVendor && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-          <p className="text-sm font-semibold text-gray-700 mb-4">Edit Vendor</p>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+          <p className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Edit Vendor</p>
           <Form method="post" className="space-y-4">
             <input type="hidden" name="intent" value="editVendor" />
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Vendor Name <span className="text-red-500">*</span>
                 </label>
                 <input
@@ -242,7 +242,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Contact Name
                 </label>
                 <input
@@ -253,7 +253,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Email</label>
                 <input
                   name="email"
                   type="email"
@@ -262,7 +262,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Phone</label>
                 <input
                   name="phone"
                   type="tel"
@@ -271,7 +271,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 />
               </div>
               <div className="col-span-2">
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Shopify Vendor Name
                 </label>
                 <input
@@ -281,25 +281,25 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                   placeholder="e.g. Redington"
                   className={`${inputClass} w-full`}
                 />
-                <p className="mt-1 text-xs text-gray-400">
+                <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
                   When set, manual invoice product search will be filtered to this vendor's products only.
                 </p>
               </div>
             </div>
             {actionData?.error && (
-              <p className="text-sm text-red-600">{actionData.error}</p>
+              <p className="text-sm text-red-600 dark:text-red-400">{actionData.error}</p>
             )}
             <div className="flex gap-3 pt-1">
               <button
                 type="submit"
-                className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
               >
                 Save Changes
               </button>
               <button
                 type="button"
                 onClick={() => setShowEditVendor(false)}
-                className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+                className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-4 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
               >
                 Cancel
               </button>
@@ -310,50 +310,50 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
 
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
             Total Invoices
           </p>
-          <p className="text-2xl font-bold text-gray-900">{formatDollars(totalInvoices)}</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{formatDollars(totalInvoices)}</p>
         </div>
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
             Total Credits
           </p>
-          <p className="text-2xl font-bold text-green-600">{formatDollars(totalCredits)}</p>
+          <p className="text-2xl font-bold text-green-600 dark:text-green-400">{formatDollars(totalCredits)}</p>
         </div>
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
             Net Balance
           </p>
-          <p className="text-2xl font-bold text-gray-900">{formatDollars(netBalance)}</p>
+          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{formatDollars(netBalance)}</p>
         </div>
       </div>
 
       {/* Contact info + Supplier */}
       {(vendor.contactName || vendor.email || vendor.phone || vendor.supplier || allSuppliers.length > 0) && (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Details</h3>
-          <div className="flex flex-wrap gap-8 text-sm text-gray-600">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Details</h3>
+          <div className="flex flex-wrap gap-8 text-sm text-gray-600 dark:text-gray-300">
             {vendor.contactName && <span>{vendor.contactName}</span>}
             {vendor.email && (
               <a
                 href={`mailto:${vendor.email}`}
-                className="text-blue-600 hover:text-blue-800 transition-colors"
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
               >
                 {vendor.email}
               </a>
             )}
             {vendor.phone && <span>{vendor.phone}</span>}
             <div className="flex items-center gap-3">
-              <span className="text-gray-400 text-xs font-medium uppercase tracking-wide">
+              <span className="text-gray-400 dark:text-gray-500 text-xs font-medium uppercase tracking-wide">
                 Supplier:
               </span>
               {vendor.supplier ? (
                 <>
                   <Link
                     to={`/suppliers/${vendor.supplier.id}`}
-                    className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                    className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium transition-colors"
                   >
                     {vendor.supplier.name}
                   </Link>
@@ -361,7 +361,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     <input type="hidden" name="intent" value="removeSupplier" />
                     <button
                       type="submit"
-                      className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                      className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
                     >
                       Remove
                     </button>
@@ -373,7 +373,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                   <select
                     name="supplierId"
                     required
-                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    className="border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
                   >
                     <option value="">— Choose supplier —</option>
                     {allSuppliers.map((s) => (
@@ -384,14 +384,14 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                   </select>
                   <button
                     type="submit"
-                    className="text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                    className="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors"
                   >
                     Save
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowAssignSupplier(false)}
-                    className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
+                    className="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                   >
                     Cancel
                   </button>
@@ -400,7 +400,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 <button
                   type="button"
                   onClick={() => setShowAssignSupplier(true)}
-                  className="text-xs text-gray-400 hover:text-blue-600 transition-colors"
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
                 >
                   {allSuppliers.length > 0 ? "Assign to supplier" : "None"}
                 </button>
@@ -412,34 +412,34 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
 
       {/* Invoices */}
       <section className="mb-6">
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-3">
           Invoices
         </h3>
         {invoices.length === 0 ? (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 px-6 py-8 text-center text-sm text-gray-400">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
             No invoices yet.
           </div>
         ) : (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Invoice #</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Date</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600">Amount</th>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Date</th>
+                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {invoices.map((inv, i) => (
                   <tr
                     key={inv.id}
-                    className={i < invoices.length - 1 ? "border-b border-gray-100" : ""}
+                    className={i < invoices.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
                   >
                     <td className="px-6 py-4">
                       <Link
                         to={`/invoices/${inv.id}`}
-                        className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                        className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium transition-colors"
                       >
                         {inv.invoiceNumber}
                       </Link>
@@ -451,14 +451,14 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                         {statusLabels[inv.status]}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
+                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
                       {new Date(inv.createdAt).toLocaleDateString("en-US", {
                         month: "short",
                         day: "numeric",
                         year: "numeric",
                       })}
                     </td>
-                    <td className="px-6 py-4 text-right font-medium text-gray-800">
+                    <td className="px-6 py-4 text-right font-medium text-gray-800 dark:text-gray-100">
                       {formatDollars(inv.total)}
                     </td>
                   </tr>
@@ -472,26 +472,26 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
       {/* Credits */}
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">
             Credits
           </h3>
           <button
             type="button"
             onClick={() => setShowAddCredit(!showAddCredit)}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             {showAddCredit ? "Cancel" : "Add Credit"}
           </button>
         </div>
 
         {showAddCredit && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-4">
             <form method="post">
               <input type="hidden" name="intent" value="addCredit" />
               <div className="flex flex-col gap-3">
                 <div className="flex gap-4">
                   <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium text-gray-600">Amount ($)</label>
+                    <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Amount ($)</label>
                     <input
                       name="amount"
                       type="number"
@@ -503,7 +503,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     />
                   </div>
                   <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium text-gray-600">Invoice # (optional)</label>
+                    <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Invoice # (optional)</label>
                     <input
                       name="invoiceNumber"
                       type="text"
@@ -512,7 +512,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     />
                   </div>
                   <div className="flex flex-col gap-1">
-                    <label className="text-xs font-medium text-gray-600">Date</label>
+                    <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Date</label>
                     <input
                       name="date"
                       type="date"
@@ -522,7 +522,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                     />
                   </div>
                   <div className="flex flex-col gap-1 flex-1">
-                    <label className="text-xs font-medium text-gray-600">Notes (optional)</label>
+                    <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Notes (optional)</label>
                     <input
                       name="notes"
                       type="text"
@@ -533,13 +533,13 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 </div>
                 <div className="flex items-center justify-between">
                   {actionData?.error ? (
-                    <p className="text-sm text-red-600">{actionData.error}</p>
+                    <p className="text-sm text-red-600 dark:text-red-400">{actionData.error}</p>
                   ) : (
                     <span />
                   )}
                   <button
                     type="submit"
-                    className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
                   >
                     Save Credit
                   </button>
@@ -550,38 +550,38 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
         )}
 
         {credits.length === 0 ? (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 px-6 py-8 text-center text-sm text-gray-400">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
             No credits recorded.
           </div>
         ) : (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Date</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600">Amount</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Invoice #</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Notes</th>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Date</th>
+                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Amount</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
+                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Notes</th>
                 </tr>
               </thead>
               <tbody>
                 {credits.map((credit, i) => (
                   <tr
                     key={credit.id}
-                    className={i < credits.length - 1 ? "border-b border-gray-100" : ""}
+                    className={i < credits.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
                   >
-                    <td className="px-6 py-4 text-gray-600">
+                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
                       {new Date(credit.date).toLocaleDateString("en-US", {
                         month: "short",
                         day: "numeric",
                         year: "numeric",
                       })}
                     </td>
-                    <td className="px-6 py-4 text-right font-medium text-green-600">
+                    <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-400">
                       {formatDollars(credit.amount)}
                     </td>
-                    <td className="px-6 py-4 font-mono text-gray-700 text-sm">{credit.invoiceNumber ?? "—"}</td>
-                    <td className="px-6 py-4 text-gray-500">{credit.notes ?? "—"}</td>
+                    <td className="px-6 py-4 font-mono text-gray-700 dark:text-gray-300 text-sm">{credit.invoiceNumber ?? "—"}</td>
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400">{credit.notes ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

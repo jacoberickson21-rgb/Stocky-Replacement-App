@@ -148,22 +148,10 @@ const STATUS_LABELS: Record<InvoiceStatus, string> = {
 };
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
-  ORDERED: "bg-blue-100 text-blue-700",
-  RECEIVED: "bg-green-100 text-green-700",
-  PAID: "bg-gray-100 text-gray-600",
+  ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
+  PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
-
-function BarcodeIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
-      <rect x="2" y="4" width="3" height="16" rx="0.5" />
-      <rect x="7" y="4" width="1.5" height="16" rx="0.5" />
-      <rect x="10.5" y="4" width="3" height="16" rx="0.5" />
-      <rect x="15.5" y="4" width="1.5" height="16" rx="0.5" />
-      <rect x="19" y="4" width="3" height="16" rx="0.5" />
-    </svg>
-  );
-}
 
 export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) {
   const { invoice } = loaderData;
@@ -226,41 +214,41 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
       <div className="flex items-center gap-3 mb-6">
         <Link
           to="/invoices"
-          className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
+          className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
         >
           ← Invoices
         </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">{invoice.invoiceNumber}</h2>
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">{invoice.invoiceNumber}</h2>
       </div>
 
       {/* Header card */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Vendor</p>
-            <p className="text-sm font-medium text-gray-800">{vendor.name}</p>
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Vendor</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor.name}</p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Invoice Date</p>
-            <p className="text-sm text-gray-800">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Invoice Date</p>
+            <p className="text-sm text-gray-800 dark:text-gray-100">
               {invoice.invoiceDate ? new Date(invoice.invoiceDate).toLocaleDateString() : "—"}
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Due Date</p>
-            <p className="text-sm text-gray-800">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Due Date</p>
+            <p className="text-sm text-gray-800 dark:text-gray-100">
               {invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : "—"}
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Payment Terms</p>
-            <p className="text-sm text-gray-800">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Payment Terms</p>
+            <p className="text-sm text-gray-800 dark:text-gray-100">
               {invoice.paymentTerms ? (PAYMENT_TERMS_LABELS[invoice.paymentTerms] ?? invoice.paymentTerms) : "—"}
             </p>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Status</p>
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Status</p>
             <span
               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_BADGE[invoice.status]}`}
             >
@@ -268,8 +256,8 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             </span>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Total</p>
-            <p className="text-sm font-semibold text-gray-800">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Total</p>
+            <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
               ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </p>
           </div>
@@ -281,7 +269,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
         {invoice.status === "ORDERED" && (
           <Link
             to={`/invoices/${invoice.id}/receive`}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             Begin Receiving
           </Link>
@@ -309,7 +297,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           <input type="hidden" name="intent" value="deleteInvoice" />
           <button
             type="submit"
-            className="border border-red-300 text-red-600 hover:bg-red-50 text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            className="border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             Delete Invoice
           </button>
@@ -318,26 +306,26 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
 
       {/* Unlinked Shopify products notice */}
       {lineItems.some((li) => !li.shopifyVariantId) && (
-        <div className="mb-6 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+        <div className="mb-6 flex items-start gap-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
           <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold shrink-0 mt-0.5">!</span>
           <span>
             <strong>{lineItems.filter((li) => !li.shopifyVariantId).length} line item{lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "s" : ""}</strong> {lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "have" : "has"} no linked Shopify product.
-            {" "}Skeleton creation may still be pending — check the <Link to="/failures" className="underline hover:text-amber-900">failure log</Link> if this persists.
+            {" "}Skeleton creation may still be pending — check the <Link to="/failures" className="underline hover:text-amber-900 dark:hover:text-amber-200">failure log</Link> if this persists.
           </span>
         </div>
       )}
 
       {/* Line items table */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="text-left px-6 py-3 font-medium text-gray-600">SKU</th>
-              <th className="text-left px-6 py-3 font-medium text-gray-600">Description</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Qty Ordered</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Unit Cost</th>
-              <th className="text-left px-6 py-3 font-medium text-gray-600">Barcode</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Line Total</th>
+            <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
+              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Qty Ordered</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Unit Cost</th>
+              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Line Total</th>
             </tr>
           </thead>
           <tbody>
@@ -346,7 +334,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               return (
                 <tr
                   key={item.id}
-                  className={`group ${i < lineItems.length - 1 ? "border-b border-gray-100" : ""}`}
+                  className={`group ${i < lineItems.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}`}
                 >
                   <td className="px-6 py-4 min-w-[140px]">
                     {editingId === item.id ? (
@@ -360,32 +348,32 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                             if (e.key === "Enter") handleSaveSku(item.id);
                             if (e.key === "Escape") setEditingId(null);
                           }}
-                          className="font-mono text-sm border border-gray-300 rounded px-2 py-0.5 w-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="font-mono text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 w-28 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           placeholder="SKU"
                         />
                         <button
                           type="button"
                           onClick={() => handleSaveSku(item.id)}
                           disabled={skuFetcher.state !== "idle"}
-                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:text-gray-400"
                         >
                           {skuFetcher.state !== "idle" ? "Saving…" : "Save"}
                         </button>
                         <button
                           type="button"
                           onClick={() => setEditingId(null)}
-                          className="text-xs text-gray-500 hover:text-gray-700"
+                          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                         >
                           Cancel
                         </button>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5">
-                        <span className={`font-mono ${(skuOverrides.get(item.id) ?? item.sku) ? "text-gray-700" : "text-gray-400 italic"}`}>
+                        <span className={`font-mono ${(skuOverrides.get(item.id) ?? item.sku) ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
                           {(skuOverrides.get(item.id) ?? item.sku) || "— no SKU"}
                         </span>
                         {savedSkuId === item.id ? (
-                          <span className="text-green-600 text-xs font-medium">✓</span>
+                          <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
                         ) : (
                           <button
                             type="button"
@@ -393,7 +381,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                               setEditingId(item.id);
                               setSkuDraft(skuOverrides.get(item.id) ?? item.sku ?? "");
                             }}
-                            className={`text-gray-400 hover:text-gray-600 transition-colors ${(skuOverrides.get(item.id) ?? item.sku) ? "opacity-0 group-hover:opacity-100" : ""}`}
+                            className={`text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors ${(skuOverrides.get(item.id) ?? item.sku) ? "opacity-0 group-hover:opacity-100" : ""}`}
                             title="Edit SKU"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
@@ -404,20 +392,20 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-gray-600">
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
                     <div>{item.description}</div>
                     {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
-                      <div className="text-xs text-gray-400 mt-0.5">{item.shopifyProductTitle}</div>
+                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.shopifyProductTitle}</div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-700">{item.quantityOrdered}</td>
-                  <td className="px-6 py-4 text-right text-gray-700">
+                  <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>
+                  <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-200">
                     ${Number(item.unitCost).toFixed(2)}
                   </td>
                   <td className="px-6 py-4 min-w-[160px]">
                     {editingBarcodeId === item.id ? (
                       <div className="flex items-center gap-1.5">
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 text-gray-400 shrink-0" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" aria-hidden="true">
                           <rect x="2" y="4" width="3" height="16" rx="0.5" />
                           <rect x="7" y="4" width="1.5" height="16" rx="0.5" />
                           <rect x="10.5" y="4" width="3" height="16" rx="0.5" />
@@ -433,21 +421,21 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                             if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); handleSaveBarcode(item.id); }
                             if (e.key === "Escape") setEditingBarcodeId(null);
                           }}
-                          className="font-mono text-sm border border-gray-300 rounded px-2 py-0.5 w-32 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="font-mono text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 w-32 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           placeholder="Barcode"
                         />
                         <button
                           type="button"
                           onClick={() => handleSaveBarcode(item.id)}
                           disabled={barcodeFetcher.state !== "idle"}
-                          className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400"
+                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:text-gray-400"
                         >
                           {barcodeFetcher.state !== "idle" ? "Saving…" : "Save"}
                         </button>
                         <button
                           type="button"
                           onClick={() => setEditingBarcodeId(null)}
-                          className="text-xs text-gray-500 hover:text-gray-700"
+                          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                         >
                           Cancel
                         </button>
@@ -455,10 +443,10 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                     ) : (
                       <div className="flex items-center gap-1.5">
                         {savedBarcodeId === item.id ? (
-                          <span className="text-green-600 text-xs font-medium">✓</span>
+                          <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
                         ) : null}
                         <span
-                          className={`font-mono text-sm ${(barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) ? "text-gray-700" : "text-gray-400 italic"}`}
+                          className={`font-mono text-sm ${(barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}
                         >
                           {(barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) || "— no barcode"}
                         </span>
@@ -468,7 +456,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                             setEditingBarcodeId(item.id);
                             setBarcodeDraft((barcodeOverrides.has(item.id) ? barcodeOverrides.get(item.id) : item.barcode) ?? "");
                           }}
-                          className="text-gray-400 hover:text-gray-600 transition-colors opacity-0 group-hover:opacity-100"
+                          className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors opacity-0 group-hover:opacity-100"
                           title="Edit barcode"
                         >
                           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
@@ -478,7 +466,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right font-medium text-gray-800">
+                  <td className="px-6 py-4 text-right font-medium text-gray-800 dark:text-gray-100">
                     ${lineTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
                 </tr>
@@ -486,11 +474,11 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             })}
           </tbody>
           <tfoot>
-            <tr className="border-t border-gray-200 bg-gray-50">
-              <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 text-right">
+            <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+              <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
                 Total
               </td>
-              <td className="px-6 py-3 text-right font-semibold text-gray-800">
+              <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
                 ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </td>
             </tr>

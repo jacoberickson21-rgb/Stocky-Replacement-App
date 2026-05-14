@@ -15,9 +15,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 const statusStyles: Record<string, string> = {
-  ACTIVE: "bg-green-100 text-green-700",
-  DRAFT: "bg-gray-100 text-gray-500",
-  ARCHIVED: "bg-amber-100 text-amber-700",
+  ACTIVE: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
+  DRAFT: "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400",
+  ARCHIVED: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
 };
 
 const statusLabels: Record<string, string> = {
@@ -46,7 +46,7 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="p-8 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-800">Products</h2>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Products</h2>
       </div>
 
       <div className="mb-6">
@@ -55,24 +55,24 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
           value={searchValue}
           onChange={handleSearch}
           placeholder="Search by title, vendor, or SKU..."
-          className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 w-96"
+          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-96"
         />
       </div>
 
       {products.length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 px-6 py-12 text-center text-sm text-gray-400">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
           {q ? "No products match your search." : "No products found in your Shopify store."}
         </div>
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-4 py-3 font-medium text-gray-600 w-14"></th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Title</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Vendor</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
-                <th className="text-right px-4 py-3 font-medium text-gray-600">Variants</th>
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-14"></th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Title</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Variants</th>
                 <th className="px-4 py-3 w-20"></th>
               </tr>
             </thead>
@@ -82,7 +82,7 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
                 return (
                   <tr
                     key={product.id}
-                    className={`hover:bg-gray-50 transition-colors cursor-pointer ${i < products.length - 1 ? "border-b border-gray-100" : ""}`}
+                    className={`hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors cursor-pointer ${i < products.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}`}
                     onClick={() => navigate(`/products/${encodedId}`)}
                   >
                     <td className="px-4 py-3">
@@ -90,26 +90,26 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
                         <img
                           src={product.featuredImageUrl}
                           alt={product.title}
-                          className="w-10 h-10 object-cover rounded-lg border border-gray-100"
+                          className="w-10 h-10 object-cover rounded-lg border border-gray-100 dark:border-gray-700"
                         />
                       ) : (
-                        <div className="w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center">
-                          <span className="text-gray-300 text-lg">&#9974;</span>
+                        <div className="w-10 h-10 rounded-lg bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 flex items-center justify-center">
+                          <span className="text-gray-300 dark:text-gray-500 text-lg">&#9974;</span>
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-800">{product.title}</td>
-                    <td className="px-4 py-3 text-gray-600">{product.vendor || "—"}</td>
+                    <td className="px-4 py-3 font-medium text-gray-800 dark:text-gray-100">{product.title}</td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{product.vendor || "—"}</td>
                     <td className="px-4 py-3">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusStyles[product.status] ?? "bg-gray-100 text-gray-500"}`}>
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusStyles[product.status] ?? "bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"}`}>
                         {statusLabels[product.status] ?? product.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right text-gray-600">{product.totalVariants}</td>
+                    <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-300">{product.totalVariants}</td>
                     <td className="px-4 py-3 text-right">
                       <Link
                         to={`/products/${encodedId}`}
-                        className="text-blue-600 hover:text-blue-800 transition-colors"
+                        className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
                         onClick={(e) => e.stopPropagation()}
                       >
                         Edit
@@ -129,7 +129,7 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
             {cursor && (
               <Link
                 to={`/products?${q ? `q=${encodeURIComponent(q)}&` : ""}cursor=`}
-                className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
+                className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
               >
                 ← Previous
               </Link>
@@ -139,7 +139,7 @@ export default function ProductsPage({ loaderData }: Route.ComponentProps) {
             {hasNextPage && endCursor && (
               <Link
                 to={`/products?${q ? `q=${encodeURIComponent(q)}&` : ""}cursor=${encodeURIComponent(endCursor)}`}
-                className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
+                className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
               >
                 Next →
               </Link>

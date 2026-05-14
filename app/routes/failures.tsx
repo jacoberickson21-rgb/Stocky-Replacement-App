@@ -99,8 +99,8 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
   return (
     <main className="p-8 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-semibold text-gray-800">Failure Log</h2>
-        <span className="text-sm text-gray-400">
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Failure Log</h2>
+        <span className="text-sm text-gray-400 dark:text-gray-500">
           {failures.length} {failures.length === 1 ? "entry" : "entries"}
         </span>
       </div>
@@ -111,7 +111,7 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
           name="status"
           defaultValue={statusFilter}
           onChange={(e) => e.currentTarget.form?.submit()}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
         >
           <option value="unresolved">Unresolved</option>
           <option value="resolved">Resolved</option>
@@ -121,7 +121,7 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
           name="operation"
           defaultValue={operationFilter}
           onChange={(e) => e.currentTarget.form?.submit()}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
         >
           <option value="">All Operations</option>
           {Object.entries(OPERATIONS).map(([key, label]) => (
@@ -132,30 +132,30 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
         </select>
         <button
           type="submit"
-          className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-4 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+          className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-4 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
         >
           Apply
         </button>
       </form>
 
       {failures.length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 px-6 py-12 text-center">
-          <p className="text-sm text-gray-400">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-12 text-center">
+          <p className="text-sm text-gray-400 dark:text-gray-500">
             {statusFilter === "unresolved"
               ? "No unresolved failures. All operations are running clean."
               : "No failures match the selected filters."}
           </p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-6 py-3 font-medium text-gray-600 w-36">Operation</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Item</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600">Error</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 w-40">When</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 w-32">Status</th>
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">Operation</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Item</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Error</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-40">When</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Status</th>
                 <th className="px-6 py-3 w-36"></th>
               </tr>
             </thead>
@@ -164,24 +164,24 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
                 <tr
                   key={f.id}
                   className={[
-                    i < failures.length - 1 ? "border-b border-gray-100" : "",
-                    !f.resolvedAt ? "bg-red-50" : "",
+                    i < failures.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : "",
+                    !f.resolvedAt ? "bg-red-50 dark:bg-red-950/20" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                 >
                   <td className="px-6 py-4">
-                    <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 whitespace-nowrap">
+                    <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 whitespace-nowrap">
                       {OPERATIONS[f.operation] ?? f.operation}
                     </span>
                   </td>
-                  <td className="px-6 py-4 font-medium text-gray-800">{f.itemLabel}</td>
-                  <td className="px-6 py-4 text-gray-500 max-w-sm">
+                  <td className="px-6 py-4 font-medium text-gray-800 dark:text-gray-100">{f.itemLabel}</td>
+                  <td className="px-6 py-4 text-gray-500 dark:text-gray-400 max-w-sm">
                     <span className="block whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
                       {f.errorMessage}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-gray-500 whitespace-nowrap">
+                  <td className="px-6 py-4 text-gray-500 dark:text-gray-400 whitespace-nowrap">
                     {new Date(f.occurredAt).toLocaleString("en-US", {
                       month: "short",
                       day: "numeric",
@@ -193,17 +193,17 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
                   <td className="px-6 py-4">
                     {f.resolvedAt ? (
                       <div>
-                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300">
                           Resolved
                         </span>
                         {f.resolvedByName && (
-                          <p className="text-xs text-gray-400 mt-0.5">
+                          <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
                             by {f.resolvedByName}
                           </p>
                         )}
                       </div>
                     ) : (
-                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
+                      <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300">
                         Pending
                       </span>
                     )}
@@ -215,7 +215,7 @@ export default function FailuresPage({ loaderData }: Route.ComponentProps) {
                         <input type="hidden" name="id" value={String(f.id)} />
                         <button
                           type="submit"
-                          className="text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors"
+                          className="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition-colors"
                         >
                           Mark Resolved
                         </button>

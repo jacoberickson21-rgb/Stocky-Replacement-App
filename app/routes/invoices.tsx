@@ -77,9 +77,9 @@ const STATUS_LABELS: Record<InvoiceStatus, string> = {
 };
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
-  ORDERED: "bg-blue-100 text-blue-700",
-  RECEIVED: "bg-green-100 text-green-700",
-  PAID: "bg-gray-100 text-gray-600",
+  ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
+  PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
@@ -127,138 +127,138 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold text-gray-800">Purchase Orders</h2>
-          <button
-            type="button"
-            onClick={() => navigate("/invoices/upload")}
-            className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Purchase Orders</h2>
+        <button
+          type="button"
+          onClick={() => navigate("/invoices/upload")}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+        >
+          Upload Invoice
+        </button>
+      </div>
+
+      <div className="flex items-center gap-3 mb-6">
+        <select
+          value={vendorParam ?? ""}
+          onChange={handleVendorChange}
+          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <option value="">All Vendors</option>
+          {vendors.map((v) => (
+            <option key={v.id} value={String(v.id)}>
+              {v.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={statusParam ?? ""}
+          onChange={handleStatusChange}
+          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <option value="">All Statuses</option>
+          <option value="ORDERED">Ordered</option>
+          <option value="RECEIVED">Received</option>
+          <option value="PAID">Paid</option>
+        </select>
+
+        <input
+          type="text"
+          placeholder="Search invoice # or vendor..."
+          value={searchValue}
+          onChange={handleSearchChange}
+          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64"
+        />
+
+        {hasFilters && (
+          <Link
+            to="/invoices"
+            onClick={() => setSearchValue("")}
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
           >
-            Upload Invoice
-          </button>
-        </div>
-
-        <div className="flex items-center gap-3 mb-6">
-          <select
-            value={vendorParam ?? ""}
-            onChange={handleVendorChange}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All Vendors</option>
-            {vendors.map((v) => (
-              <option key={v.id} value={String(v.id)}>
-                {v.name}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={statusParam ?? ""}
-            onChange={handleStatusChange}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All Statuses</option>
-            <option value="ORDERED">Ordered</option>
-            <option value="RECEIVED">Received</option>
-            <option value="PAID">Paid</option>
-          </select>
-
-          <input
-            type="text"
-            placeholder="Search invoice # or vendor..."
-            value={searchValue}
-            onChange={handleSearchChange}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
-          />
-
-          {hasFilters && (
-            <Link
-              to="/invoices"
-              onClick={() => setSearchValue("")}
-              className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
-            >
-              Clear
-            </Link>
-          )}
-        </div>
-
-        {invoices.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <p className="text-sm text-gray-400">No invoices match your filters.</p>
-          </div>
-        ) : (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Invoice #</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Vendor</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Status</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600">Due Date</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600">Total</th>
-                  <th className="text-center px-6 py-3 font-medium text-gray-600">Paid?</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoices.map((invoice, i) => (
-                  <tr
-                    key={invoice.id}
-                    className={i < invoices.length - 1 ? "border-b border-gray-100" : ""}
-                  >
-                    <td className="px-6 py-4 font-medium text-gray-800">
-                      <Link
-                        to={`/invoices/${invoice.id}`}
-                        className="text-blue-600 hover:text-blue-800 transition-colors"
-                      >
-                        {invoice.invoiceNumber}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4 text-gray-600">{invoice.vendor.name}</td>
-                    <td className="px-6 py-4">
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_BADGE[invoice.status]}`}
-                      >
-                        {STATUS_LABELS[invoice.status]}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-gray-600">
-                      {invoice.dueDate
-                        ? new Date(invoice.dueDate).toLocaleDateString()
-                        : "—"}
-                    </td>
-                    <td className="px-6 py-4 text-right text-gray-800 font-medium">
-                      ${Number(invoice.total).toFixed(2)}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {invoice.status === "PAID" ? (
-                        <Form method="post">
-                          <input type="hidden" name="invoiceId" value={invoice.id} />
-                          <input type="hidden" name="intent" value="unmarkPaid" />
-                          <input
-                            type="checkbox"
-                            defaultChecked
-                            onChange={(e) => { if (!e.target.checked) e.target.form?.requestSubmit(); }}
-                            className="w-4 h-4 accent-green-600 cursor-pointer"
-                          />
-                        </Form>
-                      ) : invoice.status === "RECEIVED" ? (
-                        <Form method="post">
-                          <input type="hidden" name="invoiceId" value={invoice.id} />
-                          <input type="hidden" name="intent" value="markPaid" />
-                          <input
-                            type="checkbox"
-                            onChange={(e) => { if (e.target.checked) e.target.form?.requestSubmit(); }}
-                            className="w-4 h-4 accent-green-600 cursor-pointer"
-                          />
-                        </Form>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+            Clear
+          </Link>
         )}
-      </main>
+      </div>
+
+      {invoices.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <p className="text-sm text-gray-400 dark:text-gray-500">No invoices match your filters.</p>
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Due Date</th>
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Total</th>
+                <th className="text-center px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Paid?</th>
+              </tr>
+            </thead>
+            <tbody>
+              {invoices.map((invoice, i) => (
+                <tr
+                  key={invoice.id}
+                  className={i < invoices.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
+                >
+                  <td className="px-6 py-4 font-medium text-gray-800 dark:text-gray-100">
+                    <Link
+                      to={`/invoices/${invoice.id}`}
+                      className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
+                    >
+                      {invoice.invoiceNumber}
+                    </Link>
+                  </td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{invoice.vendor.name}</td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_BADGE[invoice.status]}`}
+                    >
+                      {STATUS_LABELS[invoice.status]}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
+                    {invoice.dueDate
+                      ? new Date(invoice.dueDate).toLocaleDateString()
+                      : "—"}
+                  </td>
+                  <td className="px-6 py-4 text-right text-gray-800 dark:text-gray-100 font-medium">
+                    ${Number(invoice.total).toFixed(2)}
+                  </td>
+                  <td className="px-6 py-4 text-center">
+                    {invoice.status === "PAID" ? (
+                      <Form method="post">
+                        <input type="hidden" name="invoiceId" value={invoice.id} />
+                        <input type="hidden" name="intent" value="unmarkPaid" />
+                        <input
+                          type="checkbox"
+                          defaultChecked
+                          onChange={(e) => { if (!e.target.checked) e.target.form?.requestSubmit(); }}
+                          className="w-4 h-4 accent-green-600 cursor-pointer"
+                        />
+                      </Form>
+                    ) : invoice.status === "RECEIVED" ? (
+                      <Form method="post">
+                        <input type="hidden" name="invoiceId" value={invoice.id} />
+                        <input type="hidden" name="intent" value="markPaid" />
+                        <input
+                          type="checkbox"
+                          onChange={(e) => { if (e.target.checked) e.target.form?.requestSubmit(); }}
+                          className="w-4 h-4 accent-green-600 cursor-pointer"
+                        />
+                      </Form>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </main>
   );
 }

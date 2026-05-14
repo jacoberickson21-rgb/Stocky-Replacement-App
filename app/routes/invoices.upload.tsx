@@ -535,22 +535,22 @@ function PaymentTermsFields({
   return (
     <>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Invoice Date</label>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Invoice Date</label>
         <input
           name="invoiceDate"
           type="date"
           value={invoiceDate}
           onChange={(e) => setInvoiceDate(e.target.value)}
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
         />
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Payment Terms</label>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Terms</label>
         <select
           name="paymentTerms"
           value={paymentTerms}
           onChange={(e) => setPaymentTerms(e.target.value)}
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
         >
           <option value="">— None —</option>
           <option value="NET30">Net 30</option>
@@ -561,7 +561,7 @@ function PaymentTermsFields({
         </select>
       </div>
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Due Date {dueDateFlagged && <FlagIcon />}
         </label>
         <input
@@ -570,10 +570,10 @@ function PaymentTermsFields({
           value={dueDate}
           onChange={(e) => { if (!isAutoDate) setDueDate(e.target.value); }}
           readOnly={isAutoDate}
-          className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+          className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
             isAutoDate
-              ? "bg-gray-50 text-gray-500 cursor-default border-gray-200"
-              : "border-gray-300"
+              ? "bg-gray-50 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-default border-gray-200 dark:border-gray-600"
+              : "border-gray-300 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
           }`}
         />
       </div>
@@ -592,13 +592,13 @@ function CsvUploadForm({
     <form method="post" encType="multipart/form-data" className="space-y-5">
       <input type="hidden" name="intent" value="uploadCsv" />
       <div>
-        <label htmlFor="vendorId" className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="vendorId" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Vendor <span className="text-red-500">*</span>
         </label>
         <select
           id="vendorId"
           name="vendorId"
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
           defaultValue=""
         >
           <option value="" disabled>Select a vendor…</option>
@@ -610,14 +610,14 @@ function CsvUploadForm({
       </div>
 
       <div>
-        <label htmlFor="invoiceNumber" className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="invoiceNumber" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Invoice Number <span className="text-red-500">*</span>
         </label>
         <input
           id="invoiceNumber"
           name="invoiceNumber"
           type="text"
-          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
         />
         {errors.invoiceNumber && <p className="mt-1 text-xs text-red-600">{errors.invoiceNumber}</p>}
       </div>
@@ -627,7 +627,7 @@ function CsvUploadForm({
       </div>
 
       <div>
-        <label htmlFor="csvFile" className="block text-sm font-medium text-gray-700 mb-1">
+        <label htmlFor="csvFile" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           CSV File <span className="text-red-500">*</span>
         </label>
         <input
@@ -635,10 +635,10 @@ function CsvUploadForm({
           name="csvFile"
           type="file"
           accept=".csv"
-          className="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-gray-50 hover:file:bg-gray-100 file:cursor-pointer"
+          className="w-full text-sm text-gray-600 dark:text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 dark:file:border-gray-600 file:text-sm file:font-medium file:bg-gray-50 dark:file:bg-gray-800 dark:file:text-indigo-400 hover:file:bg-gray-100 dark:hover:file:bg-gray-700 file:cursor-pointer"
         />
         {errors.csvFile && <p className="mt-1 text-xs text-red-600">{errors.csvFile}</p>}
-        <p className="mt-1.5 text-xs text-gray-400">
+        <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
           Required columns: <span className="font-mono">sku, description, quantity, unit_cost</span>
         </p>
       </div>
@@ -646,13 +646,13 @@ function CsvUploadForm({
       <div className="flex gap-3 pt-2">
         <button
           type="submit"
-          className="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
         >
           Import CSV
         </button>
         <Link
           to="/invoices"
-          className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-5 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+          className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-5 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
         >
           Cancel
         </Link>
@@ -1021,18 +1021,18 @@ function ManualEntryForm({
       <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
 
       {/* Header fields */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Vendor <span className="text-red-500">*</span>
             </label>
             <select
               name="vendorId"
               value={selectedVendorId}
               onChange={(e) => setSelectedVendorId(e.target.value)}
-              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.vendorId ? "border-red-400" : "border-gray-300"
+              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-gray-100 ${
+                errors.vendorId ? "border-red-400" : "border-gray-300 dark:border-gray-600"
               }`}
             >
               <option value="" disabled>Select a vendor…</option>
@@ -1044,14 +1044,14 @@ function ManualEntryForm({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Invoice Number <span className="text-red-500">*</span>
             </label>
             <input
               name="invoiceNumber"
               type="text"
-              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                errors.invoiceNumber ? "border-red-400" : "border-gray-300"
+              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-gray-100 ${
+                errors.invoiceNumber ? "border-red-400" : "border-gray-300 dark:border-gray-600"
               }`}
             />
             {errors.invoiceNumber && <p className="mt-1 text-xs text-red-600">{errors.invoiceNumber}</p>}
@@ -1062,8 +1062,8 @@ function ManualEntryForm({
       </div>
 
       {/* Line items */}
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-sm font-semibold text-gray-700 mb-4">Line Items</h3>
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Line Items</h3>
 
         {/* Shopify product search */}
         {shopifyVendorNames.length > 0 && (
@@ -1071,7 +1071,7 @@ function ManualEntryForm({
             <select
               value={searchVendorFilter}
               onChange={(e) => setSearchVendorFilter(e.target.value)}
-              className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-200"
             >
               <option value="">All vendors</option>
               {shopifyVendorNames.map((name) => (
@@ -1088,19 +1088,19 @@ function ManualEntryForm({
             onFocus={() => searchQuery.length >= 2 && setShowDropdown(true)}
             onBlur={() => setTimeout(() => { setShowDropdown(false); setSelectedIds(new Set()); }, 150)}
             placeholder="Search Shopify products by name or SKU…"
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
           />
           {isSearching && (
             <span className="absolute right-3 top-2.5 text-xs text-gray-400">Searching…</span>
           )}
           {showDropdown && searchQuery.length >= 2 && (
             <div
-              className="absolute z-10 mt-1 w-full bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden"
+              className="absolute z-10 mt-1 w-full bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 shadow-lg overflow-hidden"
               onMouseDown={(e) => e.preventDefault()}
             >
               <div className="max-h-64 overflow-y-auto">
                 {searchResults.length === 0 && !isSearching && (
-                  <p className="px-4 py-3 text-sm text-gray-500">No products found.</p>
+                  <p className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No products found.</p>
                 )}
                 {searchResults.map((result) => {
                   const displayName =
@@ -1112,22 +1112,22 @@ function ManualEntryForm({
                     <div
                       key={result.variantId}
                       onClick={() => addShopifyItem(result)}
-                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
+                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0 transition-colors"
                     >
                       <input
                         type="checkbox"
                         checked={isChecked}
                         onChange={() => toggleSelection(result.variantId)}
                         onClick={(e) => e.stopPropagation()}
-                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 shrink-0 cursor-pointer"
+                        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
                       />
                       <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium text-gray-800 leading-snug">{displayName}</span>
+                        <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
                         {result.sku && (
-                          <span className="ml-2 text-gray-400 font-mono text-xs">{result.sku}</span>
+                          <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
                         )}
                       </div>
-                      <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400"}`}>
+                      <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
                         {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
                       </span>
                     </div>
@@ -1135,12 +1135,12 @@ function ManualEntryForm({
                 })}
               </div>
               {selectedIds.size > 0 && (
-                <div className="border-t border-gray-200 bg-gray-50 px-4 py-2.5 flex items-center justify-between">
-                  <span className="text-xs text-gray-500">{selectedIds.size} selected</span>
+                <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-2.5 flex items-center justify-between">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">{selectedIds.size} selected</span>
                   <button
                     type="button"
                     onClick={addSelected}
-                    className="text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
+                    className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition-colors"
                   >
                     Add selected
                   </button>
@@ -1155,18 +1155,18 @@ function ManualEntryForm({
           <button
             type="button"
             onClick={() => setShowManualAdd(true)}
-            className="mb-4 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+            className="mb-4 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors"
           >
             + Add manually
           </button>
         ) : (
-          <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <p className="text-xs font-semibold text-gray-700 mb-3">Add item manually</p>
+          <div className="mb-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+            <p className="text-xs font-semibold text-gray-700 dark:text-gray-200 mb-3">Add item manually</p>
 
             {/* Row 1: SKU + Product Title */}
             <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   SKU <span className="text-red-500">*</span>
                 </label>
                 <input
@@ -1174,11 +1174,11 @@ function ManualEntryForm({
                   value={manualSku}
                   onChange={(e) => setManualSku(e.target.value)}
                   placeholder="e.g. SIM-001"
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Product Title <span className="text-red-500">*</span>
                 </label>
                 <input
@@ -1186,7 +1186,7 @@ function ManualEntryForm({
                   value={manualDesc}
                   onChange={(e) => setManualDesc(e.target.value)}
                   placeholder="e.g. Simms Waders"
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
             </div>
@@ -1201,7 +1201,7 @@ function ManualEntryForm({
                 <button
                   type="button"
                   onClick={() => { setShowVariants(true); addOption(); }}
-                  className="mb-3 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                  className="mb-3 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors"
                 >
                   + Add variants (Size, Color, etc.)
                 </button>
@@ -1215,7 +1215,7 @@ function ManualEntryForm({
                           placeholder="Option name (e.g. Size)"
                           value={opt.name}
                           onChange={(e) => setOptionName(optIdx, e.target.value)}
-                          className="w-40 border border-gray-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-40 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                         />
                         {manualOptions.length > 1 && (
                           <button
@@ -1227,17 +1227,17 @@ function ManualEntryForm({
                           </button>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 min-h-[34px]">
+                      <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1.5 min-h-[34px]">
                         {opt.values.map((val) => (
                           <span
                             key={val}
-                            className="inline-flex items-center gap-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded-full px-2 py-0.5"
+                            className="inline-flex items-center gap-0.5 bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded-full px-2 py-0.5"
                           >
                             {val}
                             <button
                               type="button"
                               onClick={() => removeOptionValue(optIdx, val)}
-                              className="text-blue-400 hover:text-blue-700 ml-0.5 leading-none"
+                              className="text-indigo-400 dark:text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 ml-0.5 leading-none"
                             >
                               ×
                             </button>
@@ -1254,7 +1254,7 @@ function ManualEntryForm({
                               addOptionValue(optIdx);
                             }
                           }}
-                          className="flex-1 min-w-[140px] text-xs border-0 outline-none bg-transparent placeholder-gray-400 py-0.5"
+                          className="flex-1 min-w-[140px] text-xs border-0 outline-none bg-transparent placeholder-gray-400 dark:placeholder-gray-500 py-0.5 dark:text-gray-100"
                         />
                       </div>
                     </div>
@@ -1264,7 +1264,7 @@ function ManualEntryForm({
                       <button
                         type="button"
                         onClick={addOption}
-                        className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                        className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors"
                       >
                         + Add option
                       </button>
@@ -1272,21 +1272,21 @@ function ManualEntryForm({
                     <button
                       type="button"
                       onClick={() => { setShowVariants(false); setManualOptions([]); setOptionValueInputs([]); }}
-                      className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                     >
                       Remove variants
                     </button>
                   </div>
                   {combos.length > 0 && (
-                    <p className="text-xs text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                    <p className="text-xs text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2">
                       Generates <strong>{combos.length}</strong> variant{combos.length !== 1 ? "s" : ""}:{" "}
                       {combos.slice(0, 4).map((c, i) => (
                         <span key={i}>
-                          {i > 0 && <span className="text-gray-300 mx-1">·</span>}
+                          {i > 0 && <span className="text-gray-300 dark:text-gray-600 mx-1">·</span>}
                           {c.map((v) => v.value).join(" / ")}
                         </span>
                       ))}
-                      {combos.length > 4 && <span className="text-gray-400"> +{combos.length - 4} more</span>}
+                      {combos.length > 4 && <span className="text-gray-400 dark:text-gray-500"> +{combos.length - 4} more</span>}
                     </p>
                   )}
                 </div>
@@ -1296,7 +1296,7 @@ function ManualEntryForm({
             {/* Row 2: Quantity + Unit Cost */}
             <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Quantity <span className="text-red-500">*</span>
                 </label>
                 <input
@@ -1304,11 +1304,11 @@ function ManualEntryForm({
                   min="1"
                   value={manualQty}
                   onChange={(e) => setManualQty(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Unit Cost <span className="text-red-500">*</span>
                 </label>
                 <input
@@ -1317,7 +1317,7 @@ function ManualEntryForm({
                   step="0.01"
                   value={manualCost}
                   onChange={(e) => setManualCost(e.target.value)}
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
             </div>
@@ -1325,8 +1325,8 @@ function ManualEntryForm({
             {/* Retail Price + Barcode */}
             <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Retail Price <span className="text-xs text-gray-400 font-normal">(optional)</span>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Retail Price <span className="text-xs text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
                 </label>
                 <input
                   type="number"
@@ -1335,18 +1335,18 @@ function ManualEntryForm({
                   value={manualRetailPrice}
                   onChange={(e) => setManualRetailPrice(e.target.value)}
                   placeholder="0.00"
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Barcode <span className="text-xs text-gray-400 font-normal">(optional)</span>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Barcode <span className="text-xs text-gray-400 dark:text-gray-500 font-normal">(optional)</span>
                 </label>
                 <BarcodeInput
                   value={manualBarcode}
                   onChange={setManualBarcode}
                   placeholder="Scan or type barcode…"
-                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                 />
               </div>
             </div>
@@ -1362,14 +1362,14 @@ function ManualEntryForm({
                     type="button"
                     onClick={addManualItem}
                     disabled={!manualSku.trim() || !manualDesc.trim()}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
                   >
                     {comboCount > 1 ? `Add ${comboCount} variants` : "Add"}
                   </button>
                   <button
                     type="button"
                     onClick={resetManualForm}
-                    className="text-xs font-medium text-gray-600 hover:text-gray-800 rounded-lg px-3 py-1.5 border border-gray-300 hover:bg-white transition-colors"
+                    className="text-xs font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-3 py-1.5 border border-gray-300 dark:border-gray-600 hover:bg-white dark:hover:bg-gray-800 transition-colors"
                   >
                     Cancel
                   </button>
@@ -1381,28 +1381,28 @@ function ManualEntryForm({
 
         {/* Line items table */}
         {lineItems.length > 0 && (
-          <div className="border border-gray-200 rounded-xl overflow-hidden">
+          <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-4 py-2.5 font-medium text-gray-600">Product / SKU</th>
-                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 w-28">Qty</th>
-                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 w-32">Unit Cost</th>
-                  <th className="text-left px-4 py-2.5 font-medium text-gray-600 w-44">Barcode</th>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400">Product / SKU</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
+                  <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-44">Barcode</th>
                   <th className="w-10" />
                 </tr>
               </thead>
               <tbody>
                 {lineItems.map((item, idx) => (
-                  <tr key={item.key} className={idx < lineItems.length - 1 ? "border-b border-gray-100" : ""}>
+                  <tr key={item.key} className={idx < lineItems.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
                     <td className="px-4 py-2.5">
-                      <div className="font-medium text-gray-800">{item.description}</div>
+                      <div className="font-medium text-gray-800 dark:text-gray-100">{item.description}</div>
                       {item.variantTitle && (
-                        <div className="text-xs text-gray-500">{item.variantTitle}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{item.variantTitle}</div>
                       )}
-                      <div className="text-xs text-gray-400 font-mono">{item.sku}</div>
+                      <div className="text-xs text-gray-400 dark:text-gray-500 font-mono">{item.sku}</div>
                       {item.variantId === null && (
-                        <span className="mt-0.5 inline-block text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
+                        <span className="mt-0.5 inline-block text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700 rounded px-1 py-0.5">
                           Manual
                         </span>
                       )}
@@ -1413,7 +1413,7 @@ function ManualEntryForm({
                         min="1"
                         value={item.quantity}
                         onChange={(e) => updateItem(item.key, "quantity", Number(e.target.value))}
-                        className="w-20 text-right border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-20 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                       />
                     </td>
                     <td className="px-4 py-2.5 text-right">
@@ -1423,7 +1423,7 @@ function ManualEntryForm({
                         step="0.01"
                         value={item.unitCost}
                         onChange={(e) => updateItem(item.key, "unitCost", Number(e.target.value))}
-                        className="w-24 text-right border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                       />
                       {item.inventoryItemId !== null &&
                         item.unitCost !== (item.shopifyCost ?? 0) && (
@@ -1432,9 +1432,9 @@ function ManualEntryForm({
                               type="checkbox"
                               checked={item.updateShopifyCost}
                               onChange={() => toggleUpdateShopifyCost(item.key)}
-                              className="h-3 w-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              className="h-3 w-3 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500"
                             />
-                            <span className="text-xs text-gray-500 whitespace-nowrap">Update Shopify cost</span>
+                            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">Update Shopify cost</span>
                           </label>
                         )}
                     </td>
@@ -1443,7 +1443,7 @@ function ManualEntryForm({
                         value={item.barcode}
                         onChange={(v) => updateItemBarcode(item.key, v)}
                         placeholder="Scan or type…"
-                        inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                       />
                     </td>
                     <td className="px-4 py-2.5 text-center">
@@ -1473,13 +1473,13 @@ function ManualEntryForm({
         <button
           type="submit"
           disabled={isSubmitting}
-          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
         >
           {isSubmitting ? "Creating…" : "Create Invoice"}
         </button>
         <Link
           to="/invoices"
-          className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-5 py-2.5 border border-gray-300 hover:bg-gray-50 transition-colors"
+          className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-5 py-2.5 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
         >
           Cancel
         </Link>
@@ -1561,13 +1561,13 @@ function LineItemsTable({
   return (
     <table className="w-full text-sm">
       <thead>
-        <tr className="bg-gray-50 border-b border-gray-200">
-          <th className="text-left px-4 py-3 font-medium text-gray-600">SKU</th>
-          <th className="text-left px-4 py-3 font-medium text-gray-600">Description</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 w-28">Qty</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Unit Cost</th>
-          <th className="text-left px-4 py-3 font-medium text-gray-600 w-44">Barcode</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 w-32">Total</th>
+        <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+          <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
+          <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
+          <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-44">Barcode</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Total</th>
         </tr>
       </thead>
       <tbody>
@@ -1576,7 +1576,7 @@ function LineItemsTable({
           const cost = Number(values[i]?.unitCost ?? item.unitCost.value) || 0;
           const barcode = values[i]?.barcode ?? "";
           return (
-            <tr key={i} className="border-b border-gray-100">
+            <tr key={i} className="border-b border-gray-100 dark:border-gray-700">
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1">
                   {item.sku.flagged && <FlagIcon />}
@@ -1584,7 +1584,7 @@ function LineItemsTable({
                     name={`sku_${i}`}
                     type="text"
                     defaultValue={item.sku.value}
-                    className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.sku.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${item.sku.flagged ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"}`}
                   />
                 </div>
               </td>
@@ -1595,7 +1595,7 @@ function LineItemsTable({
                     name={`description_${i}`}
                     type="text"
                     defaultValue={item.description.value}
-                    className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.description.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                    className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${item.description.flagged ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"}`}
                   />
                 </div>
               </td>
@@ -1611,7 +1611,7 @@ function LineItemsTable({
                       const n = Number(e.target.value);
                       setValues((prev) => prev.map((v, j) => (j === i ? { ...v, qty: n } : v)));
                     }}
-                    className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.quantity.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                    className={`w-24 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${item.quantity.flagged ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"}`}
                   />
                 </div>
               </td>
@@ -1628,7 +1628,7 @@ function LineItemsTable({
                       const n = Number(e.target.value);
                       setValues((prev) => prev.map((v, j) => (j === i ? { ...v, unitCost: n } : v)));
                     }}
-                    className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                    className={`w-28 text-right border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${item.unitCost.flagged ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"}`}
                   />
                 </div>
               </td>
@@ -1638,10 +1638,10 @@ function LineItemsTable({
                   value={barcode}
                   onChange={(v) => setValues((prev) => prev.map((val, j) => (j === i ? { ...val, barcode: v } : val)))}
                   placeholder="Scan or type…"
-                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                 />
               </td>
-              <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+              <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-400 tabular-nums">
                 ${(qty * cost).toFixed(2)}
               </td>
             </tr>
@@ -1650,15 +1650,15 @@ function LineItemsTable({
         {addedItems.map((item, j) => {
           const idx = items.length + j;
           return (
-            <tr key={item.key} className="border-b border-gray-100 bg-blue-50/30">
+            <tr key={item.key} className="border-b border-gray-100 dark:border-gray-700 bg-indigo-50/30 dark:bg-indigo-950/20">
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-blue-600 bg-blue-100 border border-blue-200 rounded px-1 py-0.5 shrink-0">Added</span>
+                  <span className="text-xs text-indigo-600 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-700 rounded px-1 py-0.5 shrink-0">Added</span>
                   <input
                     name={`sku_${idx}`}
                     type="text"
                     defaultValue={item.sku}
-                    className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                   />
                 </div>
               </td>
@@ -1667,7 +1667,7 @@ function LineItemsTable({
                   name={`description_${idx}`}
                   type="text"
                   defaultValue={item.description}
-                  className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                 />
               </td>
               <td className="px-4 py-3">
@@ -1677,7 +1677,7 @@ function LineItemsTable({
                   min="1"
                   value={item.quantity}
                   onChange={(e) => onUpdateAdded?.(item.key, "quantity", Number(e.target.value))}
-                  className="w-24 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                 />
               </td>
               <td className="px-4 py-3">
@@ -1688,7 +1688,7 @@ function LineItemsTable({
                   step="0.01"
                   value={item.unitCost}
                   onChange={(e) => onUpdateAdded?.(item.key, "unitCost", Number(e.target.value))}
-                  className="w-28 text-right border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-28 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                 />
               </td>
               <td className="px-4 py-3">
@@ -1697,10 +1697,10 @@ function LineItemsTable({
                   value={item.barcode}
                   onChange={(v) => onUpdateAdded?.(item.key, "barcode", v)}
                   placeholder="Scan or type…"
-                  inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                 />
               </td>
-              <td className="px-4 py-3 text-right text-gray-600 tabular-nums">
+              <td className="px-4 py-3 text-right text-gray-600 dark:text-gray-400 tabular-nums">
                 <div className="flex items-center justify-end gap-2">
                   ${(item.quantity * item.unitCost).toFixed(2)}
                   <button
@@ -1718,11 +1718,11 @@ function LineItemsTable({
         })}
       </tbody>
       <tfoot>
-        <tr className="bg-gray-100 border-t-2 border-gray-300 text-sm font-semibold">
-          <td className="px-4 py-3 text-gray-500" colSpan={2}>Totals</td>
-          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">{totalQty}</td>
-          <td className="px-4 py-3 text-right text-gray-900 tabular-nums" colSpan={2}></td>
-          <td className="px-4 py-3 text-right text-gray-900 tabular-nums">${totalAmount.toFixed(2)}</td>
+        <tr className="bg-gray-100 dark:bg-gray-800 border-t-2 border-gray-300 dark:border-gray-600 text-sm font-semibold">
+          <td className="px-4 py-3 text-gray-500 dark:text-gray-400" colSpan={2}>Totals</td>
+          <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums">{totalQty}</td>
+          <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums" colSpan={2}></td>
+          <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums">${totalAmount.toFixed(2)}</td>
         </tr>
       </tfoot>
     </table>
@@ -1830,15 +1830,15 @@ function AddItemSection({
   }
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
-      <h3 className="text-sm font-semibold text-gray-700 mb-4">Add Item</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Add Item</h3>
 
-      <div className="flex gap-1 mb-5 border-b border-gray-200">
+      <div className="flex gap-1 mb-5 border-b border-gray-200 dark:border-gray-700">
         <button
           type="button"
           onClick={() => setTab("search")}
           className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-            tab === "search" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            tab === "search" ? "border-indigo-500 text-indigo-600 dark:text-indigo-400" : "border-transparent text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Search Shopify
@@ -1847,7 +1847,7 @@ function AddItemSection({
           type="button"
           onClick={() => setTab("manual")}
           className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-            tab === "manual" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            tab === "manual" ? "border-indigo-500 text-indigo-600 dark:text-indigo-400" : "border-transparent text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
           }`}
         >
           Add manually
@@ -1861,7 +1861,7 @@ function AddItemSection({
               <select
                 value={searchVendorFilter}
                 onChange={(e) => setSearchVendorFilter(e.target.value)}
-                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                className="border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-200"
               >
                 <option value="">All vendors</option>
                 {shopifyVendorNames.map((name) => (
@@ -1878,19 +1878,19 @@ function AddItemSection({
               onFocus={() => searchQuery.length >= 2 && setShowDropdown(true)}
               onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
               placeholder="Search Shopify products by name or SKU…"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
             />
             {isSearching && (
               <span className="absolute right-3 top-2.5 text-xs text-gray-400">Searching…</span>
             )}
             {showDropdown && searchQuery.length >= 2 && (
               <div
-                className="absolute z-10 mt-1 w-full bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden"
+                className="absolute z-10 mt-1 w-full bg-white dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-700 shadow-lg overflow-hidden"
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <div className="max-h-56 overflow-y-auto">
                   {searchResults.length === 0 && !isSearching && (
-                    <p className="px-4 py-3 text-sm text-gray-500">No products found.</p>
+                    <p className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No products found.</p>
                   )}
                   {searchResults.map((result) => {
                     const displayName =
@@ -1901,15 +1901,15 @@ function AddItemSection({
                       <div
                         key={result.variantId}
                         onClick={() => addFromSearch(result)}
-                        className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
+                        className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0 transition-colors"
                       >
                         <div className="flex-1 min-w-0">
-                          <span className="text-sm font-medium text-gray-800 leading-snug">{displayName}</span>
+                          <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
                           {result.sku && (
-                            <span className="ml-2 text-gray-400 font-mono text-xs">{result.sku}</span>
+                            <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
                           )}
                         </div>
-                        <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400"}`}>
+                        <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
                           {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
                         </span>
                       </div>
@@ -1926,56 +1926,56 @@ function AddItemSection({
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">SKU <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU <span className="text-red-500">*</span></label>
               <input
                 type="text"
                 value={manualSku}
                 onChange={(e) => setManualSku(e.target.value)}
                 placeholder="e.g. SIM-001"
-                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Description <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Description <span className="text-red-500">*</span></label>
               <input
                 type="text"
                 value={manualDesc}
                 onChange={(e) => setManualDesc(e.target.value)}
                 placeholder="e.g. Simms Waders"
-                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Qty <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Qty <span className="text-red-500">*</span></label>
               <input
                 type="number"
                 min="1"
                 value={manualQty}
                 onChange={(e) => setManualQty(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Unit Cost <span className="text-red-500">*</span></label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Unit Cost <span className="text-red-500">*</span></label>
               <input
                 type="number"
                 min="0"
                 step="0.01"
                 value={manualCost}
                 onChange={(e) => setManualCost(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Barcode</label>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
               <BarcodeInput
                 value={manualBarcode}
                 onChange={setManualBarcode}
                 onCommit={() => addManually()}
                 placeholder="Scan or type…"
-                inputClassName="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               />
             </div>
           </div>
@@ -1983,7 +1983,7 @@ function AddItemSection({
             type="button"
             onClick={addManually}
             disabled={!manualSku.trim() || !manualDesc.trim()}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
           >
             Add
           </button>
@@ -2101,21 +2101,21 @@ function ReviewScreen({
   return (
     <div className="max-w-5xl mx-auto">
       <div className="flex items-center gap-3 mb-6">
-        <Link to="/invoices" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
+        <Link to="/invoices" className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors">
           ← Purchase Orders
         </Link>
-        <span className="text-gray-300">/</span>
-        <Link to="/invoices/upload" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <Link to="/invoices/upload" className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors">
           Upload Invoice
         </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">Review Extraction</h2>
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Review Extraction</h2>
       </div>
 
       {showMapping && (
-        <div className="mb-6 bg-amber-50 border border-amber-200 rounded-xl p-5">
-          <p className="text-sm font-semibold text-amber-800 mb-1">Column mapping required</p>
-          <p className="text-xs text-amber-700 mb-4">
+        <div className="mb-6 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl p-5">
+          <p className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-1">Column mapping required</p>
+          <p className="text-xs text-amber-700 dark:text-amber-400 mb-4">
             Low-confidence extraction — tell us which PDF columns map to each field. The line
             items table will update live. This mapping is saved automatically when you confirm.
           </p>
@@ -2129,11 +2129,11 @@ function ReviewScreen({
               ] as { label: string; value: string; onChange: (v: string) => void }[]
             ).map(({ label, value, onChange }) => (
               <div key={label}>
-                <label className="block text-xs font-medium text-amber-800 mb-1">{label}</label>
+                <label className="block text-xs font-medium text-amber-800 dark:text-amber-300 mb-1">{label}</label>
                 <select
                   value={value}
                   onChange={(e) => onChange(e.target.value)}
-                  className="w-full border border-amber-300 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  className="w-full border border-amber-300 dark:border-amber-700 rounded-lg px-2 py-1.5 text-sm bg-white dark:bg-amber-950/40 dark:text-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400"
                 >
                   <option value="">— None —</option>
                   {rawCols.map((col) => (
@@ -2147,10 +2147,10 @@ function ReviewScreen({
       )}
 
       {flagCount > 0 && !showMapping && (
-        <div className="mb-6 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+        <div className="mb-6 flex items-center gap-2 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
           <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold">!</span>
           <strong>{flagCount} field{flagCount !== 1 ? "s" : ""} flagged for review.</strong>
-          <span className="text-amber-700">Low-confidence extractions are highlighted. Please verify before saving.</span>
+          <span className="text-amber-700 dark:text-amber-400">Low-confidence extractions are highlighted. Please verify before saving.</span>
         </div>
       )}
 
@@ -2169,17 +2169,17 @@ function ReviewScreen({
         )}
 
         {/* Header fields */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 mb-6">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Vendor <span className="text-red-500">*</span>
                 {extraction.vendorName.flagged && <FlagIcon />}
                 {!extraction.vendorName.flagged && <ConfidencePct value={extraction.vendorName.confidence} />}
               </label>
 
               {vendorNotMatched && !showCreateForm && (
-                <p className="mb-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                <p className="mb-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700 rounded px-2 py-1">
                   "{extraction.vendorName.value}" not found — select or create below.
                 </p>
               )}
@@ -2188,8 +2188,8 @@ function ReviewScreen({
                 name="vendorId"
                 value={selectedVendorId}
                 onChange={(e) => setSelectedVendorId(e.target.value)}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  vendorNotMatched && !showCreateForm ? "border-amber-400 bg-amber-50" : "border-gray-300"
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${
+                  vendorNotMatched && !showCreateForm ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"
                 }`}
               >
                 <option value="" disabled>Select a vendor…</option>
@@ -2202,22 +2202,22 @@ function ReviewScreen({
                 <button
                   type="button"
                   onClick={() => setShowCreateForm(true)}
-                  className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                  className="mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors"
                 >
                   + Create new vendor
                 </button>
               )}
 
               {showCreateForm && (
-                <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
-                  <p className="text-xs font-medium text-gray-700 mb-2">New Vendor Name</p>
+                <div className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+                  <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">New Vendor Name</p>
                   <div className="flex flex-col gap-2">
                     <input
                       type="text"
                       value={newVendorName}
                       onChange={(e) => setNewVendorName(e.target.value)}
                       placeholder="e.g. Simms Fishing"
-                      className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
                       autoFocus
                     />
                     {createError && (
@@ -2233,14 +2233,14 @@ function ReviewScreen({
                           fd.append("vendorName", newVendorName.trim());
                           fetcher.submit(fd, { method: "post" });
                         }}
-                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg px-3 py-1.5 transition-colors"
                       >
                         {isCreating ? "Creating…" : "Create"}
                       </button>
                       <button
                         type="button"
                         onClick={() => setShowCreateForm(false)}
-                        className="text-xs font-medium text-gray-600 hover:text-gray-800 rounded-lg px-3 py-1.5 border border-gray-300 hover:bg-white transition-colors"
+                        className="text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 rounded-lg px-3 py-1.5 border border-gray-300 dark:border-gray-600 hover:bg-white dark:hover:bg-gray-700 transition-colors"
                       >
                         Cancel
                       </button>
@@ -2251,7 +2251,7 @@ function ReviewScreen({
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Invoice Number <span className="text-red-500">*</span>
                 {extraction.invoiceNumber.flagged ? <FlagIcon /> : <ConfidencePct value={extraction.invoiceNumber.confidence} />}
               </label>
@@ -2259,7 +2259,7 @@ function ReviewScreen({
                 name="invoiceNumber"
                 type="text"
                 defaultValue={extraction.invoiceNumber.value}
-                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${extraction.invoiceNumber.flagged ? "border-amber-400 bg-amber-50" : "border-gray-300"}`}
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 ${extraction.invoiceNumber.flagged ? "border-amber-400 bg-amber-50 dark:border-amber-500 dark:bg-amber-950/30" : "border-gray-300 dark:border-gray-600 dark:bg-gray-800"}`}
               />
             </div>
 
@@ -2272,7 +2272,7 @@ function ReviewScreen({
         </div>
 
         {/* Line items — key forces remount (and state reset) when column mapping changes */}
-        <div key={mappingVersion} className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+        <div key={mappingVersion} className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden mb-6">
           <LineItemsTable
             items={activeLineItems}
             addedItems={addedItems}
@@ -2291,13 +2291,13 @@ function ReviewScreen({
           <button
             type="submit"
             disabled={isSubmitting}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
           >
             {isSubmitting ? "Saving…" : "Confirm & Save"}
           </button>
           <Link
             to="/invoices/upload"
-            className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-5 py-2.5 border border-gray-300 hover:bg-gray-50 transition-colors"
+            className="text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 rounded-lg px-5 py-2.5 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
           >
             Start Over
           </Link>
@@ -2337,11 +2337,11 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
   return (
     <main className={`p-8 mx-auto ${uploadMode === "manual" ? "max-w-5xl" : "max-w-xl"}`}>
       <div className="flex items-center gap-3 mb-6">
-        <Link to="/invoices" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
+        <Link to="/invoices" className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors">
           ← Purchase Orders
         </Link>
-        <span className="text-gray-300">/</span>
-        <h2 className="text-xl font-semibold text-gray-800">Upload Invoice</h2>
+        <span className="text-gray-300 dark:text-gray-600">/</span>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Upload Invoice</h2>
       </div>
 
       {/* Upload type selector */}
@@ -2351,14 +2351,14 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
           onClick={() => setUploadMode("csv")}
           className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 px-6 py-8 transition-colors ${
             uploadMode === "csv"
-              ? "border-blue-500 bg-blue-50 cursor-default"
-              : "border-gray-200 bg-white hover:border-gray-300 cursor-pointer"
+              ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-600 cursor-default"
+              : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer"
           }`}
         >
-          <svg className={`w-8 h-8 ${uploadMode === "csv" ? "text-blue-600" : "text-gray-400"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className={`w-8 h-8 ${uploadMode === "csv" ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          <span className={`text-sm font-medium ${uploadMode === "csv" ? "text-blue-700" : "text-gray-600"}`}>Upload CSV</span>
+          <span className={`text-sm font-medium ${uploadMode === "csv" ? "text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400"}`}>Upload CSV</span>
         </button>
 
         <button
@@ -2366,14 +2366,14 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
           onClick={() => setUploadMode("pdf")}
           className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 px-6 py-8 transition-colors ${
             uploadMode === "pdf"
-              ? "border-blue-500 bg-blue-50 cursor-default"
-              : "border-gray-200 bg-white hover:border-gray-300 cursor-pointer"
+              ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-600 cursor-default"
+              : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer"
           }`}
         >
-          <svg className={`w-8 h-8 ${uploadMode === "pdf" ? "text-blue-600" : "text-gray-400"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className={`w-8 h-8 ${uploadMode === "pdf" ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
           </svg>
-          <span className={`text-sm font-medium ${uploadMode === "pdf" ? "text-blue-700" : "text-gray-600"}`}>Upload PDF</span>
+          <span className={`text-sm font-medium ${uploadMode === "pdf" ? "text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400"}`}>Upload PDF</span>
         </button>
 
         <button
@@ -2381,14 +2381,14 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
           onClick={() => setUploadMode("manual")}
           className={`flex flex-col items-center justify-center gap-2 rounded-2xl border-2 px-6 py-8 transition-colors ${
             uploadMode === "manual"
-              ? "border-blue-500 bg-blue-50 cursor-default"
-              : "border-gray-200 bg-white hover:border-gray-300 cursor-pointer"
+              ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-600 cursor-default"
+              : "border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer"
           }`}
         >
-          <svg className={`w-8 h-8 ${uploadMode === "manual" ? "text-blue-600" : "text-gray-400"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className={`w-8 h-8 ${uploadMode === "manual" ? "text-indigo-600 dark:text-indigo-400" : "text-gray-400 dark:text-gray-500"}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
-          <span className={`text-sm font-medium ${uploadMode === "manual" ? "text-blue-700" : "text-gray-600"}`}>Manual Entry</span>
+          <span className={`text-sm font-medium ${uploadMode === "manual" ? "text-indigo-700 dark:text-indigo-400" : "text-gray-600 dark:text-gray-400"}`}>Manual Entry</span>
         </button>
       </div>
 
@@ -2396,9 +2396,9 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
         <ManualEntryForm vendors={vendors} errors={manualErrors} />
       )}
 
-      {uploadMode !== "manual" && <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+      {uploadMode !== "manual" && <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">
         {general && (
-          <p className="mb-5 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+          <p className="mb-5 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg px-4 py-2">
             {general}
           </p>
         )}
@@ -2411,7 +2411,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
           <form method="post" encType="multipart/form-data" className="space-y-5">
             <input type="hidden" name="intent" value="extractPdf" />
             <div>
-              <label htmlFor="pdfFile" className="block text-sm font-medium text-gray-700 mb-1">
+              <label htmlFor="pdfFile" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 PDF Invoice <span className="text-red-500">*</span>
               </label>
               <input
@@ -2419,10 +2419,10 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
                 name="pdfFile"
                 type="file"
                 accept=".pdf"
-                className="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 file:text-sm file:font-medium file:bg-gray-50 hover:file:bg-gray-100 file:cursor-pointer"
+                className="w-full text-sm text-gray-600 dark:text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 dark:file:border-gray-600 file:text-sm file:font-medium file:bg-gray-50 dark:file:bg-gray-800 dark:file:text-indigo-400 hover:file:bg-gray-100 dark:hover:file:bg-gray-700 file:cursor-pointer"
               />
               {errors.pdfFile && <p className="mt-1 text-xs text-red-600">{errors.pdfFile}</p>}
-              <p className="mt-1.5 text-xs text-gray-400">
+              <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
                 Extracts vendor, invoice number, date, due date, and all line items automatically.
               </p>
             </div>
@@ -2431,13 +2431,13 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
               <button
                 type="submit"
                 disabled={isExtracting}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
               >
                 {isExtracting ? "Extracting…" : "Extract Invoice"}
               </button>
               <Link
                 to="/invoices"
-                className="text-sm font-medium text-gray-600 hover:text-gray-800 rounded-lg px-5 py-2 border border-gray-300 hover:bg-gray-50 transition-colors"
+                className="text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 rounded-lg px-5 py-2 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
               >
                 Cancel
               </Link>
