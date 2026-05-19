@@ -100,6 +100,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     `,
   ]);
 
+  console.log(`[spend-analysis] vendorId: "${vendorId}", status: "${statusFilter}", range: ${start.toISOString()} → ${end.toISOString()}`);
+  console.log(`[spend-analysis] spendOverTime rows: ${spendOverTime.length}, spendByVendor rows: ${spendByVendor.length}, invoices: ${invoices.length}`);
+
   const totalSpend = invoices
     .filter((r) => ["RECEIVED", "PAID"].includes(r.status))
     .reduce((s, r) => s + r.total, 0);

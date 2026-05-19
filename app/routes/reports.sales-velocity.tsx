@@ -1,5 +1,5 @@
 import { Link, useSearchParams, Await } from "react-router";
-import { useState, useEffect, Suspense } from "react";
+import { useState, Suspense } from "react";
 import type { Route } from "./+types/reports.sales-velocity";
 import { requireUserId } from "../session.server";
 import { getDb } from "../db.server";
@@ -7,7 +7,7 @@ import {
   getSalesVelocityData,
   getProductTypes,
 } from "../services/shopify.server";
-import type { SalesVelocityVariant } from "../services/shopify.server";
+import type { SalesVelocityVariant, SalesVelocityResult } from "../services/shopify.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
@@ -34,8 +34,15 @@ export async function loader({ request }: Route.LoaderArgs) {
     getProductTypes(),
   ]);
 
-  // Slow: Shopify orders call is deferred — page renders while this resolves
-  const velocityData = getSalesVelocityData(start, end);
+  // Slow: Shopify orders call is deferred — page renders while this resolves.
+  // Race against a 20s timeout; if Shopify is too slow return empty capped result.
+  const timeout = new Promise<SalesVelocityResult>((resolve) =>
+    setTimeout(() => resolve({ data: [], capped: true }), 20_000)
+  );
+  const velocityData: Promise<SalesVelocityResult> = Promise.race([
+    getSalesVelocityData(start, end),
+    timeout,
+  ]);
 
   return {
     vendors,
@@ -61,6 +68,17 @@ function daysBadgeBg(days: number | null): string {
   if (days < 14) return "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300";
   if (days < 30) return "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-300";
   return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300";
+}
+
+function CappedBanner() {
+  return (
+    <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-300 text-sm">
+      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      </svg>
+      Results limited to the most recent 500 orders (10 pages). Narrow your date range for a complete view.
+    </div>
+  );
 }
 
 function LoadingSpinner() {
@@ -89,11 +107,13 @@ function LoadingSpinner() {
 
 function VelocityTable({
   data,
+  capped,
   dayRange,
   vendorFilter,
   productTypeFilter,
 }: {
   data: SalesVelocityVariant[];
+  capped: boolean;
   dayRange: number;
   vendorFilter: string;
   productTypeFilter: string;
@@ -120,51 +140,57 @@ function VelocityTable({
 
   if (rows.length === 0) {
     return (
-      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
-        No products sold in this date range.
-      </div>
+      <>
+        {capped && <CappedBanner />}
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
+          No products sold in this date range.
+        </div>
+      </>
     );
   }
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-      <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex gap-4">
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> &lt;7 days — critical</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block" /> &lt;14 days — low</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> &lt;30 days — watch</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> 30+ days — healthy</span>
-      </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-            <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
-            <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Units Sold</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Revenue</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Stock</th>
-            <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={row.variantId} className={i < rows.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-              <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{row.productTitle}</td>
-              <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{row.sku || "—"}</td>
-              <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.unitsSold}</td>
-              <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{fmt$(row.revenue)}</td>
-              <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.avgDaily.toFixed(2)}</td>
-              <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock}</td>
-              <td className="px-5 py-3 text-right">
-                <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
-                  {row.daysRemaining === null ? "∞" : `${row.daysRemaining}d`}
-                </span>
-              </td>
+    <>
+      {capped && <CappedBanner />}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex gap-4">
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> &lt;7 days — critical</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block" /> &lt;14 days — low</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> &lt;30 days — watch</span>
+          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> 30+ days — healthy</span>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+              <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+              <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Units Sold</th>
+              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Revenue</th>
+              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
+              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Stock</th>
+              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={row.variantId} className={i < rows.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{row.productTitle}</td>
+                <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{row.sku || "—"}</td>
+                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.unitsSold}</td>
+                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{fmt$(row.revenue)}</td>
+                <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.avgDaily.toFixed(2)}</td>
+                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock}</td>
+                <td className="px-5 py-3 text-right">
+                  <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
+                    {row.daysRemaining === null ? "∞" : row.daysRemaining + "d"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -245,9 +271,10 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
       {/* Deferred table with loading state */}
       <Suspense fallback={<LoadingSpinner />}>
         <Await resolve={velocityData}>
-          {(data) => (
+          {({ data, capped }) => (
             <VelocityTable
               data={data}
+              capped={capped}
               dayRange={dayRange}
               vendorFilter={filters.vendor}
               productTypeFilter={filters.productType}

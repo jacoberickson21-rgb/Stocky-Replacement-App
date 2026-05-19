@@ -84,7 +84,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     ORDER BY margin ASC
   `;
 
-  console.log(`[margins] raw rows from DB: ${items.length}`);
+  console.log(`[margins] vendorId filter: "${vendorId}", productSearch: "${productSearch}", marginFilter: "${marginFilter}"`);
+  console.log(`[margins] vendors in DB: ${vendors.length}, raw line item rows: ${items.length}`);
   const belowFloor = items.filter((r) => r.margin < marginFloor);
   const avgMargin = items.length > 0
     ? items.reduce((s, r) => s + r.margin, 0) / items.length

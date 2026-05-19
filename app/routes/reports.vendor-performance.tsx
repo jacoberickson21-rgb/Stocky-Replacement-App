@@ -91,9 +91,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     FROM spend s
     LEFT JOIN credits c ON c."vendorId" = s.id
     LEFT JOIN disc d ON d."vendorId" = s.id
-    WHERE s.invoice_count > 0
+    WHERE 1=1
     ${vendorWhere}
-    ORDER BY s.total_spend DESC
+    ORDER BY s.total_spend DESC, s.name ASC
   `;
 
   // Per-vendor invoice breakdown for expanded rows
@@ -123,6 +123,14 @@ export async function loader({ request }: Route.LoaderArgs) {
     GROUP BY i.id
     ORDER BY i."updatedAt" DESC
   `;
+
+  console.log(`[vendor-performance] vendorId filter: "${vendorId}", date range: ${start.toISOString()} → ${end.toISOString()}`);
+  console.log(`[vendor-performance] metrics rows: ${metrics.length}, invoiceRows: ${invoiceRows.length}`);
+  console.log(`[vendor-performance] vendors in DB: ${vendors.length}`);
+  if (metrics.length > 0) {
+    const sample = metrics.slice(0, 3).map((m) => `${m.vendorName} (invoices:${m.invoiceCount} spend:${m.totalSpend})`).join(", ");
+    console.log(`[vendor-performance] sample metrics: ${sample}`);
+  }
 
   const invoicesByVendor = new Map<number, typeof invoiceRows>();
   for (const row of invoiceRows) {
@@ -270,7 +278,7 @@ export default function VendorPerformancePage({ loaderData }: Route.ComponentPro
 
       {sorted.length === 0 ? (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
-          No vendor activity in this date range.
+          No vendors found. Import vendors from the Shopify sync script to populate this list.
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">

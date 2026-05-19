@@ -77,6 +77,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     ORDER BY i."updatedAt" DESC
   `;
 
+  console.log(`[receiving-history] vendorId: "${vendorId}", staffId: "${staffId}", range: ${start.toISOString()} → ${end.toISOString()}`);
+  console.log(`[receiving-history] rows returned: ${rows.length}`);
+
   const totalValue = rows.reduce((s, r) => s + r.total, 0);
   const totalDiscrepancies = rows.reduce((s, r) => s + r.discrepancyCount, 0);
 

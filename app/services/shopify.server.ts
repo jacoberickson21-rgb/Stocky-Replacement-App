@@ -1438,28 +1438,22 @@ export async function getInventoryValuationData(opts?: {
   if (opts?.productType) queryParts.push(`product_type:"${opts.productType}"`);
   const queryStr = queryParts.join(" ");
 
+  type InvPage = {
+    products: {
+      edges: {
+        node: {
+          id: string;
+          title: string;
+          vendor: string;
+          productType: string;
+          variants: { nodes: { id: string; sku: string; price: string; inventoryQuantity: number }[] };
+        };
+      }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  };
   while (hasNextPage) {
-    const data = await shopifyGraphQL<{
-      products: {
-        edges: {
-          node: {
-            id: string;
-            title: string;
-            vendor: string;
-            productType: string;
-            variants: {
-              nodes: {
-                id: string;
-                sku: string;
-                price: string;
-                inventoryQuantity: number;
-              }[];
-            };
-          };
-        }[];
-        pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      };
-    }>(
+    const pageResult: InvPage = await shopifyGraphQL<InvPage>(
       `query GetInventoryValuation($query: String!, $after: String) {
         products(first: 100, query: $query, after: $after) {
           edges {
@@ -1476,7 +1470,7 @@ export async function getInventoryValuationData(opts?: {
       { query: queryStr, after: cursor }
     );
 
-    for (const edge of data.products.edges) {
+    for (const edge of pageResult.products.edges) {
       const p = edge.node;
       for (const v of p.variants.nodes) {
         results.push({
@@ -1491,8 +1485,8 @@ export async function getInventoryValuationData(opts?: {
       }
     }
 
-    hasNextPage = data.products.pageInfo.hasNextPage;
-    cursor = data.products.pageInfo.endCursor;
+    hasNextPage = pageResult.products.pageInfo.hasNextPage;
+    cursor = pageResult.products.pageInfo.endCursor;
   }
 
   return results;
@@ -1512,10 +1506,18 @@ export type SalesVelocityVariant = {
   price: number;
 };
 
+export type SalesVelocityResult = {
+  data: SalesVelocityVariant[];
+  capped: boolean;
+};
+
+const VELOCITY_MAX_PAGES = 10;
+const VELOCITY_PAGE_SIZE = 50;
+
 export async function getSalesVelocityData(
   startDate: Date,
   endDate: Date
-): Promise<SalesVelocityVariant[]> {
+): Promise<SalesVelocityResult> {
   const startISO = startDate.toISOString();
   const endISO = endDate.toISOString();
   const orderQuery = `created_at:>='${startISO}' created_at:<='${endISO}' NOT financial_status:voided`;
@@ -1524,26 +1526,34 @@ export async function getSalesVelocityData(
 
   let cursor: string | null = null;
   let hasNextPage = true;
+  let pagesFetched = 0;
+  let capped = false;
 
-  while (hasNextPage) {
-    const data = await shopifyGraphQL<{
-      orders: {
-        edges: {
-          node: {
-            lineItems: {
-              nodes: {
-                variant: { id: string } | null;
-                quantity: number;
-                originalUnitPriceSet: { shopMoney: { amount: string } };
-              }[];
-            };
+  type OrdersPage = {
+    orders: {
+      edges: {
+        node: {
+          lineItems: {
+            nodes: {
+              variant: { id: string } | null;
+              quantity: number;
+              originalUnitPriceSet: { shopMoney: { amount: string } };
+            }[];
           };
-        }[];
-        pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      };
-    }>(
+        };
+      }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  };
+  while (hasNextPage) {
+    if (pagesFetched >= VELOCITY_MAX_PAGES) {
+      capped = true;
+      break;
+    }
+
+    const ordersPage: OrdersPage = await shopifyGraphQL<OrdersPage>(
       `query GetOrdersForVelocity($query: String!, $after: String) {
-        orders(first: 250, query: $query, after: $after) {
+        orders(first: ${VELOCITY_PAGE_SIZE}, query: $query, after: $after) {
           edges {
             node {
               lineItems(first: 250) {
@@ -1561,7 +1571,9 @@ export async function getSalesVelocityData(
       { query: orderQuery, after: cursor }
     );
 
-    for (const edge of data.orders.edges) {
+    pagesFetched++;
+
+    for (const edge of ordersPage.orders.edges) {
       for (const item of edge.node.lineItems.nodes) {
         const vid = item.variant?.id;
         if (!vid) continue;
@@ -1572,19 +1584,19 @@ export async function getSalesVelocityData(
       }
     }
 
-    hasNextPage = data.orders.pageInfo.hasNextPage;
-    cursor = data.orders.pageInfo.endCursor;
+    hasNextPage = ordersPage.orders.pageInfo.hasNextPage;
+    cursor = ordersPage.orders.pageInfo.endCursor;
   }
 
   const variantIds = Array.from(unitsSoldMap.keys());
-  if (variantIds.length === 0) return [];
+  if (variantIds.length === 0) return { data: [], capped };
 
   const results: SalesVelocityVariant[] = [];
   const BATCH = 50;
 
   for (let i = 0; i < variantIds.length; i += BATCH) {
     const ids = variantIds.slice(i, i + BATCH);
-    const data = await shopifyGraphQL<{
+    const variantPage = await shopifyGraphQL<{
       nodes: ({
         __typename: string;
         id: string;
@@ -1606,7 +1618,7 @@ export async function getSalesVelocityData(
       { ids }
     );
 
-    for (const node of data.nodes) {
+    for (const node of variantPage.nodes) {
       if (!node || node.__typename !== "ProductVariant") continue;
       const sales = unitsSoldMap.get(node.id);
       if (!sales) continue;
@@ -1624,6 +1636,6 @@ export async function getSalesVelocityData(
     }
   }
 
-  return results.sort((a, b) => a.unitsSold - b.unitsSold);
+  return { data: results.sort((a, b) => a.unitsSold - b.unitsSold), capped };
 }
 
