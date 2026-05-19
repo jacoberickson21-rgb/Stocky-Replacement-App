@@ -16,6 +16,7 @@ import {
   lookupProduct,
   getLocationId,
   updateInventoryLevel,
+  getVariantPrice,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -106,6 +107,8 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   const discrepancies: string[] = [];
 
+  const discrepancyCreates: ReturnType<typeof db.discrepancyLog.create>[] = [];
+
   try {
     await db.$transaction([
       ...invoice.lineItems.map((item) => {
@@ -116,6 +119,20 @@ export async function action({ request, params }: Route.ActionArgs) {
           discrepancies.push(
             `${item.sku}: expected ${item.quantityOrdered}, received ${received}`
           );
+          discrepancyCreates.push(
+            db.discrepancyLog.create({
+              data: {
+                invoiceLineItemId: item.id,
+                invoiceId: id,
+                vendorId: invoice.vendorId,
+                sku: item.sku,
+                expectedQty: item.quantityOrdered,
+                actualQty: received,
+                note: note || null,
+                staffId: userId,
+              },
+            })
+          );
         }
         return db.invoiceLineItem.update({
           where: { id: item.id },
@@ -123,9 +140,11 @@ export async function action({ request, params }: Route.ActionArgs) {
             quantityReceived: received,
             hasDiscrepancy,
             receivingNote: note || null,
+            vendorId: invoice.vendorId,
           },
         });
       }),
+      ...discrepancyCreates,
       db.invoice.update({ where: { id }, data: { status: "RECEIVED" } }),
       db.auditLog.create({
         data: {
@@ -184,6 +203,24 @@ export async function action({ request, params }: Route.ActionArgs) {
           item.sku ?? item.description,
           "No Shopify product linked — inventory update skipped"
         );
+      }
+    }
+  }
+
+  // Retail price capture — best-effort after DB commit
+  for (const item of invoice.lineItems) {
+    if (item.shopifyVariantId) {
+      try {
+        const price = await getVariantPrice(item.shopifyVariantId);
+        if (price !== null) {
+          await db.invoiceLineItem.update({
+            where: { id: item.id },
+            data: { retailPrice: parseFloat(price) },
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await logFailure("RETAIL_PRICE_FETCH", item.sku ?? item.description, msg);
       }
     }
   }

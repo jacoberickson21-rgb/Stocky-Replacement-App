@@ -80,6 +80,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
             )}
           </NavLink>
           <NavLink to="/audit" className={linkClass}>Audit Log</NavLink>
+          <NavLink to="/reports" className={linkClass}>Reports</NavLink>
+          <NavLink to="/settings" className={linkClass}>Settings</NavLink>
         </div>
 
         <div className="flex items-center gap-3">

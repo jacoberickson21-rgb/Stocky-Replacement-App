@@ -1182,6 +1182,66 @@ export async function reorderProductImages(
   }
 }
 
+export type LowStockVariant = {
+  variantId: string;
+  sku: string;
+  productTitle: string;
+  inventoryQty: number;
+};
+
+export async function getLowStockVariants(threshold = 5): Promise<LowStockVariant[]> {
+  try {
+    const data = await shopifyGraphQL<{
+      productVariants: {
+        edges: {
+          node: {
+            id: string;
+            sku: string;
+            inventoryQuantity: number;
+            product: { title: string };
+          };
+        }[];
+      };
+    }>(
+      `query LowStock($query: String!) {
+        productVariants(first: 50, query: $query) {
+          edges {
+            node {
+              id
+              sku
+              inventoryQuantity
+              product { title }
+            }
+          }
+        }
+      }`,
+      { query: `inventory_quantity:<${threshold + 1} AND inventory_quantity:>-1` }
+    );
+    return data.productVariants.edges
+      .map((e) => ({
+        variantId: e.node.id,
+        sku: e.node.sku,
+        productTitle: e.node.product.title,
+        inventoryQty: e.node.inventoryQuantity,
+      }))
+      .sort((a, b) => a.inventoryQty - b.inventoryQty);
+  } catch {
+    return [];
+  }
+}
+
+export async function getVariantPrice(variantId: string): Promise<string | null> {
+  const data = await shopifyGraphQL<{
+    productVariant: { price: string } | null;
+  }>(
+    `query GetVariantPrice($id: ID!) {
+      productVariant(id: $id) { price }
+    }`,
+    { id: variantId }
+  );
+  return data.productVariant?.price ?? null;
+}
+
 // ─── Search (existing) ────────────────────────────────────────────────────────
 
 function buildShopifyQuery(input: string, vendorFilter?: string): string {
@@ -1351,5 +1411,219 @@ export async function unpublishProduct(productId: string, publicationIds: string
   if (userErrors.length > 0) {
     throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
   }
+}
+
+// ─── Inventory Valuation ──────────────────────────────────────────────────────
+
+export type InventoryVariant = {
+  variantId: string;
+  productTitle: string;
+  vendor: string;
+  productType: string;
+  sku: string;
+  price: number;
+  inventoryQuantity: number;
+};
+
+export async function getInventoryValuationData(opts?: {
+  vendor?: string;
+  productType?: string;
+}): Promise<InventoryVariant[]> {
+  const results: InventoryVariant[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  const queryParts: string[] = ["status:active OR status:draft"];
+  if (opts?.vendor) queryParts.push(`vendor:"${opts.vendor}"`);
+  if (opts?.productType) queryParts.push(`product_type:"${opts.productType}"`);
+  const queryStr = queryParts.join(" ");
+
+  while (hasNextPage) {
+    const data = await shopifyGraphQL<{
+      products: {
+        edges: {
+          node: {
+            id: string;
+            title: string;
+            vendor: string;
+            productType: string;
+            variants: {
+              nodes: {
+                id: string;
+                sku: string;
+                price: string;
+                inventoryQuantity: number;
+              }[];
+            };
+          };
+        }[];
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    }>(
+      `query GetInventoryValuation($query: String!, $after: String) {
+        products(first: 100, query: $query, after: $after) {
+          edges {
+            node {
+              id title vendor productType
+              variants(first: 100) {
+                nodes { id sku price inventoryQuantity }
+              }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`,
+      { query: queryStr, after: cursor }
+    );
+
+    for (const edge of data.products.edges) {
+      const p = edge.node;
+      for (const v of p.variants.nodes) {
+        results.push({
+          variantId: v.id,
+          productTitle: p.title,
+          vendor: p.vendor,
+          productType: p.productType,
+          sku: v.sku,
+          price: parseFloat(v.price),
+          inventoryQuantity: v.inventoryQuantity,
+        });
+      }
+    }
+
+    hasNextPage = data.products.pageInfo.hasNextPage;
+    cursor = data.products.pageInfo.endCursor;
+  }
+
+  return results;
+}
+
+// ─── Sales Velocity ───────────────────────────────────────────────────────────
+
+export type SalesVelocityVariant = {
+  variantId: string;
+  productTitle: string;
+  sku: string;
+  vendor: string;
+  productType: string;
+  unitsSold: number;
+  revenue: number;
+  currentStock: number;
+  price: number;
+};
+
+export async function getSalesVelocityData(
+  startDate: Date,
+  endDate: Date
+): Promise<SalesVelocityVariant[]> {
+  const startISO = startDate.toISOString();
+  const endISO = endDate.toISOString();
+  const orderQuery = `created_at:>='${startISO}' created_at:<='${endISO}' NOT financial_status:voided`;
+
+  const unitsSoldMap = new Map<string, { unitsSold: number; revenue: number }>();
+
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const data = await shopifyGraphQL<{
+      orders: {
+        edges: {
+          node: {
+            lineItems: {
+              nodes: {
+                variant: { id: string } | null;
+                quantity: number;
+                originalUnitPriceSet: { shopMoney: { amount: string } };
+              }[];
+            };
+          };
+        }[];
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      };
+    }>(
+      `query GetOrdersForVelocity($query: String!, $after: String) {
+        orders(first: 250, query: $query, after: $after) {
+          edges {
+            node {
+              lineItems(first: 250) {
+                nodes {
+                  variant { id }
+                  quantity
+                  originalUnitPriceSet { shopMoney { amount } }
+                }
+              }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`,
+      { query: orderQuery, after: cursor }
+    );
+
+    for (const edge of data.orders.edges) {
+      for (const item of edge.node.lineItems.nodes) {
+        const vid = item.variant?.id;
+        if (!vid) continue;
+        const prev = unitsSoldMap.get(vid) ?? { unitsSold: 0, revenue: 0 };
+        prev.unitsSold += item.quantity;
+        prev.revenue += item.quantity * parseFloat(item.originalUnitPriceSet.shopMoney.amount);
+        unitsSoldMap.set(vid, prev);
+      }
+    }
+
+    hasNextPage = data.orders.pageInfo.hasNextPage;
+    cursor = data.orders.pageInfo.endCursor;
+  }
+
+  const variantIds = Array.from(unitsSoldMap.keys());
+  if (variantIds.length === 0) return [];
+
+  const results: SalesVelocityVariant[] = [];
+  const BATCH = 50;
+
+  for (let i = 0; i < variantIds.length; i += BATCH) {
+    const ids = variantIds.slice(i, i + BATCH);
+    const data = await shopifyGraphQL<{
+      nodes: ({
+        __typename: string;
+        id: string;
+        sku: string;
+        price: string;
+        inventoryQuantity: number;
+        product: { title: string; vendor: string; productType: string };
+      } | null)[];
+    }>(
+      `query GetVariantDetails($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          __typename
+          ... on ProductVariant {
+            id sku price inventoryQuantity
+            product { title vendor productType }
+          }
+        }
+      }`,
+      { ids }
+    );
+
+    for (const node of data.nodes) {
+      if (!node || node.__typename !== "ProductVariant") continue;
+      const sales = unitsSoldMap.get(node.id);
+      if (!sales) continue;
+      results.push({
+        variantId: node.id,
+        productTitle: node.product.title,
+        sku: node.sku,
+        vendor: node.product.vendor,
+        productType: node.product.productType,
+        unitsSold: sales.unitsSold,
+        revenue: sales.revenue,
+        currentStock: node.inventoryQuantity,
+        price: parseFloat(node.price),
+      });
+    }
+  }
+
+  return results.sort((a, b) => a.unitsSold - b.unitsSold);
 }
 

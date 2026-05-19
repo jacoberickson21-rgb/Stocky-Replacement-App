@@ -9,13 +9,14 @@ datasource db {
 }
 
 model User {
-  id               Int          @id @default(autoincrement())
-  username         String       @unique
+  id               Int              @id @default(autoincrement())
+  username         String           @unique
   passwordHash     String
   name             String
-  createdAt        DateTime     @default(now())
+  createdAt        DateTime         @default(now())
   auditLogs        AuditLog[]
   failuresResolved FailureLog[]
+  discrepancyLogs  DiscrepancyLog[]
 }
 
 model Supplier {
@@ -29,19 +30,21 @@ model Supplier {
 }
 
 model Vendor {
-  id                 Int            @id @default(autoincrement())
+  id                 Int              @id @default(autoincrement())
   name               String
   contactName        String?
   email              String?
   phone              String?
   shopifyVendorName  String?
   supplierId         Int?
-  supplier           Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  createdAt          DateTime       @default(now())
+  supplier           Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdAt          DateTime         @default(now())
   invoices           Invoice[]
   credits            Credit[]
   auditLogs          AuditLog[]
   vendorProfile      VendorProfile?
+  lineItems          InvoiceLineItem[]
+  discrepancyLogs    DiscrepancyLog[]
 }
 
 model VendorProfile {
@@ -55,18 +58,19 @@ model VendorProfile {
 }
 
 model Invoice {
-  id            Int               @id @default(autoincrement())
-  invoiceNumber String
-  vendor        Vendor            @relation(fields: [vendorId], references: [id])
-  vendorId      Int
-  status        InvoiceStatus     @default(ORDERED)
-  invoiceDate   DateTime?
-  paymentTerms  String?
-  dueDate       DateTime?
-  total         Decimal           @db.Decimal(10, 2)
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  lineItems     InvoiceLineItem[]
+  id              Int               @id @default(autoincrement())
+  invoiceNumber   String
+  vendor          Vendor            @relation(fields: [vendorId], references: [id])
+  vendorId        Int
+  status          InvoiceStatus     @default(ORDERED)
+  invoiceDate     DateTime?
+  paymentTerms    String?
+  dueDate         DateTime?
+  total           Decimal           @db.Decimal(10, 2)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  lineItems       InvoiceLineItem[]
+  discrepancyLogs DiscrepancyLog[]
 }
 
 enum InvoiceStatus {
@@ -76,21 +80,24 @@ enum InvoiceStatus {
 }
 
 model InvoiceLineItem {
-  id                     Int     @id @default(autoincrement())
-  invoice                Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  id                     Int              @id @default(autoincrement())
+  invoice                Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   invoiceId              Int
+  vendorId               Int?
+  vendor                 Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
   sku                    String?
   description            String
   quantityOrdered        Int
-  quantityReceived       Int     @default(0)
-  unitCost               Decimal  @db.Decimal(10, 2)
-  retailPrice            Decimal? @db.Decimal(10, 2)
-  hasDiscrepancy         Boolean  @default(false)
+  quantityReceived       Int              @default(0)
+  unitCost               Decimal          @db.Decimal(10, 2)
+  retailPrice            Decimal?         @db.Decimal(10, 2)
+  hasDiscrepancy         Boolean          @default(false)
   receivingNote          String?
   barcode                String?
   shopifyProductTitle    String?
   shopifyVariantId       String?
   shopifyInventoryItemId String?
+  discrepancyLogs        DiscrepancyLog[]
 }
 
 model Credit {
@@ -123,4 +130,26 @@ model FailureLog {
   resolvedAt   DateTime?
   resolvedById Int?
   resolvedBy   User?     @relation(fields: [resolvedById], references: [id])
+}
+
+model DiscrepancyLog {
+  id                Int             @id @default(autoincrement())
+  invoiceLineItemId Int
+  invoiceLineItem   InvoiceLineItem @relation(fields: [invoiceLineItemId], references: [id], onDelete: Cascade)
+  invoiceId         Int
+  invoice           Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  vendorId          Int
+  vendor            Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  sku               String?
+  expectedQty       Int
+  actualQty         Int
+  note              String?
+  staffId           Int
+  staff             User            @relation(fields: [staffId], references: [id])
+  createdAt         DateTime        @default(now())
+}
+
+model AppSetting {
+  key   String @id
+  value String
 }

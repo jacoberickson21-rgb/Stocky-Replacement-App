@@ -24,5 +24,13 @@ export default [
     route("users", "routes/users.tsx"),
     route("failures", "routes/failures.tsx"),
     route("audit", "routes/audit.tsx"),
+    route("reports", "routes/reports.tsx"),
+    route("reports/margins", "routes/reports.margins.tsx"),
+    route("reports/vendor-performance", "routes/reports.vendor-performance.tsx"),
+    route("reports/inventory-valuation", "routes/reports.inventory-valuation.tsx"),
+    route("reports/spend-analysis", "routes/reports.spend-analysis.tsx"),
+    route("reports/sales-velocity", "routes/reports.sales-velocity.tsx"),
+    route("reports/receiving-history", "routes/reports.receiving-history.tsx"),
+    route("settings", "routes/settings.tsx"),
   ]),
 ] satisfies RouteConfig;

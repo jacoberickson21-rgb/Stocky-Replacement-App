@@ -83,6 +83,7 @@ export async function action({ request }: Route.ActionArgs) {
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
+          vendorId: Number(vendorId),
           sku: item.sku,
           description: item.description,
           quantityOrdered: item.quantity,
@@ -193,6 +194,7 @@ export async function action({ request }: Route.ActionArgs) {
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
+          vendorId: Number(vendorId),
           sku: item.sku,
           description: item.description,
           quantityOrdered: item.quantity,
@@ -313,6 +315,7 @@ export async function action({ request }: Route.ActionArgs) {
       const saved = await tx.invoiceLineItem.createManyAndReturn({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
+          vendorId: Number(vendorId),
           sku: item.sku || null,
           description: item.description,
           quantityOrdered: item.quantity,

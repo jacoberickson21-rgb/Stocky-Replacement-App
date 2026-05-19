@@ -1,270 +1,644 @@
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
+import { useEffect, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
+import { getLowStockVariants } from "../services/shopify.server";
+
+// ─── Loader ───────────────────────────────────────────────────────────────────
+
+type Period = "week" | "month" | "quarter" | "year";
+
+function periodStart(period: Period): Date {
+  const now = new Date();
+  switch (period) {
+    case "week":
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    case "month":
+      return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    case "quarter":
+      return new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    case "year":
+      return new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  }
+}
+
+function truncUnit(period: Period): string {
+  if (period === "week") return "day";
+  if (period === "month") return "week";
+  return "month";
+}
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const db = getDb();
+  const url = new URL(request.url);
+  const period = (url.searchParams.get("period") ?? "month") as Period;
+  const since = periodStart(period);
+  const now = new Date();
+  const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const [receivedInvoices, discrepantItems, allCredits] = await Promise.all([
+  const [
+    outstandingRaw,
+    pendingCount,
+    receivedThisPeriod,
+    spentThisPeriod,
+    spendByVendor,
+    statusCounts,
+    spendOverTime,
+    overdueAndUpcoming,
+    recentAudit,
+    marginAlertItems,
+    marginSetting,
+    lowStock,
+  ] = await Promise.all([
+    // Outstanding balance (RECEIVED invoices - credits)
+    db.$queryRaw<{ total: number; credits: number }[]>`
+      SELECT
+        COALESCE(SUM(i.total), 0)::float AS total,
+        COALESCE((SELECT SUM(ABS(c.amount)) FROM "Credit" c), 0)::float AS credits
+      FROM "Invoice" i WHERE i.status = 'RECEIVED'
+    `,
+
+    // Pending (ORDERED) count
+    db.invoice.count({ where: { status: "ORDERED" } }),
+
+    // Received this period: count
+    db.invoice.count({
+      where: { status: { in: ["RECEIVED", "PAID"] }, updatedAt: { gte: since } },
+    }),
+
+    // Spent this period: sum of received/paid invoices
+    db.$queryRaw<{ total: number }[]>`
+      SELECT COALESCE(SUM(total), 0)::float AS total
+      FROM "Invoice"
+      WHERE status IN ('RECEIVED','PAID') AND "updatedAt" >= ${since}
+    `,
+
+    // Spend by vendor (top 8, period)
+    db.$queryRaw<{ vendorName: string; total: number }[]>`
+      SELECT v.name AS "vendorName", SUM(i.total)::float AS total
+      FROM "Invoice" i
+      JOIN "Vendor" v ON v.id = i."vendorId"
+      WHERE i.status IN ('RECEIVED','PAID') AND i."updatedAt" >= ${since}
+      GROUP BY v.name
+      ORDER BY total DESC
+      LIMIT 8
+    `,
+
+    // Status breakdown (all invoices)
+    db.$queryRaw<{ status: string; count: number }[]>`
+      SELECT status, COUNT(*)::int AS count FROM "Invoice" GROUP BY status
+    `,
+
+    // Spend over time (DATE_TRUNC by period granularity)
+    db.$queryRaw<{ bucket: Date; total: number }[]>`
+      SELECT DATE_TRUNC(${truncUnit(period)}, "updatedAt") AS bucket,
+             SUM(total)::float AS total
+      FROM "Invoice"
+      WHERE status IN ('RECEIVED','PAID') AND "updatedAt" >= ${since}
+      GROUP BY bucket
+      ORDER BY bucket ASC
+    `,
+
+    // Overdue & upcoming (dueDate <= now+7d, status ORDERED or RECEIVED)
     db.invoice.findMany({
-      where: { status: "RECEIVED" },
+      where: {
+        dueDate: { lte: soon },
+        status: { in: ["ORDERED", "RECEIVED"] },
+      },
       include: { vendor: true },
-      orderBy: { updatedAt: "desc" },
+      orderBy: { dueDate: "asc" },
+      take: 10,
     }),
-    db.invoiceLineItem.findMany({
-      where: { hasDiscrepancy: true },
-      include: { invoice: { include: { vendor: true } } },
-      orderBy: { invoiceId: "desc" },
+
+    // Recent activity (last 8 audit logs)
+    db.auditLog.findMany({
+      include: { user: true, vendor: true },
+      orderBy: { timestamp: "desc" },
+      take: 8,
     }),
-    db.credit.findMany({ select: { vendorId: true, amount: true } }),
+
+    // Margin alert items (retailPrice and unitCost both set, received this period)
+    db.$queryRaw<{
+      id: number;
+      invoiceId: number;
+      invoiceNumber: string;
+      vendorName: string;
+      sku: string | null;
+      description: string;
+      unitCost: number;
+      retailPrice: number;
+      margin: number;
+    }[]>`
+      SELECT
+        li.id,
+        li."invoiceId",
+        i."invoiceNumber",
+        v.name AS "vendorName",
+        li.sku,
+        li.description,
+        li."unitCost"::float,
+        li."retailPrice"::float,
+        ROUND(((li."retailPrice" - li."unitCost") / NULLIF(li."retailPrice", 0)) * 100, 1)::float AS margin
+      FROM "InvoiceLineItem" li
+      JOIN "Invoice" i ON i.id = li."invoiceId"
+      JOIN "Vendor" v ON v.id = li."vendorId"
+      WHERE li."retailPrice" IS NOT NULL
+        AND li."unitCost" IS NOT NULL
+        AND li."retailPrice" > 0
+      ORDER BY margin ASC
+      LIMIT 20
+    `,
+
+    // Margin floor setting
+    db.appSetting.findUnique({ where: { key: "marginFloor" } }),
+
+    // Low stock from Shopify (best-effort)
+    getLowStockVariants(5),
   ]);
 
-  const creditByVendor = new Map<number, number>();
-  for (const credit of allCredits) {
-    const existing = creditByVendor.get(credit.vendorId) ?? 0;
-    creditByVendor.set(credit.vendorId, existing + Math.abs(Number(credit.amount)));
-  }
-
-  const byVendor = new Map<number, { vendorName: string; count: number; total: number; netBalance: number }>();
-  for (const inv of receivedInvoices) {
-    const existing = byVendor.get(inv.vendorId);
-    if (existing) {
-      existing.count += 1;
-      existing.total += Number(inv.total);
-    } else {
-      byVendor.set(inv.vendorId, {
-        vendorName: inv.vendor.name,
-        count: 1,
-        total: Number(inv.total),
-        netBalance: 0,
-      });
-    }
-  }
-  for (const [vendorId, data] of byVendor) {
-    data.netBalance = data.total - (creditByVendor.get(vendorId) ?? 0);
-  }
-  const vendorBreakdown = Array.from(byVendor.values()).sort(
-    (a, b) => b.netBalance - a.netBalance
-  );
-  const totalOutstanding = vendorBreakdown.reduce(
-    (sum, row) => sum + row.netBalance,
-    0
-  );
+  const marginFloor = parseFloat(marginSetting?.value ?? "40");
+  const belowMargin = marginAlertItems.filter((r) => r.margin < marginFloor);
 
   return {
-    totalOutstanding,
-    vendorsWithBalance: byVendor.size,
-    vendorBreakdown,
-    receivedInvoices: receivedInvoices.map((inv) => ({
-      id: inv.id,
-      invoiceNumber: inv.invoiceNumber,
-      vendorName: inv.vendor.name,
-      receivedAt: inv.updatedAt.toISOString(),
-      total: Number(inv.total),
-    })),
-    discrepantItems: discrepantItems.map((item) => ({
-      id: item.id,
-      invoiceId: item.invoiceId,
-      invoiceNumber: item.invoice.invoiceNumber,
-      vendorName: item.invoice.vendor.name,
-      sku: item.sku,
-      description: item.description,
-      quantityOrdered: item.quantityOrdered,
-      quantityReceived: item.quantityReceived,
-      receivingNote: item.receivingNote,
-    })),
+    period,
+    kpis: {
+      outstandingBalance: (outstandingRaw[0]?.total ?? 0) - (outstandingRaw[0]?.credits ?? 0),
+      pendingCount,
+      receivedThisPeriod,
+      spentThisPeriod: spentThisPeriod[0]?.total ?? 0,
+    },
+    charts: {
+      spendByVendor: spendByVendor.map((r) => ({ name: r.vendorName, value: r.total })),
+      statusBreakdown: statusCounts.map((r) => ({ name: r.status, value: r.count })),
+      spendOverTime: spendOverTime.map((r) => ({
+        bucket: r.bucket.toISOString(),
+        total: r.total,
+      })),
+    },
+    tables: {
+      overdueAndUpcoming: overdueAndUpcoming.map((inv) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        vendorName: inv.vendor.name,
+        status: inv.status,
+        dueDate: inv.dueDate?.toISOString() ?? null,
+        total: Number(inv.total),
+      })),
+      recentAudit: recentAudit.map((log) => ({
+        id: log.id,
+        action: log.action,
+        details: log.details,
+        userName: log.user.name,
+        vendorName: log.vendor?.name ?? null,
+        timestamp: log.timestamp.toISOString(),
+      })),
+      lowStock,
+    },
+    marginAlerts: { items: belowMargin, marginFloor },
   };
 }
 
-function formatDollars(amount: number) {
-  return amount.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  });
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmt$(n: number) {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(diff / 60000);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  return `${days}d ago`;
+}
+
+function fmtDate(iso: string | null) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function fmtBucket(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  ORDERED: "#f59e0b",
+  RECEIVED: "#6366f1",
+  PAID: "#22c55e",
+};
+
+// ─── ClientOnly wrapper (SSR safety for recharts) ─────────────────────────────
+
+function ClientOnly({ children }: { children: () => React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+  return <>{children()}</>;
+}
+
+function useIsDark() {
+  const [dark, setDark] = useState(false);
+  useEffect(() => {
+    setDark(document.documentElement.classList.contains("dark"));
+    const obs = new MutationObserver(() =>
+      setDark(document.documentElement.classList.contains("dark"))
+    );
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+  return dark;
+}
+
+// ─── KPI Card ─────────────────────────────────────────────────────────────────
+
+function KpiCard({
+  label,
+  value,
+  sub,
+  color,
+  to,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  color: string;
+  to: string;
+}) {
+  return (
+    <Link
+      to={to}
+      className={`block bg-white dark:bg-gray-900 rounded-2xl border ${color} shadow-sm p-5 hover:shadow-md transition-shadow`}
+    >
+      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">{label}</p>
+      <p className="text-2xl font-bold text-gray-900 dark:text-white">{value}</p>
+      {sub && <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">{sub}</p>}
+    </Link>
+  );
+}
+
+// ─── Section wrapper ──────────────────────────────────────────────────────────
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="mb-8">
+      <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function Empty({ msg }: { msg: string }) {
+  return (
+    <Card className="px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">{msg}</Card>
+  );
+}
+
+// ─── Charts ───────────────────────────────────────────────────────────────────
+
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip,
+  PieChart, Pie, Cell,
+  AreaChart, Area,
+  ResponsiveContainer, CartesianGrid, Legend,
+} from "recharts";
+
+function SpendByVendorChart({ data, dark }: { data: { name: string; value: number }[]; dark: boolean }) {
+  const textColor = dark ? "#9ca3af" : "#6b7280";
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={data} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} horizontal={false} />
+        <XAxis type="number" tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} tick={{ fill: textColor, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis type="category" dataKey="name" width={110} tick={{ fill: textColor, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <Tooltip formatter={(v) => fmt$(Number(v))} contentStyle={{ background: dark ? "#1f2937" : "#fff", border: "none", borderRadius: 8, fontSize: 12 }} />
+        <Bar dataKey="value" fill="#6366f1" radius={[0, 4, 4, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+function StatusPieChart({ data, dark }: { data: { name: string; value: number }[]; dark: boolean }) {
+  const textColor = dark ? "#9ca3af" : "#6b7280";
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <PieChart>
+        <Pie
+          data={data}
+          cx="50%"
+          cy="50%"
+          innerRadius={55}
+          outerRadius={85}
+          paddingAngle={3}
+          dataKey="value"
+          label={({ name, value }) => `${name} (${value})`}
+          labelLine={false}
+        >
+          {data.map((entry) => (
+            <Cell key={entry.name} fill={STATUS_COLORS[entry.name] ?? "#94a3b8"} />
+          ))}
+        </Pie>
+        <Tooltip contentStyle={{ background: dark ? "#1f2937" : "#fff", border: "none", borderRadius: 8, fontSize: 12 }} />
+        <Legend wrapperStyle={{ fontSize: 12, color: textColor }} />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+function SpendAreaChart({ data, dark }: { data: { bucket: string; total: number }[]; dark: boolean }) {
+  const textColor = dark ? "#9ca3af" : "#6b7280";
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <AreaChart data={data} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+        <defs>
+          <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} />
+        <XAxis dataKey="bucket" tickFormatter={fmtBucket} tick={{ fill: textColor, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} tick={{ fill: textColor, fontSize: 11 }} axisLine={false} tickLine={false} />
+        <Tooltip formatter={(v) => fmt$(Number(v))} labelFormatter={(label) => fmtBucket(String(label))} contentStyle={{ background: dark ? "#1f2937" : "#fff", border: "none", borderRadius: 8, fontSize: 12 }} />
+        <Area type="monotone" dataKey="total" stroke="#6366f1" strokeWidth={2} fill="url(#spendGrad)" />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+const PERIODS: { label: string; value: Period }[] = [
+  { label: "7 days", value: "week" },
+  { label: "30 days", value: "month" },
+  { label: "90 days", value: "quarter" },
+  { label: "1 year", value: "year" },
+];
+
 export default function DashboardPage({ loaderData }: Route.ComponentProps) {
-  const {
-    totalOutstanding,
-    vendorsWithBalance,
-    vendorBreakdown,
-    receivedInvoices,
-    discrepantItems,
-  } = loaderData;
+  const { period, kpis, charts, tables, marginAlerts } = loaderData;
+  const [searchParams] = useSearchParams();
+  const isDark = useIsDark();
 
   return (
-    <main className="p-8 max-w-5xl mx-auto">
-      <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100 mb-6">Dashboard</h2>
-
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-            Total Outstanding Balance
-          </p>
-          <p className="text-3xl font-bold text-gray-900 dark:text-white">
-            {formatDollars(totalOutstanding)}
-          </p>
-        </div>
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-            Vendors with Balance
-          </p>
-          <p className="text-3xl font-bold text-gray-900 dark:text-white">{vendorsWithBalance}</p>
+    <main className="p-8 max-w-6xl mx-auto">
+      {/* Header + period filter */}
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Dashboard</h2>
+        <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800 rounded-xl p-1">
+          {PERIODS.map((p) => {
+            const params = new URLSearchParams(searchParams);
+            params.set("period", p.value);
+            return (
+              <Link
+                key={p.value}
+                to={`?${params}`}
+                className={`text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
+                  period === p.value
+                    ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+                    : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
+                }`}
+              >
+                {p.label}
+              </Link>
+            );
+          })}
         </div>
       </div>
 
-      {/* Outstanding balance by vendor */}
-      <section className="mb-8">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-3">
-          Balance by Vendor
-        </h3>
-        {vendorBreakdown.length === 0 ? (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            No outstanding balances.
-          </div>
+      {/* KPI Cards */}
+      <Section title="Overview">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <KpiCard
+            label="Outstanding Balance"
+            value={fmt$(kpis.outstandingBalance)}
+            sub="received, unpaid"
+            color="border-rose-200 dark:border-rose-900"
+            to="/invoices?status=RECEIVED"
+          />
+          <KpiCard
+            label="Pending Receiving"
+            value={String(kpis.pendingCount)}
+            sub="orders placed"
+            color="border-amber-200 dark:border-amber-900"
+            to="/invoices?status=ORDERED"
+          />
+          <KpiCard
+            label="Received This Period"
+            value={String(kpis.receivedThisPeriod)}
+            sub="invoices"
+            color="border-green-200 dark:border-green-900"
+            to="/invoices"
+          />
+          <KpiCard
+            label="Spent This Period"
+            value={fmt$(kpis.spentThisPeriod)}
+            color="border-indigo-200 dark:border-indigo-900"
+            to="/invoices"
+          />
+        </div>
+      </Section>
+
+      {/* Charts */}
+      <Section title="Analytics">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Card className="p-4">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-3">Spend by Vendor</p>
+            <ClientOnly>
+              {() =>
+                charts.spendByVendor.length === 0 ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">No data</p>
+                ) : (
+                  <SpendByVendorChart data={charts.spendByVendor} dark={isDark} />
+                )
+              }
+            </ClientOnly>
+          </Card>
+          <Card className="p-4">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-3">Order Status</p>
+            <ClientOnly>
+              {() =>
+                charts.statusBreakdown.length === 0 ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">No data</p>
+                ) : (
+                  <StatusPieChart data={charts.statusBreakdown} dark={isDark} />
+                )
+              }
+            </ClientOnly>
+          </Card>
+          <Card className="p-4">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-3">Spend Over Time</p>
+            <ClientOnly>
+              {() =>
+                charts.spendOverTime.length === 0 ? (
+                  <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">No data</p>
+                ) : (
+                  <SpendAreaChart data={charts.spendOverTime} dark={isDark} />
+                )
+              }
+            </ClientOnly>
+          </Card>
+        </div>
+      </Section>
+
+      {/* Overdue & Upcoming */}
+      <Section title="Overdue & Upcoming (next 7 days)">
+        {tables.overdueAndUpcoming.length === 0 ? (
+          <Empty msg="No invoices due soon." />
         ) : (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <Card className="overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoices</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Net Balance</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Invoice #</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Due</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {vendorBreakdown.map((row, i) => (
-                  <tr
-                    key={row.vendorName}
-                    className={i < vendorBreakdown.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
-                  >
-                    <td className="px-6 py-4 text-gray-800 dark:text-gray-100 font-medium">{row.vendorName}</td>
-                    <td className="px-6 py-4 text-right text-gray-600 dark:text-gray-300">{row.count}</td>
-                    <td className="px-6 py-4 text-right font-semibold text-gray-800 dark:text-gray-100">
-                      {formatDollars(row.netBalance)}
+                {tables.overdueAndUpcoming.map((inv, i) => {
+                  const overdue = inv.dueDate && new Date(inv.dueDate) < new Date();
+                  return (
+                    <tr key={inv.id} className={i < tables.overdueAndUpcoming.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                      <td className="px-5 py-3">
+                        <Link to={`/invoices/${inv.id}`} className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium">
+                          {inv.invoiceNumber}
+                        </Link>
+                      </td>
+                      <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{inv.vendorName}</td>
+                      <td className="px-5 py-3">
+                        <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${
+                          inv.status === "ORDERED" ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300" : "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300"
+                        }`}>{inv.status}</span>
+                      </td>
+                      <td className={`px-5 py-3 font-medium ${overdue ? "text-red-600 dark:text-red-400" : "text-gray-600 dark:text-gray-300"}`}>
+                        {fmtDate(inv.dueDate)}
+                      </td>
+                      <td className="px-5 py-3 text-right text-gray-800 dark:text-gray-100 font-medium">{fmt$(inv.total)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        )}
+      </Section>
+
+      {/* Low Stock */}
+      <Section title="Low Stock Alert (≤5 units)">
+        {tables.lowStock.length === 0 ? (
+          <Empty msg="No low-stock variants." />
+        ) : (
+          <Card className="overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tables.lowStock.map((v, i) => (
+                  <tr key={v.variantId} className={i < tables.lowStock.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                    <td className="px-5 py-3 text-gray-800 dark:text-gray-100">{v.productTitle}</td>
+                    <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300">{v.sku || "—"}</td>
+                    <td className={`px-5 py-3 text-right font-bold ${v.inventoryQty === 0 ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>
+                      {v.inventoryQty}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </Card>
         )}
-      </section>
+      </Section>
 
-      {/* Received but unpaid invoices */}
-      <section className="mb-8">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-3">
-          Received — Awaiting Payment
-        </h3>
-        {receivedInvoices.length === 0 ? (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            No invoices awaiting payment.
-          </div>
+      {/* Recent Activity */}
+      <Section title="Recent Activity">
+        {tables.recentAudit.length === 0 ? (
+          <Empty msg="No recent activity." />
         ) : (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <Card className="overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Date Received</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Amount</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Action</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">User</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">When</th>
                 </tr>
               </thead>
               <tbody>
-                {receivedInvoices.map((inv, i) => (
-                  <tr
-                    key={inv.id}
-                    className={i < receivedInvoices.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}
-                  >
-                    <td className="px-6 py-4">
-                      <Link
-                        to={`/invoices/${inv.id}`}
-                        className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium transition-colors"
-                      >
-                        {inv.invoiceNumber}
-                      </Link>
+                {tables.recentAudit.map((log, i) => (
+                  <tr key={log.id} className={i < tables.recentAudit.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                    <td className="px-5 py-3">
+                      <span className="text-gray-800 dark:text-gray-100 font-medium">{log.action}</span>
+                      {log.details && <span className="text-gray-400 dark:text-gray-500 ml-2">{log.details}</span>}
                     </td>
-                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{inv.vendorName}</td>
-                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
-                      {new Date(inv.receivedAt).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })}
-                    </td>
-                    <td className="px-6 py-4 text-right font-medium text-gray-800 dark:text-gray-100">
-                      {formatDollars(inv.total)}
-                    </td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{log.userName}</td>
+                    <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{log.vendorName ?? "—"}</td>
+                    <td className="px-5 py-3 text-right text-gray-400 dark:text-gray-500">{timeAgo(log.timestamp)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </Card>
         )}
-      </section>
+      </Section>
 
-      {/* Receiving discrepancies */}
-      <section>
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide mb-3">
-          Receiving Discrepancies
-        </h3>
-        {discrepantItems.length === 0 ? (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-8 text-center text-sm text-gray-400 dark:text-gray-500">
-            No discrepancies recorded.
-          </div>
-        ) : (
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+      {/* Margin Alerts */}
+      {marginAlerts.items.length > 0 && (
+        <Section title={`Margin Alerts (below ${marginAlerts.marginFloor}%)`}>
+          <Card className="overflow-hidden">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Expected</th>
-                  <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Received</th>
-                  <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Note</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Invoice</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU / Description</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Cost</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Retail</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Margin</th>
                 </tr>
               </thead>
               <tbody>
-                {discrepantItems.map((item, i) => (
-                  <tr
-                    key={item.id}
-                    className={[
-                      i < discrepantItems.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : "",
-                      "bg-amber-50 dark:bg-amber-950/30",
-                    ].join(" ")}
-                  >
-                    <td className="px-6 py-4">
-                      <Link
-                        to={`/invoices/${item.invoiceId}`}
-                        className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium transition-colors"
-                      >
+                {marginAlerts.items.map((item, i) => (
+                  <tr key={item.id} className={[i < marginAlerts.items.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : "", "bg-red-50 dark:bg-red-950/20"].join(" ")}>
+                    <td className="px-5 py-3">
+                      <Link to={`/invoices/${item.invoiceId}`} className="text-indigo-600 dark:text-indigo-400 hover:underline">
                         {item.invoiceNumber}
                       </Link>
                     </td>
-                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{item.vendorName}</td>
-                    <td className="px-6 py-4 font-mono text-gray-700 dark:text-gray-200">{item.sku}</td>
-                    <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{item.description}</td>
-                    <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>
-                    <td className="px-6 py-4 text-right font-semibold text-amber-700 dark:text-amber-300">
-                      {item.quantityReceived}
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{item.vendorName}</td>
+                    <td className="px-5 py-3">
+                      {item.sku && <span className="font-mono text-gray-700 dark:text-gray-200 mr-2">{item.sku}</span>}
+                      <span className="text-gray-500 dark:text-gray-400">{item.description}</span>
                     </td>
-                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400 italic">
-                      {item.receivingNote ?? "—"}
-                    </td>
+                    <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">${item.unitCost.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">${item.retailPrice.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right font-bold text-red-600 dark:text-red-400">{item.margin.toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </section>
+          </Card>
+        </Section>
+      )}
     </main>
   );
 }

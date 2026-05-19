@@ -42,6 +42,19 @@ Create a production build:
 npm run build
 ```
 
+## Database Safety Rules
+
+**NEVER run `prisma migrate reset` against the production (Railway) database.**
+`prisma migrate reset` drops all tables, re-runs migrations from scratch, and seeds — wiping all real data.
+
+| Command | When to use |
+|---|---|
+| `npx prisma migrate deploy` | **Production (Railway)** — applies only new migrations, never touches existing data |
+| `npx prisma migrate reset` | **Local development only** — wipes everything and reseeds |
+| `npx prisma db seed` | **Local development only** — populate initial data in a fresh local DB |
+
+The seed script (`prisma/seed.ts`) will throw an error and refuse to run if `DATABASE_URL` contains `rlwy.net` or `railway` as a secondary safeguard.
+
 ## Deployment
 
 ### Docker Deployment
