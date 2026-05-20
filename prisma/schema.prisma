@@ -153,3 +153,54 @@ model AppSetting {
   key   String @id
   value String
 }
+
+enum SyncStatus {
+  RUNNING
+  COMPLETE
+  ERROR
+}
+
+model ProductCache {
+  id               String   @id @default(cuid())
+  variantId        String   @unique
+  productId        String
+  title            String
+  variantTitle     String
+  sku              String?
+  barcode          String?
+  vendor           String?
+  productType      String?
+  tags             String[]
+  price            Decimal  @db.Decimal(10, 2)
+  cost             Decimal? @db.Decimal(10, 2)
+  currentInventory Int
+  imageUrl         String?
+  status           String   @default("ACTIVE")
+  syncedAt         DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model SalesCache {
+  id        String   @id @default(cuid())
+  variantId String
+  sku       String?
+  date      DateTime
+  unitsSold Int
+  revenue   Decimal  @db.Decimal(10, 2)
+
+  @@unique([variantId, date])
+}
+
+model SyncLog {
+  id              String     @id @default(cuid())
+  status          SyncStatus
+  startedAt       DateTime   @default(now())
+  completedAt     DateTime?
+  durationMs      Int?
+  variantsSynced  Int?
+  salesDaysSynced Int?
+  totalVariants   Int?
+  currentVariant  Int?
+  errorMessage    String?
+}

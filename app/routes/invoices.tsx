@@ -34,12 +34,15 @@ export async function action({ request }: Route.ActionArgs) {
   return null;
 }
 
+const PAGE_SIZE = 50;
+
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const url = new URL(request.url);
   const vendorParam = url.searchParams.get("vendor");
   const statusParam = url.searchParams.get("status") as InvoiceStatus | null;
   const searchParam = url.searchParams.get("search");
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const where: Record<string, unknown> = {};
   if (vendorParam) where.vendorId = Number(vendorParam);
@@ -53,13 +56,20 @@ export async function loader({ request }: Route.LoaderArgs) {
     ];
   }
 
-  const invoices = await getDb().invoice.findMany({
-    where,
-    include: { vendor: true },
-    orderBy: { createdAt: "desc" },
-  });
+  const db = getDb();
+  const [totalCount, invoices, vendors] = await Promise.all([
+    db.invoice.count({ where }),
+    db.invoice.findMany({
+      where,
+      include: { vendor: true },
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+    }),
+    db.vendor.findMany({ orderBy: { name: "asc" } }),
+  ]);
 
-  const vendors = await getDb().vendor.findMany({ orderBy: { name: "asc" } });
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return {
     invoices: invoices.map((inv) => ({ ...inv, total: Number(inv.total) })),
@@ -67,6 +77,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     vendorParam,
     statusParam,
     searchParam,
+    pagination: { page, totalPages, totalCount },
   };
 }
 
@@ -82,8 +93,22 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
   PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
 
+function buildInvoicePageUrl(
+  page: number,
+  vendorParam: string | null,
+  statusParam: string | null,
+  searchParam: string | null
+) {
+  const params = new URLSearchParams();
+  if (vendorParam) params.set("vendor", vendorParam);
+  if (statusParam) params.set("status", statusParam);
+  if (searchParam) params.set("search", searchParam);
+  params.set("page", String(page));
+  return `/invoices?${params.toString()}`;
+}
+
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
-  const { invoices, vendors, vendorParam, statusParam, searchParam } = loaderData;
+  const { invoices, vendors, vendorParam, statusParam, searchParam, pagination } = loaderData;
   const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState(searchParam ?? "");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -257,6 +282,35 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between mt-4">
+          <div>
+            {pagination.page > 1 && (
+              <Link
+                to={buildInvoicePageUrl(pagination.page - 1, vendorParam, statusParam, searchParam)}
+                className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                ← Previous
+              </Link>
+            )}
+          </div>
+          <span className="text-sm text-gray-500 dark:text-gray-400">
+            Page {pagination.page} of {pagination.totalPages} · {pagination.totalCount} invoices
+          </span>
+          <div>
+            {pagination.page < pagination.totalPages && (
+              <Link
+                to={buildInvoicePageUrl(pagination.page + 1, vendorParam, statusParam, searchParam)}
+                className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                Next →
+              </Link>
+            )}
+          </div>
         </div>
       )}
     </main>

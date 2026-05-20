@@ -11,6 +11,8 @@ import {
 import type { Route } from "./+types/root";
 import "./app.css";
 import { getSession } from "./session.server";
+import { getDb } from "./db.server";
+import { getSyncStatus, startSync } from "./services/sync.server";
 
 const PUBLIC_PATHS = ["/login"];
 
@@ -19,7 +21,33 @@ export async function loader({ request }: Route.LoaderArgs) {
   if (PUBLIC_PATHS.includes(url.pathname)) return null;
   const session = await getSession(request.headers.get("Cookie"));
   if (!session.get("userId")) throw redirect("/login");
+
+  // Auto-sync check — fire and forget, does not block page load
+  checkAutoSync().catch(() => {});
+
   return null;
+}
+
+async function checkAutoSync() {
+  const db = getDb();
+  const [autoEnabled, intervalSetting, lastSync] = await Promise.all([
+    db.appSetting.findUnique({ where: { key: "autoSyncEnabled" } }),
+    db.appSetting.findUnique({ where: { key: "autoSyncIntervalHours" } }),
+    getSyncStatus(),
+  ]);
+
+  if (autoEnabled?.value === "false") return;
+  if (lastSync?.status === "RUNNING") return;
+
+  const hours = parseFloat(intervalSetting?.value ?? "24");
+  const stale =
+    !lastSync ||
+    !lastSync.completedAt ||
+    Date.now() - new Date(lastSync.completedAt).getTime() > hours * 3_600_000;
+
+  if (stale) {
+    startSync().catch(() => {});
+  }
 }
 
 export const meta: Route.MetaFunction = () => [{ title: "Receively" }];

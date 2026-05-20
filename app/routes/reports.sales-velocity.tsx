@@ -1,60 +1,121 @@
-import { Link, useSearchParams, Await } from "react-router";
-import { useState, Suspense } from "react";
+import { Link, useSearchParams } from "react-router";
+import { useState } from "react";
 import type { Route } from "./+types/reports.sales-velocity";
 import { requireUserId } from "../session.server";
 import { getDb } from "../db.server";
-import {
-  getSalesVelocityData,
-  getProductTypes,
-} from "../services/shopify.server";
-import type { SalesVelocityVariant, SalesVelocityResult } from "../services/shopify.server";
+import { getSyncStatus } from "../services/sync.server";
+import { Prisma } from "@prisma/client";
+
+const PAGE_SIZE = 50;
+
+type VelocityRow = {
+  variantId: string;
+  productTitle: string;
+  sku: string;
+  vendor: string;
+  productType: string;
+  unitsSold: number;
+  revenue: number;
+  currentStock: number;
+  avgDaily: number;
+  daysRemaining: number | null;
+};
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
+  const db = getDb();
   const url = new URL(request.url);
 
   const vendorFilter = url.searchParams.get("vendor") ?? "";
   const productTypeFilter = url.searchParams.get("productType") ?? "";
-  const startDate = url.searchParams.get("startDate") ?? "";
-  const endDate = url.searchParams.get("endDate") ?? "";
+  const startDateStr = url.searchParams.get("startDate") ?? "";
+  const endDateStr = url.searchParams.get("endDate") ?? "";
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const now = new Date();
   const defaultStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const start = startDate ? new Date(startDate) : defaultStart;
-  const end = endDate ? new Date(endDate + "T23:59:59") : now;
-  const dayRange = Math.max(
-    Math.ceil((end.getTime() - start.getTime()) / 86400000),
-    1
-  );
+  const start = startDateStr ? new Date(startDateStr) : defaultStart;
+  const end = endDateStr ? new Date(endDateStr + "T23:59:59") : now;
+  const dayRange = Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000), 1);
 
-  // Fast: taxonomy dropdowns load immediately
-  const db = getDb();
-  const [vendors, shopifyProductTypes] = await Promise.all([
+  const [vendors, distinctTypes, lastSync] = await Promise.all([
     db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
-    getProductTypes(),
+    db.productCache.findMany({ distinct: ["productType"], where: { productType: { not: null } }, select: { productType: true }, orderBy: { productType: "asc" } }),
+    getSyncStatus(),
   ]);
 
-  // Slow: Shopify orders call is deferred — page renders while this resolves.
-  // Race against a 20s timeout; if Shopify is too slow return empty capped result.
-  const timeout = new Promise<SalesVelocityResult>((resolve) =>
-    setTimeout(() => resolve({ data: [], capped: true }), 20_000)
-  );
-  const velocityData: Promise<SalesVelocityResult> = Promise.race([
-    getSalesVelocityData(start, end),
-    timeout,
-  ]);
+  // Build optional filter conditions
+  const vendorCond = vendorFilter ? Prisma.sql`AND p.vendor ILIKE ${vendorFilter}` : Prisma.sql``;
+  const typeCond = productTypeFilter ? Prisma.sql`AND p."productType" ILIKE ${productTypeFilter}` : Prisma.sql``;
+
+  // Join SalesCache with ProductCache, aggregate by variant
+  type RawRow = {
+    variantId: string;
+    productTitle: string;
+    sku: string | null;
+    vendor: string | null;
+    productType: string | null;
+    unitsSold: bigint;
+    revenue: string;
+    currentStock: number;
+  };
+
+  const rawRows = await db.$queryRaw<RawRow[]>`
+    SELECT
+      p."variantId",
+      p.title AS "productTitle",
+      p.sku,
+      p.vendor,
+      p."productType",
+      SUM(s."unitsSold")::bigint AS "unitsSold",
+      SUM(s.revenue::float)::text AS revenue,
+      p."currentInventory" AS "currentStock"
+    FROM "SalesCache" s
+    JOIN "ProductCache" p ON p."variantId" = s."variantId"
+    WHERE s.date >= ${start} AND s.date <= ${end}
+    ${vendorCond}
+    ${typeCond}
+    GROUP BY p."variantId", p.title, p.sku, p.vendor, p."productType", p."currentInventory"
+    ORDER BY SUM(s."unitsSold") DESC
+  `;
+
+  const allRows: VelocityRow[] = rawRows.map((r) => {
+    const unitsSold = Number(r.unitsSold);
+    const revenue = parseFloat(r.revenue);
+    const avgDaily = unitsSold / dayRange;
+    const daysRemaining = avgDaily > 0 ? Math.floor(r.currentStock / avgDaily) : null;
+    return {
+      variantId: r.variantId,
+      productTitle: r.productTitle,
+      sku: r.sku ?? "",
+      vendor: r.vendor ?? "",
+      productType: r.productType ?? "",
+      unitsSold,
+      revenue,
+      currentStock: r.currentStock,
+      avgDaily,
+      daysRemaining,
+    };
+  });
+
+  const totalCount = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const rows = allRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return {
+    rows,
     vendors,
-    shopifyProductTypes,
-    velocityData,
+    distinctTypes: distinctTypes.map((r) => r.productType!).filter(Boolean),
     dayRange,
     filters: {
       vendor: vendorFilter,
       productType: productTypeFilter,
-      startDate: startDate || defaultStart.toISOString().slice(0, 10),
-      endDate: endDate || now.toISOString().slice(0, 10),
+      startDate: startDateStr || defaultStart.toISOString().slice(0, 10),
+      endDate: endDateStr || now.toISOString().slice(0, 10),
     },
+    pagination: { page, totalPages, totalCount },
+    lastSyncTime: lastSync?.completedAt ?? null,
+    noSync: !lastSync,
   };
 }
 
@@ -70,132 +131,19 @@ function daysBadgeBg(days: number | null): string {
   return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300";
 }
 
-function CappedBanner() {
+function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
+  if (totalPages <= 1) return null;
   return (
-    <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 text-amber-800 dark:text-amber-300 text-sm">
-      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-      </svg>
-      Results limited to the most recent 500 orders (10 pages). Narrow your date range for a complete view.
+    <div className="flex items-center justify-between mt-4">
+      <div>{page > 1 && <Link to={buildUrl(page - 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Previous</Link>}</div>
+      <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
+      <div>{page < totalPages && <Link to={buildUrl(page + 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">Next →</Link>}</div>
     </div>
-  );
-}
-
-function LoadingSpinner() {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 gap-4">
-      <svg
-        className="animate-spin h-10 w-10 text-indigo-500"
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-      >
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-        />
-      </svg>
-      <div className="text-center">
-        <p className="text-sm font-medium text-gray-600 dark:text-gray-300">Fetching sales data from Shopify…</p>
-        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">This may take a few seconds depending on order volume.</p>
-      </div>
-    </div>
-  );
-}
-
-function VelocityTable({
-  data,
-  capped,
-  dayRange,
-  vendorFilter,
-  productTypeFilter,
-}: {
-  data: SalesVelocityVariant[];
-  capped: boolean;
-  dayRange: number;
-  vendorFilter: string;
-  productTypeFilter: string;
-}) {
-  const filtered = data.filter((v) => {
-    if (vendorFilter && v.vendor !== vendorFilter) return false;
-    if (productTypeFilter && v.productType !== productTypeFilter) return false;
-    return true;
-  });
-
-  const rows = filtered.map((v) => {
-    const avgDaily = v.unitsSold / dayRange;
-    const daysRemaining =
-      avgDaily > 0 ? Math.floor(v.currentStock / avgDaily) : null;
-    return { ...v, avgDaily, daysRemaining };
-  });
-
-  rows.sort((a, b) => {
-    if (a.daysRemaining === null && b.daysRemaining === null) return 0;
-    if (a.daysRemaining === null) return 1;
-    if (b.daysRemaining === null) return -1;
-    return a.daysRemaining - b.daysRemaining;
-  });
-
-  if (rows.length === 0) {
-    return (
-      <>
-        {capped && <CappedBanner />}
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
-          No products sold in this date range.
-        </div>
-      </>
-    );
-  }
-
-  return (
-    <>
-      {capped && <CappedBanner />}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-        <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex gap-4">
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> &lt;7 days — critical</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block" /> &lt;14 days — low</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> &lt;30 days — watch</span>
-          <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> 30+ days — healthy</span>
-        </div>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-              <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
-              <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
-              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Units Sold</th>
-              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Revenue</th>
-              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
-              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Stock</th>
-              <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={row.variantId} className={i < rows.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{row.productTitle}</td>
-                <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{row.sku || "—"}</td>
-                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.unitsSold}</td>
-                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{fmt$(row.revenue)}</td>
-                <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.avgDaily.toFixed(2)}</td>
-                <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock}</td>
-                <td className="px-5 py-3 text-right">
-                  <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
-                    {row.daysRemaining === null ? "∞" : row.daysRemaining + "d"}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
   );
 }
 
 export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) {
-  const { vendors, shopifyProductTypes, velocityData, dayRange, filters } = loaderData;
+  const { rows, vendors, distinctTypes, dayRange, filters, pagination, lastSyncTime, noSync } = loaderData;
   const [, setSearchParams] = useSearchParams();
   const [localVendor, setLocalVendor] = useState(filters.vendor);
   const [localType, setLocalType] = useState(filters.productType);
@@ -214,11 +162,20 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
   function clearFilters() {
     const now = new Date();
     const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    setLocalVendor("");
-    setLocalType("");
+    setLocalVendor(""); setLocalType("");
     setLocalStart(d30.toISOString().slice(0, 10));
     setLocalEnd(now.toISOString().slice(0, 10));
     setSearchParams(new URLSearchParams());
+  }
+
+  function buildPageUrl(p: number) {
+    const params = new URLSearchParams();
+    if (filters.vendor) params.set("vendor", filters.vendor);
+    if (filters.productType) params.set("productType", filters.productType);
+    if (filters.startDate) params.set("startDate", filters.startDate);
+    if (filters.endDate) params.set("endDate", filters.endDate);
+    params.set("page", String(p));
+    return `?${params.toString()}`;
   }
 
   return (
@@ -227,61 +184,93 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
         <Link to="/reports" className="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300">← Reports</Link>
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Sales Velocity</h2>
-        <span className="text-xs text-gray-400 dark:text-gray-500 ml-2">Sorted by days of stock remaining (urgent first)</span>
+        {lastSyncTime && (
+          <span className="text-xs text-gray-400 dark:text-gray-500">Data as of {new Date(lastSyncTime).toLocaleString()}</span>
+        )}
+        <span className="text-xs text-gray-400 dark:text-gray-500 ml-2">Sorted by units sold</span>
       </div>
+
+      {noSync && (
+        <div className="mb-6 p-4 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 text-sm text-amber-800 dark:text-amber-300">
+          No data synced yet. Click <strong>Sync Data</strong> in the navigation bar to fetch sales data from Shopify.
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-4 mb-6 flex flex-wrap gap-3 items-end">
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Vendor</label>
-          <select value={localVendor} onChange={(e) => setLocalVendor(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100">
+          <select value={localVendor} onChange={(e) => setLocalVendor(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100">
             <option value="">All vendors</option>
             {vendors.map((v) => <option key={v.id} value={v.name}>{v.name}</option>)}
           </select>
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Product Type</label>
-          <select value={localType} onChange={(e) => setLocalType(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100">
+          <select value={localType} onChange={(e) => setLocalType(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100">
             <option value="">All types</option>
-            {shopifyProductTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            {distinctTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium text-gray-500 dark:text-gray-400">From (default: last 30 days)</label>
-          <input type="date" value={localStart} onChange={(e) => setLocalStart(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100" />
+          <label className="text-xs font-medium text-gray-500 dark:text-gray-400">From</label>
+          <input type="date" value={localStart} onChange={(e) => setLocalStart(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100" />
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-gray-500 dark:text-gray-400">To</label>
-          <input type="date" value={localEnd} onChange={(e) => setLocalEnd(e.target.value)}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100" />
+          <input type="date" value={localEnd} onChange={(e) => setLocalEnd(e.target.value)} className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100" />
         </div>
-        <button onClick={applyFilters}
-          className="text-sm font-medium px-4 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">
-          Apply
-        </button>
-        <button onClick={clearFilters}
-          className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-          Reset
-        </button>
+        <button onClick={applyFilters} className="text-sm font-medium px-4 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">Apply</button>
+        <button onClick={clearFilters} className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors">Reset</button>
       </div>
 
-      {/* Deferred table with loading state */}
-      <Suspense fallback={<LoadingSpinner />}>
-        <Await resolve={velocityData}>
-          {({ data, capped }) => (
-            <VelocityTable
-              data={data}
-              capped={capped}
-              dayRange={dayRange}
-              vendorFilter={filters.vendor}
-              productTypeFilter={filters.productType}
-            />
-          )}
-        </Await>
-      </Suspense>
+      {/* Table */}
+      {rows.length === 0 ? (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
+          {noSync ? "Run Sync to populate data." : "No sales data for this date range."}
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex gap-4">
+            <span>{pagination.totalCount} variants · Page {pagination.page} of {pagination.totalPages}</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> &lt;7 days — critical</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block" /> &lt;14 — low</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> &lt;30 — watch</span>
+            <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> 30+ — healthy</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Units Sold</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Revenue</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Stock</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={row.variantId} className={i < rows.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                  <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{row.productTitle}</td>
+                  <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{row.sku || "—"}</td>
+                  <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.unitsSold}</td>
+                  <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{fmt$(row.revenue)}</td>
+                  <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.avgDaily.toFixed(2)}</td>
+                  <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock}</td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
+                      {row.daysRemaining === null ? "∞" : row.daysRemaining + "d"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} buildUrl={buildPageUrl} />
     </main>
   );
 }

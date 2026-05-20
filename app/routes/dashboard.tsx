@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
-import { getLowStockVariants } from "../services/shopify.server";
+import { getLowStockVariants, getProductTypes } from "../services/shopify.server";
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
@@ -34,6 +34,10 @@ export async function loader({ request }: Route.LoaderArgs) {
   const db = getDb();
   const url = new URL(request.url);
   const period = (url.searchParams.get("period") ?? "month") as Period;
+  const _parsedThreshold = parseInt(url.searchParams.get("lowStockThreshold") ?? "5", 10);
+  const lowStockThreshold = isNaN(_parsedThreshold) ? 5 : _parsedThreshold;
+  const lowStockVendor = url.searchParams.get("lowStockVendor") ?? "";
+  const lowStockProductType = url.searchParams.get("lowStockProductType") ?? "";
   const since = periodStart(period);
   const now = new Date();
   const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -51,6 +55,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     marginAlertItems,
     marginSetting,
     lowStock,
+    vendorRows,
+    productTypes,
   ] = await Promise.all([
     // Outstanding balance (RECEIVED invoices - credits)
     db.$queryRaw<{ total: number; credits: number }[]>`
@@ -154,8 +160,18 @@ export async function loader({ request }: Route.LoaderArgs) {
     // Margin floor setting
     db.appSetting.findUnique({ where: { key: "marginFloor" } }),
 
-    // Low stock from Shopify (best-effort)
-    getLowStockVariants(5),
+    // Low stock snapshot — first 250 from Shopify, filtered and capped at 50
+    getLowStockVariants(
+      lowStockThreshold,
+      lowStockVendor || undefined,
+      lowStockProductType || undefined
+    ),
+
+    // Vendor list from local DB for filter dropdown
+    db.vendor.findMany({ orderBy: { name: "asc" }, select: { name: true } }),
+
+    // Product types from Shopify for filter dropdown
+    getProductTypes(),
   ]);
 
   const marginFloor = parseFloat(marginSetting?.value ?? "40");
@@ -197,6 +213,13 @@ export async function loader({ request }: Route.LoaderArgs) {
       lowStock,
     },
     marginAlerts: { items: belowMargin, marginFloor },
+    lowStockFilters: {
+      threshold: lowStockThreshold,
+      vendor: lowStockVendor,
+      productType: lowStockProductType,
+      vendors: vendorRows.map((v) => v.name),
+      productTypes,
+    },
   };
 }
 
@@ -388,9 +411,37 @@ const PERIODS: { label: string; value: Period }[] = [
 ];
 
 export default function DashboardPage({ loaderData }: Route.ComponentProps) {
-  const { period, kpis, charts, tables, marginAlerts } = loaderData;
-  const [searchParams] = useSearchParams();
+  const { period, kpis, charts, tables, marginAlerts, lowStockFilters } = loaderData;
+  const [searchParams, setSearchParams] = useSearchParams();
   const isDark = useIsDark();
+
+  const [localLsVendor, setLocalLsVendor] = useState(lowStockFilters.vendor);
+  const [localLsProductType, setLocalLsProductType] = useState(lowStockFilters.productType);
+  const [localLsThreshold, setLocalLsThreshold] = useState(String(lowStockFilters.threshold));
+
+  const uniqueLsVendors = lowStockFilters.vendors;
+  const uniqueLsProductTypes = lowStockFilters.productTypes;
+
+  function applyLowStockFilters() {
+    const p = new URLSearchParams(searchParams);
+    p.set("lowStockThreshold", localLsThreshold !== "" ? localLsThreshold : "5");
+    if (localLsVendor) p.set("lowStockVendor", localLsVendor);
+    else p.delete("lowStockVendor");
+    if (localLsProductType) p.set("lowStockProductType", localLsProductType);
+    else p.delete("lowStockProductType");
+    setSearchParams(p);
+  }
+
+  function clearLowStockFilters() {
+    setLocalLsVendor("");
+    setLocalLsProductType("");
+    setLocalLsThreshold("5");
+    const p = new URLSearchParams(searchParams);
+    p.delete("lowStockVendor");
+    p.delete("lowStockProductType");
+    p.delete("lowStockThreshold");
+    setSearchParams(p);
+  }
 
   return (
     <main className="p-8 max-w-6xl mx-auto">
@@ -539,32 +590,95 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
       </Section>
 
       {/* Low Stock */}
-      <Section title="Low Stock Alert (≤5 units)">
+      <Section title={`Low Stock Alert (≤${lowStockFilters.threshold} units)`}>
+        {/* Filter bar */}
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-4 mb-3 flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Threshold</label>
+            <input
+              type="number"
+              max={100}
+              value={localLsThreshold}
+              onChange={(e) => setLocalLsThreshold(e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 w-20"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Vendor</label>
+            <select
+              value={localLsVendor}
+              onChange={(e) => setLocalLsVendor(e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
+            >
+              <option value="">All vendors</option>
+              {uniqueLsVendors.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Product Type</label>
+            <select
+              value={localLsProductType}
+              onChange={(e) => setLocalLsProductType(e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
+            >
+              <option value="">All types</option>
+              {uniqueLsProductTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <button
+            onClick={applyLowStockFilters}
+            className="text-sm font-medium px-4 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+          >
+            Apply
+          </button>
+          {(lowStockFilters.vendor || lowStockFilters.productType || lowStockFilters.threshold !== 5) && (
+            <button
+              onClick={clearLowStockFilters}
+              className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
         {tables.lowStock.length === 0 ? (
-          <Empty msg="No low-stock variants." />
+          <Empty msg="No low-stock variants match your filters." />
         ) : (
-          <Card className="overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
-                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
-                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tables.lowStock.map((v, i) => (
-                  <tr key={v.variantId} className={i < tables.lowStock.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                    <td className="px-5 py-3 text-gray-800 dark:text-gray-100">{v.productTitle}</td>
-                    <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300">{v.sku || "—"}</td>
-                    <td className={`px-5 py-3 text-right font-bold ${v.inventoryQty === 0 ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>
-                      {v.inventoryQty}
-                    </td>
+          <>
+            <Card className="overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
+                    <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
+                </thead>
+                <tbody>
+                  {tables.lowStock.map((v, i) => (
+                    <tr key={v.variantId} className={i < tables.lowStock.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                      <td className="px-5 py-3 text-gray-800 dark:text-gray-100">{v.productTitle}</td>
+                      <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300">{v.sku || "—"}</td>
+                      <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{v.vendor || "—"}</td>
+                      <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{v.productType || "—"}</td>
+                      <td className={`px-5 py-3 text-right font-bold ${v.inventoryQty === 0 ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>
+                        {v.inventoryQty}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+            <div className="mt-2 text-right">
+              <Link
+                to="/reports/inventory-valuation"
+                className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                View all low stock →
+              </Link>
+            </div>
+          </>
         )}
       </Section>
 

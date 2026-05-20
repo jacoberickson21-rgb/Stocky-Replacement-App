@@ -1187,46 +1187,92 @@ export type LowStockVariant = {
   sku: string;
   productTitle: string;
   inventoryQty: number;
+  vendor: string;
+  productType: string;
 };
 
-export async function getLowStockVariants(threshold = 5): Promise<LowStockVariant[]> {
+export async function getLowStockVariants(
+  threshold = 5,
+  vendor?: string,
+  productType?: string
+): Promise<LowStockVariant[]> {
+  type LowStockPage = {
+    productVariants: {
+      edges: {
+        node: {
+          id: string;
+          sku: string;
+          inventoryQuantity: number;
+          product: { title: string; vendor: string; productType: string };
+        };
+      }[];
+    };
+  };
+
   try {
-    const data = await shopifyGraphQL<{
-      productVariants: {
-        edges: {
-          node: {
-            id: string;
-            sku: string;
-            inventoryQuantity: number;
-            product: { title: string };
-          };
-        }[];
-      };
-    }>(
+    const data = await shopifyGraphQL<LowStockPage>(
       `query LowStock($query: String!) {
-        productVariants(first: 50, query: $query) {
+        productVariants(first: 250, query: $query) {
           edges {
             node {
               id
               sku
               inventoryQuantity
-              product { title }
+              product { title vendor productType }
             }
           }
         }
       }`,
-      { query: `inventory_quantity:<${threshold + 1} AND inventory_quantity:>-1` }
+      { query: `inventory_quantity:<=${threshold}` }
     );
-    return data.productVariants.edges
-      .map((e) => ({
-        variantId: e.node.id,
-        sku: e.node.sku,
-        productTitle: e.node.product.title,
-        inventoryQty: e.node.inventoryQuantity,
-      }))
-      .sort((a, b) => a.inventoryQty - b.inventoryQty);
+
+    let results = data.productVariants.edges.map((edge) => {
+      const n = edge.node;
+      return {
+        variantId: n.id,
+        sku: n.sku,
+        productTitle: n.product.title,
+        inventoryQty: n.inventoryQuantity,
+        vendor: n.product.vendor,
+        productType: n.product.productType,
+      };
+    });
+
+    if (vendor) results = results.filter((r) => r.vendor.toLowerCase() === vendor.toLowerCase());
+    if (productType) results = results.filter((r) => r.productType.toLowerCase() === productType.toLowerCase());
+
+    return results.sort((a, b) => a.inventoryQty - b.inventoryQty).slice(0, 50);
   } catch {
     return [];
+  }
+}
+
+export async function getVariantPricesBulk(variantIds: string[]): Promise<Map<string, number>> {
+  if (variantIds.length === 0) return new Map();
+  try {
+    const data = await shopifyGraphQL<{
+      nodes: ({ id: string; price: string } | null)[];
+    }>(
+      `query BulkVariantPrices($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on ProductVariant {
+            id
+            price
+          }
+        }
+      }`,
+      { ids: variantIds }
+    );
+    const map = new Map<string, number>();
+    for (const node of data.nodes) {
+      if (node && node.id && node.price) {
+        const price = parseFloat(node.price);
+        if (!isNaN(price) && price > 0) map.set(node.id, price);
+      }
+    }
+    return map;
+  } catch {
+    return new Map();
   }
 }
 
@@ -1423,6 +1469,7 @@ export type InventoryVariant = {
   sku: string;
   price: number;
   inventoryQuantity: number;
+  shopifyCost: number | null;
 };
 
 export async function getInventoryValuationData(opts?: {
@@ -1446,7 +1493,15 @@ export async function getInventoryValuationData(opts?: {
           title: string;
           vendor: string;
           productType: string;
-          variants: { nodes: { id: string; sku: string; price: string; inventoryQuantity: number }[] };
+          variants: {
+            nodes: {
+              id: string;
+              sku: string;
+              price: string;
+              inventoryQuantity: number;
+              inventoryItem: { unitCost: { amount: string } | null } | null;
+            }[];
+          };
         };
       }[];
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
@@ -1460,7 +1515,12 @@ export async function getInventoryValuationData(opts?: {
             node {
               id title vendor productType
               variants(first: 100) {
-                nodes { id sku price inventoryQuantity }
+                nodes {
+                  id sku price inventoryQuantity
+                  inventoryItem {
+                    unitCost { amount }
+                  }
+                }
               }
             }
           }
@@ -1473,6 +1533,7 @@ export async function getInventoryValuationData(opts?: {
     for (const edge of pageResult.products.edges) {
       const p = edge.node;
       for (const v of p.variants.nodes) {
+        const costStr = v.inventoryItem?.unitCost?.amount;
         results.push({
           variantId: v.id,
           productTitle: p.title,
@@ -1481,12 +1542,208 @@ export async function getInventoryValuationData(opts?: {
           sku: v.sku,
           price: parseFloat(v.price),
           inventoryQuantity: v.inventoryQuantity,
+          shopifyCost: costStr && parseFloat(costStr) > 0 ? parseFloat(costStr) : null,
         });
       }
     }
 
     hasNextPage = pageResult.products.pageInfo.hasNextPage;
     cursor = pageResult.products.pageInfo.endCursor;
+  }
+
+  return results;
+}
+
+// ─── Sync: All Product Variants ──────────────────────────────────────────────
+
+export type SyncVariant = {
+  productId: string;
+  variantId: string;
+  title: string;
+  variantTitle: string;
+  sku: string | null;
+  barcode: string | null;
+  vendor: string;
+  productType: string;
+  tags: string[];
+  price: number;
+  cost: number | null;
+  currentInventory: number;
+  imageUrl: string | null;
+  status: string;
+};
+
+export async function getAllProductVariants(
+  onProgress?: (fetched: number) => void
+): Promise<SyncVariant[]> {
+  const results: SyncVariant[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  type SyncPage = {
+    products: {
+      edges: {
+        node: {
+          id: string;
+          title: string;
+          vendor: string;
+          productType: string;
+          status: string;
+          tags: string[];
+          featuredImage: { url: string } | null;
+          variants: {
+            edges: {
+              node: {
+                id: string;
+                title: string;
+                sku: string | null;
+                barcode: string | null;
+                price: string;
+                inventoryQuantity: number;
+                inventoryItem: { unitCost: { amount: string } | null } | null;
+              };
+            }[];
+          };
+        };
+      }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  };
+
+  while (hasNextPage) {
+    const page: SyncPage = await shopifyGraphQL<SyncPage>(
+      `query GetAllProducts($after: String) {
+        products(first: 250, after: $after, query: "status:active OR status:draft") {
+          edges {
+            node {
+              id title vendor productType status tags
+              featuredImage { url }
+              variants(first: 100) {
+                edges {
+                  node {
+                    id title sku barcode price inventoryQuantity
+                    inventoryItem { unitCost { amount } }
+                  }
+                }
+              }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`,
+      { after: cursor }
+    );
+
+    for (const edge of page.products.edges) {
+      const p = edge.node;
+      for (const ve of p.variants.edges) {
+        const v = ve.node;
+        const costStr = v.inventoryItem?.unitCost?.amount;
+        results.push({
+          productId: p.id,
+          variantId: v.id,
+          title: p.title,
+          variantTitle: v.title,
+          sku: v.sku ?? null,
+          barcode: v.barcode ?? null,
+          vendor: p.vendor,
+          productType: p.productType,
+          tags: p.tags,
+          price: parseFloat(v.price),
+          cost: costStr && parseFloat(costStr) > 0 ? parseFloat(costStr) : null,
+          currentInventory: v.inventoryQuantity,
+          imageUrl: p.featuredImage?.url ?? null,
+          status: p.status,
+        });
+      }
+    }
+
+    onProgress?.(results.length);
+    hasNextPage = page.products.pageInfo.hasNextPage;
+    cursor = page.products.pageInfo.endCursor;
+  }
+
+  return results;
+}
+
+// ─── Sync: All Orders ─────────────────────────────────────────────────────────
+
+export type OrderLineItem = {
+  variantId: string;
+  sku: string | null;
+  quantity: number;
+  price: number;
+  orderDate: string;
+};
+
+export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - daysCutoff);
+  const startISO = startDate.toISOString();
+  const orderQuery = `created_at:>='${startISO}' NOT financial_status:voided`;
+
+  const results: OrderLineItem[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  type OrdersPage = {
+    orders: {
+      edges: {
+        node: {
+          createdAt: string;
+          lineItems: {
+            nodes: {
+              variant: { id: string } | null;
+              sku: string | null;
+              quantity: number;
+              originalUnitPriceSet: { shopMoney: { amount: string } };
+            }[];
+          };
+        };
+      }[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  };
+
+  while (hasNextPage) {
+    const page: OrdersPage = await shopifyGraphQL<OrdersPage>(
+      `query GetAllOrders($query: String!, $after: String) {
+        orders(first: 250, query: $query, after: $after) {
+          edges {
+            node {
+              createdAt
+              lineItems(first: 250) {
+                nodes {
+                  variant { id }
+                  sku
+                  quantity
+                  originalUnitPriceSet { shopMoney { amount } }
+                }
+              }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }`,
+      { query: orderQuery, after: cursor }
+    );
+
+    for (const edge of page.orders.edges) {
+      const orderDate = edge.node.createdAt;
+      for (const item of edge.node.lineItems.nodes) {
+        if (!item.variant?.id) continue;
+        results.push({
+          variantId: item.variant.id,
+          sku: item.sku,
+          quantity: item.quantity,
+          price: parseFloat(item.originalUnitPriceSet.shopMoney.amount),
+          orderDate,
+        });
+      }
+    }
+
+    hasNextPage = page.orders.pageInfo.hasNextPage;
+    cursor = page.orders.pageInfo.endCursor;
   }
 
   return results;
@@ -1511,18 +1768,25 @@ export type SalesVelocityResult = {
   capped: boolean;
 };
 
-const VELOCITY_MAX_PAGES = 10;
-const VELOCITY_PAGE_SIZE = 50;
+const VELOCITY_MAX_PAGES = 2;
+const VELOCITY_PAGE_SIZE = 100;
 
 export async function getSalesVelocityData(
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  partialRef?: { current: SalesVelocityVariant[] }
 ): Promise<SalesVelocityResult> {
   const startISO = startDate.toISOString();
   const endISO = endDate.toISOString();
   const orderQuery = `created_at:>='${startISO}' created_at:<='${endISO}' NOT financial_status:voided`;
 
-  const unitsSoldMap = new Map<string, { unitsSold: number; revenue: number }>();
+  // salesMap accumulates units/revenue per variant across all pages
+  const salesMap = new Map<string, { unitsSold: number; revenue: number }>();
+  // metaMap caches variant metadata fetched per page (avoids re-fetching seen variants)
+  const metaMap = new Map<string, {
+    productTitle: string; vendor: string; productType: string;
+    sku: string; price: number; currentStock: number;
+  }>();
 
   let cursor: string | null = null;
   let hasNextPage = true;
@@ -1545,6 +1809,7 @@ export async function getSalesVelocityData(
       pageInfo: { hasNextPage: boolean; endCursor: string | null };
     };
   };
+
   while (hasNextPage) {
     if (pagesFetched >= VELOCITY_MAX_PAGES) {
       capped = true;
@@ -1573,69 +1838,81 @@ export async function getSalesVelocityData(
 
     pagesFetched++;
 
+    // Collect sales and track which variant IDs are new (need metadata lookup)
+    const newVariantIds: string[] = [];
     for (const edge of ordersPage.orders.edges) {
       for (const item of edge.node.lineItems.nodes) {
         const vid = item.variant?.id;
         if (!vid) continue;
-        const prev = unitsSoldMap.get(vid) ?? { unitsSold: 0, revenue: 0 };
+        const prev = salesMap.get(vid) ?? { unitsSold: 0, revenue: 0 };
         prev.unitsSold += item.quantity;
         prev.revenue += item.quantity * parseFloat(item.originalUnitPriceSet.shopMoney.amount);
-        unitsSoldMap.set(vid, prev);
+        salesMap.set(vid, prev);
+        if (!metaMap.has(vid)) newVariantIds.push(vid);
       }
+    }
+
+    // Interleave: fetch variant metadata for this page's new variants immediately
+    const BATCH = 50;
+    for (let i = 0; i < newVariantIds.length; i += BATCH) {
+      const ids = newVariantIds.slice(i, i + BATCH);
+      const variantPage = await shopifyGraphQL<{
+        nodes: ({
+          __typename: string;
+          id: string;
+          sku: string;
+          price: string;
+          inventoryQuantity: number;
+          product: { title: string; vendor: string; productType: string };
+        } | null)[];
+      }>(
+        `query GetVariantDetails($ids: [ID!]!) {
+          nodes(ids: $ids) {
+            __typename
+            ... on ProductVariant {
+              id sku price inventoryQuantity
+              product { title vendor productType }
+            }
+          }
+        }`,
+        { ids }
+      );
+
+      for (const node of variantPage.nodes) {
+        if (!node || node.__typename !== "ProductVariant") continue;
+        metaMap.set(node.id, {
+          productTitle: node.product.title,
+          vendor: node.product.vendor,
+          productType: node.product.productType,
+          sku: node.sku,
+          price: parseFloat(node.price),
+          currentStock: node.inventoryQuantity,
+        });
+      }
+    }
+
+    // Snapshot partial results so the timeout can return whatever we have so far
+    if (partialRef) {
+      const partial: SalesVelocityVariant[] = [];
+      for (const [vid, sales] of salesMap) {
+        const meta = metaMap.get(vid);
+        if (!meta) continue;
+        partial.push({ variantId: vid, ...meta, ...sales });
+      }
+      partialRef.current = partial;
     }
 
     hasNextPage = ordersPage.orders.pageInfo.hasNextPage;
     cursor = ordersPage.orders.pageInfo.endCursor;
   }
 
-  const variantIds = Array.from(unitsSoldMap.keys());
-  if (variantIds.length === 0) return { data: [], capped };
-
   const results: SalesVelocityVariant[] = [];
-  const BATCH = 50;
-
-  for (let i = 0; i < variantIds.length; i += BATCH) {
-    const ids = variantIds.slice(i, i + BATCH);
-    const variantPage = await shopifyGraphQL<{
-      nodes: ({
-        __typename: string;
-        id: string;
-        sku: string;
-        price: string;
-        inventoryQuantity: number;
-        product: { title: string; vendor: string; productType: string };
-      } | null)[];
-    }>(
-      `query GetVariantDetails($ids: [ID!]!) {
-        nodes(ids: $ids) {
-          __typename
-          ... on ProductVariant {
-            id sku price inventoryQuantity
-            product { title vendor productType }
-          }
-        }
-      }`,
-      { ids }
-    );
-
-    for (const node of variantPage.nodes) {
-      if (!node || node.__typename !== "ProductVariant") continue;
-      const sales = unitsSoldMap.get(node.id);
-      if (!sales) continue;
-      results.push({
-        variantId: node.id,
-        productTitle: node.product.title,
-        sku: node.sku,
-        vendor: node.product.vendor,
-        productType: node.product.productType,
-        unitsSold: sales.unitsSold,
-        revenue: sales.revenue,
-        currentStock: node.inventoryQuantity,
-        price: parseFloat(node.price),
-      });
-    }
+  for (const [vid, sales] of salesMap) {
+    const meta = metaMap.get(vid);
+    if (!meta) continue;
+    results.push({ variantId: vid, ...meta, ...sales });
   }
 
-  return { data: results.sort((a, b) => a.unitsSold - b.unitsSold), capped };
+  return { data: results.sort((a, b) => b.unitsSold - a.unitsSold), capped };
 }
 

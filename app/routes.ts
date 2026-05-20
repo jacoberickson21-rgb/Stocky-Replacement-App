@@ -6,6 +6,7 @@ export default [
   route("logout", "routes/logout.tsx"),
   route("api/shopify/products", "routes/api.shopify.products.tsx"),
   route("api/line-items/:id/link", "routes/api.line-items.$id.link.tsx"),
+  route("api/sync", "routes/api.sync.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
     route("products", "routes/products.tsx"),

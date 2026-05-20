@@ -124,12 +124,17 @@ export async function loader({ request }: Route.LoaderArgs) {
     ORDER BY i."updatedAt" DESC
   `;
 
+  const zeroSpend = metrics.filter((m) => m.totalSpend === 0);
+  const zeroInvoices = metrics.filter((m) => m.invoiceCount === 0);
   console.log(`[vendor-performance] vendorId filter: "${vendorId}", date range: ${start.toISOString()} → ${end.toISOString()}`);
-  console.log(`[vendor-performance] metrics rows: ${metrics.length}, invoiceRows: ${invoiceRows.length}`);
-  console.log(`[vendor-performance] vendors in DB: ${vendors.length}`);
+  console.log(`[vendor-performance] vendors in DB: ${vendors.length}, metrics rows returned: ${metrics.length}`);
+  console.log(`[vendor-performance] vendors with $0 spend: ${zeroSpend.length}, vendors with 0 invoices in period: ${zeroInvoices.length}`);
+  console.log(`[vendor-performance] invoiceRows: ${invoiceRows.length}`);
   if (metrics.length > 0) {
-    const sample = metrics.slice(0, 3).map((m) => `${m.vendorName} (invoices:${m.invoiceCount} spend:${m.totalSpend})`).join(", ");
-    console.log(`[vendor-performance] sample metrics: ${sample}`);
+    const top3 = metrics.slice(0, 3).map((m) => `${m.vendorName}(spend:$${m.totalSpend.toFixed(0)} invoices:${m.invoiceCount})`).join(", ");
+    const bottom3 = metrics.slice(-3).map((m) => `${m.vendorName}(spend:$${m.totalSpend.toFixed(0)} invoices:${m.invoiceCount})`).join(", ");
+    console.log(`[vendor-performance] top 3 by spend: ${top3}`);
+    console.log(`[vendor-performance] bottom 3 by spend: ${bottom3}`);
   }
 
   const invoicesByVendor = new Map<number, typeof invoiceRows>();
@@ -282,6 +287,10 @@ export default function VendorPerformancePage({ loaderData }: Route.ComponentPro
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+            {sorted.length} vendor{sorted.length !== 1 ? "s" : ""}
+            {filters.vendorId ? " (filtered)" : " total"}
+          </div>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">

@@ -1,4 +1,4 @@
-import { Link, useNavigate, useFetcher } from "react-router";
+import { Link, useNavigate, useFetcher, useSearchParams } from "react-router";
 import { useState, useRef, useEffect } from "react";
 import type { Route } from "./+types/vendors";
 import { getDb } from "../db.server";
@@ -8,10 +8,13 @@ import { importVendorsFromCSV } from "../utils/csv-import.server";
 const VENDOR_TEMPLATE_HREF =
   "data:text/csv;charset=utf-8,name%2Ccontact_name%2Cemail%2Cphone%2Csupplier_name%0A";
 
+const PAGE_SIZE = 50;
+
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const url = new URL(request.url);
   const searchParam = url.searchParams.get("search");
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const where = searchParam
     ? {
@@ -24,12 +27,16 @@ export async function loader({ request }: Route.LoaderArgs) {
       }
     : {};
 
-  const [vendors, suppliers] = await Promise.all([
-    getDb().vendor.findMany({ where, orderBy: { name: "asc" } }),
-    getDb().supplier.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
+  const db = getDb();
+  const [totalCount, vendors, suppliers] = await Promise.all([
+    db.vendor.count({ where }),
+    db.vendor.findMany({ where, orderBy: { name: "asc" }, skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE }),
+    db.supplier.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
   ]);
 
-  return { vendors, suppliers, searchParam };
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+  return { vendors, suppliers, searchParam, pagination: { page, totalPages, totalCount } };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -96,7 +103,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function VendorsPage({ loaderData }: Route.ComponentProps) {
-  const { vendors, suppliers, searchParam } = loaderData;
+  const { vendors, suppliers, searchParam, pagination } = loaderData;
   const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState(searchParam ?? "");
   const [showImportPanel, setShowImportPanel] = useState(false);
@@ -498,6 +505,35 @@ export default function VendorsPage({ loaderData }: Route.ComponentProps) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between mt-4">
+          <div>
+            {pagination.page > 1 && (
+              <Link
+                to={`/vendors?${new URLSearchParams({ ...(searchParam ? { search: searchParam } : {}), page: String(pagination.page - 1) }).toString()}`}
+                className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                ← Previous
+              </Link>
+            )}
+          </div>
+          <span className="text-sm text-gray-500 dark:text-gray-400">
+            Page {pagination.page} of {pagination.totalPages} · {pagination.totalCount} vendors
+          </span>
+          <div>
+            {pagination.page < pagination.totalPages && (
+              <Link
+                to={`/vendors?${new URLSearchParams({ ...(searchParam ? { search: searchParam } : {}), page: String(pagination.page + 1) }).toString()}`}
+                className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                Next →
+              </Link>
+            )}
+          </div>
         </div>
       )}
     </main>
