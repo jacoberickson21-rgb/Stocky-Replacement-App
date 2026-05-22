@@ -5,6 +5,8 @@ import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { Prisma } from "@prisma/client";
 
+const PAGE_SIZE = 50;
+
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const db = getDb();
@@ -14,6 +16,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const staffId = url.searchParams.get("staffId") ?? "";
   const startDate = url.searchParams.get("startDate") ?? "";
   const endDate = url.searchParams.get("endDate") ?? "";
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const now = new Date();
   const defaultStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
@@ -83,16 +86,21 @@ export async function loader({ request }: Route.LoaderArgs) {
   const totalValue = rows.reduce((s, r) => s + r.total, 0);
   const totalDiscrepancies = rows.reduce((s, r) => s + r.discrepancyCount, 0);
 
+  const totalCount = rows.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return {
-    rows: rows.map((r) => ({
+    rows: pageRows.map((r) => ({
       ...r,
       total: r.total,
       receivedAt: r.receivedAt.toISOString(),
     })),
     vendors,
     users,
-    summary: { count: rows.length, totalValue, totalDiscrepancies },
+    summary: { count: totalCount, totalValue, totalDiscrepancies },
     filters: { vendorId, staffId, startDate, endDate },
+    pagination: { page, totalPages, totalCount },
   };
 }
 
@@ -100,12 +108,26 @@ function fmt$(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
+  if (totalPages <= 1) return null;
+  const btnBase = "text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors";
+  const btnOn = "border-gray-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 hover:bg-gray-50 dark:hover:bg-gray-800";
+  const btnOff = "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none select-none";
+  return (
+    <div className="flex items-center justify-between mt-4">
+      <Link to={page > 1 ? buildUrl(page - 1) : "#"} aria-disabled={page <= 1} className={`${btnBase} ${page > 1 ? btnOn : btnOff}`}>← Previous</Link>
+      <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
+      <Link to={page < totalPages ? buildUrl(page + 1) : "#"} aria-disabled={page >= totalPages} className={`${btnBase} ${page < totalPages ? btnOn : btnOff}`}>Next →</Link>
+    </div>
+  );
+}
+
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 export default function ReceivingHistoryPage({ loaderData }: Route.ComponentProps) {
-  const { rows, vendors, users, summary, filters } = loaderData;
+  const { rows, vendors, users, summary, filters, pagination } = loaderData;
   const [, setSearchParams] = useSearchParams();
   const [localVendor, setLocalVendor] = useState(filters.vendorId);
   const [localStaff, setLocalStaff] = useState(filters.staffId);
@@ -124,6 +146,16 @@ export default function ReceivingHistoryPage({ loaderData }: Route.ComponentProp
   function clearFilters() {
     setLocalVendor(""); setLocalStaff(""); setLocalStart(""); setLocalEnd("");
     setSearchParams(new URLSearchParams());
+  }
+
+  function buildPageUrl(p: number) {
+    const params = new URLSearchParams();
+    if (filters.vendorId) params.set("vendorId", filters.vendorId);
+    if (filters.staffId) params.set("staffId", filters.staffId);
+    if (filters.startDate) params.set("startDate", filters.startDate);
+    if (filters.endDate) params.set("endDate", filters.endDate);
+    params.set("page", String(p));
+    return `?${params.toString()}`;
   }
 
   return (
@@ -202,6 +234,9 @@ export default function ReceivingHistoryPage({ loaderData }: Route.ComponentProp
         </div>
       ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+            {pagination.totalCount} shipment{pagination.totalCount !== 1 ? "s" : ""} · Page {pagination.page} of {pagination.totalPages}
+          </div>
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -244,6 +279,7 @@ export default function ReceivingHistoryPage({ loaderData }: Route.ComponentProp
           </table>
         </div>
       )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} buildUrl={buildPageUrl} />
     </main>
   );
 }

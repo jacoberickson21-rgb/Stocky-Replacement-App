@@ -2,6 +2,8 @@ import { Link, useSearchParams } from "react-router";
 import { useState } from "react";
 import React from "react";
 import type { Route } from "./+types/reports.vendor-performance";
+
+const PAGE_SIZE = 50;
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { Prisma } from "@prisma/client";
@@ -14,6 +16,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const vendorId = url.searchParams.get("vendorId") ?? "";
   const startDate = url.searchParams.get("startDate") ?? "";
   const endDate = url.searchParams.get("endDate") ?? "";
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const now = new Date();
   const defaultStart = new Date(now.getFullYear(), now.getMonth() - 11, 1);
@@ -144,8 +147,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     invoicesByVendor.set(row.vendorId, existing);
   }
 
+  const totalCount = metrics.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const pageMetrics = metrics.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return {
-    metrics,
+    metrics: pageMetrics,
     invoicesByVendor: Object.fromEntries(
       Array.from(invoicesByVendor.entries()).map(([k, v]) => [
         k,
@@ -159,6 +166,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     vendors,
     filters: { vendorId, startDate, endDate },
     dateRange: { start: start.toISOString(), end: end.toISOString() },
+    pagination: { page, totalPages, totalCount },
   };
 }
 
@@ -177,10 +185,24 @@ const STATUS_PILL: Record<string, string> = {
   PAID: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
 };
 
+function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
+  if (totalPages <= 1) return null;
+  const btnBase = "text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors";
+  const btnOn = "border-gray-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 hover:bg-gray-50 dark:hover:bg-gray-800";
+  const btnOff = "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none select-none";
+  return (
+    <div className="flex items-center justify-between mt-4">
+      <Link to={page > 1 ? buildUrl(page - 1) : "#"} aria-disabled={page <= 1} className={`${btnBase} ${page > 1 ? btnOn : btnOff}`}>← Previous</Link>
+      <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
+      <Link to={page < totalPages ? buildUrl(page + 1) : "#"} aria-disabled={page >= totalPages} className={`${btnBase} ${page < totalPages ? btnOn : btnOff}`}>Next →</Link>
+    </div>
+  );
+}
+
 type SortKey = "totalSpend" | "invoiceCount" | "discrepancyRate" | "avgOrderCycleDays" | "outstandingBalance";
 
 export default function VendorPerformancePage({ loaderData }: Route.ComponentProps) {
-  const { metrics, invoicesByVendor, vendors, filters } = loaderData;
+  const { metrics, invoicesByVendor, vendors, filters, pagination } = loaderData;
   const [, setSearchParams] = useSearchParams();
   const [localVendor, setLocalVendor] = useState(filters.vendorId);
   const [localStart, setLocalStart] = useState(filters.startDate);
@@ -200,6 +222,15 @@ export default function VendorPerformancePage({ loaderData }: Route.ComponentPro
   function clearFilters() {
     setLocalVendor(""); setLocalStart(""); setLocalEnd("");
     setSearchParams(new URLSearchParams());
+  }
+
+  function buildPageUrl(p: number) {
+    const params = new URLSearchParams();
+    if (filters.vendorId) params.set("vendorId", filters.vendorId);
+    if (filters.startDate) params.set("startDate", filters.startDate);
+    if (filters.endDate) params.set("endDate", filters.endDate);
+    params.set("page", String(p));
+    return `?${params.toString()}`;
   }
 
   function toggleSort(key: SortKey) {
@@ -288,8 +319,8 @@ export default function VendorPerformancePage({ loaderData }: Route.ComponentPro
       ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
           <div className="px-5 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
-            {sorted.length} vendor{sorted.length !== 1 ? "s" : ""}
-            {filters.vendorId ? " (filtered)" : " total"}
+            {pagination.totalCount} vendor{pagination.totalCount !== 1 ? "s" : ""}
+            {filters.vendorId ? " (filtered)" : " total"} · Page {pagination.page} of {pagination.totalPages}
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -390,6 +421,7 @@ export default function VendorPerformancePage({ loaderData }: Route.ComponentPro
           </table>
         </div>
       )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} buildUrl={buildPageUrl} />
     </main>
   );
 }

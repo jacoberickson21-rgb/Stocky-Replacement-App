@@ -19,6 +19,7 @@ type VelocityRow = {
   currentStock: number;
   avgDaily: number;
   daysRemaining: number | null;
+  sellThrough: number;
 };
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -38,11 +39,16 @@ export async function loader({ request }: Route.LoaderArgs) {
   const end = endDateStr ? new Date(endDateStr + "T23:59:59") : now;
   const dayRange = Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000), 1);
 
-  const [vendors, distinctTypes, lastSync] = await Promise.all([
+  const [vendors, distinctTypes, lastSync, productCacheCount, salesCacheCount] = await Promise.all([
     db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.productCache.findMany({ distinct: ["productType"], where: { productType: { not: null } }, select: { productType: true }, orderBy: { productType: "asc" } }),
     getSyncStatus(),
+    db.productCache.count(),
+    db.salesCache.count(),
   ]);
+
+  console.log(`[sales-velocity] ProductCache rows: ${productCacheCount}, SalesCache rows: ${salesCacheCount}`);
+  console.log(`[sales-velocity] date range: ${start.toISOString().slice(0, 10)} → ${end.toISOString().slice(0, 10)} (${dayRange} days)`);
 
   // Build optional filter conditions
   const vendorCond = vendorFilter ? Prisma.sql`AND p.vendor ILIKE ${vendorFilter}` : Prisma.sql``;
@@ -76,14 +82,25 @@ export async function loader({ request }: Route.LoaderArgs) {
     ${vendorCond}
     ${typeCond}
     GROUP BY p."variantId", p.title, p.sku, p.vendor, p."productType", p."currentInventory"
-    ORDER BY SUM(s."unitsSold") DESC
   `;
+
+  console.log(`[sales-velocity] raw JOIN query returned ${rawRows.length} rows`);
+  if (rawRows.length === 0 && salesCacheCount > 0) {
+    const scSample = await db.salesCache.findFirst({ select: { variantId: true, date: true } });
+    const pcSample = await db.productCache.findFirst({ select: { variantId: true } });
+    console.log(`[sales-velocity] EMPTY RESULT but SalesCache has data — possible variantId mismatch`);
+    console.log(`[sales-velocity] SalesCache sample variantId: ${scSample?.variantId}, date: ${scSample?.date?.toISOString()}`);
+    console.log(`[sales-velocity] ProductCache sample variantId: ${pcSample?.variantId}`);
+  }
 
   const allRows: VelocityRow[] = rawRows.map((r) => {
     const unitsSold = Number(r.unitsSold);
     const revenue = parseFloat(r.revenue);
     const avgDaily = unitsSold / dayRange;
     const daysRemaining = avgDaily > 0 ? Math.floor(r.currentStock / avgDaily) : null;
+    const sellThrough = unitsSold + r.currentStock > 0
+      ? Math.round((unitsSold / (unitsSold + r.currentStock)) * 1000) / 10
+      : 0;
     return {
       variantId: r.variantId,
       productTitle: r.productTitle,
@@ -95,7 +112,16 @@ export async function loader({ request }: Route.LoaderArgs) {
       currentStock: r.currentStock,
       avgDaily,
       daysRemaining,
+      sellThrough,
     };
+  });
+
+  // Sort by daysRemaining ASC (most urgent first); items with no velocity go last
+  allRows.sort((a, b) => {
+    if (a.daysRemaining === null && b.daysRemaining === null) return 0;
+    if (a.daysRemaining === null) return 1;
+    if (b.daysRemaining === null) return -1;
+    return a.daysRemaining - b.daysRemaining;
   });
 
   const totalCount = allRows.length;
@@ -133,11 +159,14 @@ function daysBadgeBg(days: number | null): string {
 
 function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
   if (totalPages <= 1) return null;
+  const btnBase = "text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors";
+  const btnOn = "border-gray-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 hover:bg-gray-50 dark:hover:bg-gray-800";
+  const btnOff = "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none select-none";
   return (
     <div className="flex items-center justify-between mt-4">
-      <div>{page > 1 && <Link to={buildUrl(page - 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Previous</Link>}</div>
+      <Link to={page > 1 ? buildUrl(page - 1) : "#"} aria-disabled={page <= 1} className={`${btnBase} ${page > 1 ? btnOn : btnOff}`}>← Previous</Link>
       <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
-      <div>{page < totalPages && <Link to={buildUrl(page + 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">Next →</Link>}</div>
+      <Link to={page < totalPages ? buildUrl(page + 1) : "#"} aria-disabled={page >= totalPages} className={`${btnBase} ${page < totalPages ? btnOn : btnOff}`}>Next →</Link>
     </div>
   );
 }
@@ -187,7 +216,7 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
         {lastSyncTime && (
           <span className="text-xs text-gray-400 dark:text-gray-500">Data as of {new Date(lastSyncTime).toLocaleString()}</span>
         )}
-        <span className="text-xs text-gray-400 dark:text-gray-500 ml-2">Sorted by units sold</span>
+        <span className="text-xs text-gray-400 dark:text-gray-500 ml-2">Sorted by urgency · most urgent first</span>
       </div>
 
       {noSync && (
@@ -247,6 +276,7 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
                 <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Revenue</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Stock</th>
+                <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Sell-Through</th>
                 <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
               </tr>
             </thead>
@@ -259,6 +289,7 @@ export default function SalesVelocityPage({ loaderData }: Route.ComponentProps) 
                   <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{fmt$(row.revenue)}</td>
                   <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.avgDaily.toFixed(2)}</td>
                   <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock}</td>
+                  <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{row.sellThrough.toFixed(1)}%</td>
                   <td className="px-5 py-3 text-right">
                     <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
                       {row.daysRemaining === null ? "∞" : row.daysRemaining + "d"}

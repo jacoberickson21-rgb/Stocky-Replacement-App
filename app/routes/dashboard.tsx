@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
-import { getLowStockVariants, getProductTypes } from "../services/shopify.server";
+import { getProductTypes } from "../services/shopify.server";
+import { Prisma } from "@prisma/client";
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
@@ -160,12 +161,38 @@ export async function loader({ request }: Route.LoaderArgs) {
     // Margin floor setting
     db.appSetting.findUnique({ where: { key: "marginFloor" } }),
 
-    // Low stock snapshot — first 250 from Shopify, filtered and capped at 50
-    getLowStockVariants(
-      lowStockThreshold,
-      lowStockVendor || undefined,
-      lowStockProductType || undefined
-    ),
+    // Low stock snapshot from ProductCache + SalesCache (30-day velocity window)
+    (() => {
+      const lsVendorCond = lowStockVendor ? Prisma.sql`AND p.vendor ILIKE ${lowStockVendor}` : Prisma.sql``;
+      const lsTypeCond = lowStockProductType ? Prisma.sql`AND p."productType" ILIKE ${lowStockProductType}` : Prisma.sql``;
+      return db.$queryRaw<{
+        variantId: string;
+        productTitle: string;
+        sku: string | null;
+        vendor: string;
+        productType: string;
+        currentInventory: number;
+        unitsSold: bigint;
+      }[]>`
+        SELECT
+          p."variantId",
+          p.title AS "productTitle",
+          p.sku,
+          COALESCE(p.vendor, '') AS vendor,
+          COALESCE(p."productType", '') AS "productType",
+          p."currentInventory",
+          COALESCE(SUM(s."unitsSold"), 0)::bigint AS "unitsSold"
+        FROM "ProductCache" p
+        LEFT JOIN "SalesCache" s ON s."variantId" = p."variantId"
+          AND s.date >= NOW() - INTERVAL '30 days'
+        WHERE p."currentInventory" <= ${lowStockThreshold}
+          ${lsVendorCond}
+          ${lsTypeCond}
+        GROUP BY p."variantId", p.title, p.sku, p.vendor, p."productType", p."currentInventory"
+        ORDER BY p."currentInventory" ASC
+        LIMIT 50
+      `;
+    })(),
 
     // Vendor list from local DB for filter dropdown
     db.vendor.findMany({ orderBy: { name: "asc" }, select: { name: true } }),
@@ -176,6 +203,33 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const marginFloor = parseFloat(marginSetting?.value ?? "40");
   const belowMargin = marginAlertItems.filter((r) => r.margin < marginFloor);
+
+  // Compute velocity for low-stock items and split into urgent vs. no-data buckets
+  const VELOCITY_DAYS = 30;
+  const processedLowStock = lowStock.map((r) => {
+    const unitsSold = Number(r.unitsSold);
+    const avgDailySales = unitsSold / VELOCITY_DAYS;
+    const daysRemaining = avgDailySales > 0 ? r.currentInventory / avgDailySales : null;
+    return {
+      variantId: r.variantId,
+      productTitle: r.productTitle,
+      sku: r.sku ?? "",
+      vendor: r.vendor,
+      productType: r.productType,
+      currentInventory: r.currentInventory,
+      avgDailySales,
+      daysRemaining,
+    };
+  });
+
+  const lowStockUrgent = processedLowStock
+    .filter((r) => r.daysRemaining !== null)
+    .sort((a, b) => a.daysRemaining! - b.daysRemaining!)
+    .slice(0, 20);
+
+  const lowStockNoVelocity = processedLowStock
+    .filter((r) => r.daysRemaining === null)
+    .slice(0, 10);
 
   return {
     period,
@@ -210,7 +264,8 @@ export async function loader({ request }: Route.LoaderArgs) {
         vendorName: log.vendor?.name ?? null,
         timestamp: log.timestamp.toISOString(),
       })),
-      lowStock,
+      lowStock: lowStockUrgent,
+      lowStockNoVelocity,
     },
     marginAlerts: { items: belowMargin, marginFloor },
     lowStockFilters: {
@@ -242,6 +297,14 @@ function timeAgo(iso: string) {
 function fmtDate(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function urgencyBg(days: number | null): string {
+  if (days === null) return "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400";
+  if (days < 7) return "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300";
+  if (days < 14) return "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300";
+  if (days < 30) return "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-300";
+  return "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300";
 }
 
 function fmtBucket(iso: string) {
@@ -640,41 +703,78 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
             </button>
           )}
         </div>
-        {tables.lowStock.length === 0 ? (
-          <Empty msg="No low-stock variants match your filters." />
+        {tables.lowStock.length === 0 && tables.lowStockNoVelocity.length === 0 ? (
+          <Empty msg="No low-stock variants found. Run a sync or adjust the threshold." />
         ) : (
           <>
-            <Card className="overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
-                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
-                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
-                    <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Type</th>
-                    <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tables.lowStock.map((v, i) => (
-                    <tr key={v.variantId} className={i < tables.lowStock.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                      <td className="px-5 py-3 text-gray-800 dark:text-gray-100">{v.productTitle}</td>
-                      <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300">{v.sku || "—"}</td>
-                      <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{v.vendor || "—"}</td>
-                      <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{v.productType || "—"}</td>
-                      <td className={`px-5 py-3 text-right font-bold ${v.inventoryQty === 0 ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`}>
-                        {v.inventoryQty}
-                      </td>
+            {tables.lowStock.length > 0 && (
+              <Card className="overflow-hidden mb-4">
+                <div className="px-5 py-2.5 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 flex gap-4">
+                  <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-500 inline-block" /> &lt;7 days</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-orange-400 inline-block" /> &lt;14 days</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> &lt;30 days</span>
+                </div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                      <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                      <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                      <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                      <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                      <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg/Day</th>
+                      <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days Left</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
+                  </thead>
+                  <tbody>
+                    {tables.lowStock.map((v, i) => (
+                      <tr key={v.variantId} className={i < tables.lowStock.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                        <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{v.productTitle}</td>
+                        <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{v.sku || "—"}</td>
+                        <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{v.vendor || "—"}</td>
+                        <td className="px-5 py-3 text-right font-bold text-gray-700 dark:text-gray-200">{v.currentInventory}</td>
+                        <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{v.avgDailySales.toFixed(2)}</td>
+                        <td className="px-5 py-3 text-right">
+                          <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${urgencyBg(v.daysRemaining)}`}>
+                            {v.daysRemaining !== null ? Math.floor(v.daysRemaining) + "d" : "—"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            )}
+
+            {tables.lowStockNoVelocity.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">No Velocity Data</p>
+                <Card className="overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                        <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                        <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                        <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tables.lowStockNoVelocity.map((v, i) => (
+                        <tr key={v.variantId} className={i < tables.lowStockNoVelocity.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                          <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{v.productTitle}</td>
+                          <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{v.sku || "—"}</td>
+                          <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{v.vendor || "—"}</td>
+                          <td className="px-5 py-3 text-right font-bold text-amber-600 dark:text-amber-400">{v.currentInventory}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Card>
+              </div>
+            )}
+
             <div className="mt-2 text-right">
-              <Link
-                to="/reports/inventory-valuation"
-                className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
-              >
+              <Link to="/reports/inventory-valuation" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline">
                 View all low stock →
               </Link>
             </div>

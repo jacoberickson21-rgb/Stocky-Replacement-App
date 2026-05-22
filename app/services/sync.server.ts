@@ -1,5 +1,10 @@
 import { getDb } from "../db.server";
-import { getAllProductVariants, getAllOrders } from "./shopify.server";
+import {
+  startBulkProductSync,
+  pollBulkOperation,
+  downloadAndParseJSONL,
+  getAllOrders,
+} from "./shopify.server";
 
 const BATCH_SIZE = 50;
 
@@ -89,25 +94,58 @@ async function runSync(syncLogId: string): Promise<void> {
   }
 }
 
+const UPSERT_BATCH_SIZE = 250;
+const POLL_INTERVAL_MS = 5000;
+const MAX_POLLS = 120; // 10 minutes
+
 async function syncProducts(syncLogId: string): Promise<number> {
   const db = getDb();
 
-  // Fetch all variants from Shopify, updating progress on each page
-  const variants = await getAllProductVariants((count) => {
-    db.syncLog
-      .update({ where: { id: syncLogId }, data: { currentVariant: count } })
+  const operationId = await startBulkProductSync();
+  console.log(`[sync] bulk operation started: ${operationId}`);
+
+  let downloadUrl: string | null = null;
+  for (let poll = 0; poll < MAX_POLLS; poll++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    const op = await pollBulkOperation(operationId);
+
+    await db.syncLog
+      .update({ where: { id: syncLogId }, data: { currentVariant: op.objectCount } })
       .catch(() => {});
-  });
+
+    if (op.status === "COMPLETED") {
+      downloadUrl = op.url;
+      console.log(`[sync] bulk operation complete (${op.objectCount} objects). Downloading...`);
+      break;
+    }
+    if (["FAILED", "CANCELED", "ACCESS_DENIED"].includes(op.status)) {
+      throw new Error(`Bulk operation ${op.status}${op.errorCode ? `: ${op.errorCode}` : ""}`);
+    }
+    console.log(`[sync] bulk ${op.status} (${op.objectCount} so far), poll ${poll + 1}/${MAX_POLLS}`);
+  }
+
+  if (!downloadUrl) {
+    throw new Error("Bulk operation timed out after 10 minutes");
+  }
+
+  const variants = await downloadAndParseJSONL(downloadUrl);
 
   await db.syncLog
     .update({ where: { id: syncLogId }, data: { totalVariants: variants.length, currentVariant: 0 } })
     .catch(() => {});
 
   const now = new Date();
+  let totalFailed = 0;
 
-  for (let i = 0; i < variants.length; i += BATCH_SIZE) {
-    const batch = variants.slice(i, i + BATCH_SIZE);
-    await Promise.all(
+  for (let i = 0; i < variants.length; i += UPSERT_BATCH_SIZE) {
+    const batch = variants.slice(i, i + UPSERT_BATCH_SIZE);
+    const batchEnd = Math.min(i + UPSERT_BATCH_SIZE, variants.length);
+
+    if (i % 1000 === 0) {
+      console.log(`[sync] upserting variants ${i + 1}–${batchEnd} of ${variants.length}${totalFailed > 0 ? ` (${totalFailed} failed so far)` : ""}`);
+    }
+
+    const results = await Promise.allSettled(
       batch.map((v) =>
         db.productCache.upsert({
           where: { variantId: v.variantId },
@@ -148,15 +186,28 @@ async function syncProducts(syncLogId: string): Promise<number> {
       )
     );
 
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failed.length > 0) {
+      totalFailed += failed.length;
+      console.error(
+        `[sync] batch ${i}–${batchEnd}: ${failed.length} upsert(s) failed:`,
+        failed.map((r) => r.reason?.message ?? String(r.reason)).join(" | ")
+      );
+    }
+
     await db.syncLog
       .update({
         where: { id: syncLogId },
-        data: { currentVariant: Math.min(i + BATCH_SIZE, variants.length) },
+        data: { currentVariant: batchEnd },
       })
       .catch(() => {});
   }
 
-  return variants.length;
+  if (totalFailed > 0) {
+    console.warn(`[sync] product upsert complete: ${variants.length - totalFailed} succeeded, ${totalFailed} failed`);
+  }
+
+  return variants.length - totalFailed;
 }
 
 async function syncSales(syncLogId: string): Promise<number> {

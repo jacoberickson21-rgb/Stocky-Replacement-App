@@ -1,6 +1,8 @@
 import { Link, useSearchParams } from "react-router";
 import { useState, useEffect } from "react";
 import type { Route } from "./+types/reports.spend-analysis";
+
+const PAGE_SIZE = 50;
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { Prisma } from "@prisma/client";
@@ -19,6 +21,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const startDate = url.searchParams.get("startDate") ?? "";
   const endDate = url.searchParams.get("endDate") ?? "";
   const statusFilter = url.searchParams.get("status") ?? "";
+  const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const now = new Date();
   const defaultStart = new Date(now.getFullYear(), now.getMonth() - 11, 1);
@@ -107,6 +110,20 @@ export async function loader({ request }: Route.LoaderArgs) {
     .filter((r) => ["RECEIVED", "PAID"].includes(r.status))
     .reduce((s, r) => s + r.total, 0);
 
+  const allInvoices = invoices.map((r) => ({
+    id: r.id,
+    invoiceNumber: r.invoiceNumber,
+    vendorName: r.vendorName,
+    total: r.total,
+    status: r.status,
+    updatedAt: r.updatedAt.toISOString(),
+    invoiceDate: r.invoiceDate?.toISOString() ?? null,
+  }));
+
+  const totalCount = allInvoices.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const pageInvoices = allInvoices.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return {
     spendOverTime: spendOverTime.map((r) => ({ bucket: r.bucket.toISOString(), total: r.total })),
     spendByVendor: spendByVendor.map((r) => ({ name: r.vendorName, total: r.total })),
@@ -115,19 +132,12 @@ export async function loader({ request }: Route.LoaderArgs) {
       total: r.total,
       label: r.month.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
     })),
-    invoices: invoices.map((r) => ({
-      id: r.id,
-      invoiceNumber: r.invoiceNumber,
-      vendorName: r.vendorName,
-      total: r.total,
-      status: r.status,
-      updatedAt: r.updatedAt.toISOString(),
-      invoiceDate: r.invoiceDate?.toISOString() ?? null,
-    })),
+    invoices: pageInvoices,
     vendors,
     totalSpend,
     truncUnit,
     filters: { vendorId, startDate, endDate, status: statusFilter },
+    pagination: { page, totalPages, totalCount },
   };
 }
 
@@ -171,6 +181,20 @@ const STATUS_PILL: Record<string, string> = {
   PAID: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
 };
 
+function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
+  if (totalPages <= 1) return null;
+  const btnBase = "text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors";
+  const btnOn = "border-gray-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 hover:bg-gray-50 dark:hover:bg-gray-800";
+  const btnOff = "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none select-none";
+  return (
+    <div className="flex items-center justify-between mt-4">
+      <Link to={page > 1 ? buildUrl(page - 1) : "#"} aria-disabled={page <= 1} className={`${btnBase} ${page > 1 ? btnOn : btnOff}`}>← Previous</Link>
+      <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
+      <Link to={page < totalPages ? buildUrl(page + 1) : "#"} aria-disabled={page >= totalPages} className={`${btnBase} ${page < totalPages ? btnOn : btnOff}`}>Next →</Link>
+    </div>
+  );
+}
+
 function exportCsv(invoices: { invoiceNumber: string; vendorName: string; total: number; status: string; updatedAt: string }[]) {
   const headers = ["Invoice #", "Vendor", "Amount", "Status", "Date"];
   const rows = invoices.map((r) => [r.invoiceNumber, r.vendorName, r.total.toFixed(2), r.status, fmtDate(r.updatedAt)]);
@@ -185,7 +209,7 @@ function exportCsv(invoices: { invoiceNumber: string; vendorName: string; total:
 }
 
 export default function SpendAnalysisPage({ loaderData }: Route.ComponentProps) {
-  const { spendOverTime, spendByVendor, monthlySpend, invoices, vendors, totalSpend, filters } = loaderData;
+  const { spendOverTime, spendByVendor, monthlySpend, invoices, vendors, totalSpend, filters, pagination } = loaderData;
   const [, setSearchParams] = useSearchParams();
   const [localVendor, setLocalVendor] = useState(filters.vendorId);
   const [localStart, setLocalStart] = useState(filters.startDate);
@@ -205,6 +229,16 @@ export default function SpendAnalysisPage({ loaderData }: Route.ComponentProps) 
   function clearFilters() {
     setLocalVendor(""); setLocalStart(""); setLocalEnd(""); setLocalStatus("");
     setSearchParams(new URLSearchParams());
+  }
+
+  function buildPageUrl(p: number) {
+    const params = new URLSearchParams();
+    if (filters.vendorId) params.set("vendorId", filters.vendorId);
+    if (filters.startDate) params.set("startDate", filters.startDate);
+    if (filters.endDate) params.set("endDate", filters.endDate);
+    if (filters.status) params.set("status", filters.status);
+    params.set("page", String(p));
+    return `?${params.toString()}`;
   }
 
   const textColor = isDark ? "#9ca3af" : "#6b7280";
@@ -360,7 +394,7 @@ export default function SpendAnalysisPage({ loaderData }: Route.ComponentProps) 
       {/* Invoice Table */}
       <section>
         <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">
-          Invoices in Range ({invoices.length})
+          Invoices in Range ({pagination.totalCount}) · Page {pagination.page} of {pagination.totalPages}
         </h3>
         {invoices.length === 0 ? (
           <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
@@ -400,6 +434,7 @@ export default function SpendAnalysisPage({ loaderData }: Route.ComponentProps) 
             </table>
           </div>
         )}
+        <Pagination page={pagination.page} totalPages={pagination.totalPages} buildUrl={buildPageUrl} />
       </section>
     </main>
   );

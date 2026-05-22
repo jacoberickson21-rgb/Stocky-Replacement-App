@@ -131,19 +131,14 @@ function exportCsv(rows: InvRow[]) {
 
 function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: number; buildUrl: (p: number) => string }) {
   if (totalPages <= 1) return null;
+  const btnBase = "text-sm font-medium px-3 py-1.5 rounded-lg border transition-colors";
+  const btnOn = "border-gray-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 hover:bg-gray-50 dark:hover:bg-gray-800";
+  const btnOff = "border-gray-100 dark:border-gray-800 text-gray-300 dark:text-gray-600 pointer-events-none select-none";
   return (
     <div className="flex items-center justify-between mt-4">
-      <div>
-        {page > 1 && (
-          <Link to={buildUrl(page - 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Previous</Link>
-        )}
-      </div>
+      <Link to={page > 1 ? buildUrl(page - 1) : "#"} aria-disabled={page <= 1} className={`${btnBase} ${page > 1 ? btnOn : btnOff}`}>← Previous</Link>
       <span className="text-sm text-gray-500 dark:text-gray-400">Page {page} of {totalPages}</span>
-      <div>
-        {page < totalPages && (
-          <Link to={buildUrl(page + 1)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">Next →</Link>
-        )}
-      </div>
+      <Link to={page < totalPages ? buildUrl(page + 1) : "#"} aria-disabled={page >= totalPages} className={`${btnBase} ${page < totalPages ? btnOn : btnOff}`}>Next →</Link>
     </div>
   );
 }

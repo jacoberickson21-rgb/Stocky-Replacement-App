@@ -1554,7 +1554,7 @@ export async function getInventoryValuationData(opts?: {
   return results;
 }
 
-// ─── Sync: All Product Variants ──────────────────────────────────────────────
+// ─── Sync: Bulk Product Export ────────────────────────────────────────────────
 
 export type SyncVariant = {
   productId: string;
@@ -1573,96 +1573,222 @@ export type SyncVariant = {
   status: string;
 };
 
-export async function getAllProductVariants(
-  onProgress?: (fetched: number) => void
-): Promise<SyncVariant[]> {
-  const results: SyncVariant[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
+export type BulkOperationStatus = {
+  status: string;
+  url: string | null;
+  objectCount: number;
+  errorCode: string | null;
+};
 
-  type SyncPage = {
-    products: {
-      edges: {
-        node: {
-          id: string;
-          title: string;
-          vendor: string;
-          productType: string;
-          status: string;
-          tags: string[];
-          featuredImage: { url: string } | null;
-          variants: {
-            edges: {
-              node: {
-                id: string;
-                title: string;
-                sku: string | null;
-                barcode: string | null;
-                price: string;
-                inventoryQuantity: number;
-                inventoryItem: { unitCost: { amount: string } | null } | null;
-              };
-            }[];
-          };
-        };
-      }[];
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    };
-  };
-
-  while (hasNextPage) {
-    const page: SyncPage = await shopifyGraphQL<SyncPage>(
-      `query GetAllProducts($after: String) {
-        products(first: 250, after: $after, query: "status:active OR status:draft") {
+const BULK_PRODUCT_QUERY = `{
+  products(query: "status:active OR status:draft") {
+    edges {
+      node {
+        id
+        title
+        vendor
+        productType
+        tags
+        status
+        featuredImage { url }
+        variants {
           edges {
             node {
-              id title vendor productType status tags
-              featuredImage { url }
-              variants(first: 100) {
-                edges {
-                  node {
-                    id title sku barcode price inventoryQuantity
-                    inventoryItem { unitCost { amount } }
+              id
+              title
+              sku
+              barcode
+              price
+              inventoryItem {
+                unitCost { amount }
+                inventoryLevels(first: 1) {
+                  edges {
+                    node {
+                      quantities(names: ["available"]) {
+                        name
+                        quantity
+                      }
+                      location { id }
+                    }
                   }
                 }
               }
             }
           }
-          pageInfo { hasNextPage endCursor }
         }
-      }`,
-      { after: cursor }
-    );
-
-    for (const edge of page.products.edges) {
-      const p = edge.node;
-      for (const ve of p.variants.edges) {
-        const v = ve.node;
-        const costStr = v.inventoryItem?.unitCost?.amount;
-        results.push({
-          productId: p.id,
-          variantId: v.id,
-          title: p.title,
-          variantTitle: v.title,
-          sku: v.sku ?? null,
-          barcode: v.barcode ?? null,
-          vendor: p.vendor,
-          productType: p.productType,
-          tags: p.tags,
-          price: parseFloat(v.price),
-          cost: costStr && parseFloat(costStr) > 0 ? parseFloat(costStr) : null,
-          currentInventory: v.inventoryQuantity,
-          imageUrl: p.featuredImage?.url ?? null,
-          status: p.status,
-        });
       }
     }
+  }
+}`;
 
-    onProgress?.(results.length);
-    hasNextPage = page.products.pageInfo.hasNextPage;
-    cursor = page.products.pageInfo.endCursor;
+export async function startBulkProductSync(): Promise<string> {
+  const data = await shopifyGraphQL<{
+    bulkOperationRunQuery: {
+      bulkOperation: { id: string } | null;
+      userErrors: UserError[];
+    };
+  }>(
+    `mutation StartBulkSync($query: String!) {
+      bulkOperationRunQuery(query: $query) {
+        bulkOperation { id status }
+        userErrors { field message }
+      }
+    }`,
+    { query: BULK_PRODUCT_QUERY }
+  );
+
+  const { bulkOperation, userErrors } = data.bulkOperationRunQuery;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
+  }
+  if (!bulkOperation) {
+    throw new ShopifyGraphQLError("bulkOperationRunQuery returned no operation");
+  }
+  return bulkOperation.id;
+}
+
+export async function pollBulkOperation(id: string): Promise<BulkOperationStatus> {
+  const data = await shopifyGraphQL<{
+    node: {
+      status: string;
+      url: string | null;
+      objectCount: string;
+      errorCode: string | null;
+    } | null;
+  }>(
+    `query PollBulkOperation($id: ID!) {
+      node(id: $id) {
+        ... on BulkOperation {
+          status
+          url
+          objectCount
+          errorCode
+        }
+      }
+    }`,
+    { id }
+  );
+
+  const op = data.node;
+  if (!op) {
+    throw new ShopifyGraphQLError(`Bulk operation ${id} not found`);
+  }
+  return {
+    status: op.status,
+    url: op.url,
+    objectCount: parseInt(op.objectCount ?? "0", 10),
+    errorCode: op.errorCode,
+  };
+}
+
+export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new ShopifyAPIError(`JSONL download failed: HTTP ${response.status}`, response.status);
+  }
+  if (!response.body) {
+    throw new ShopifyGraphQLError("JSONL response has no body");
   }
 
+  // JSONL structure from Shopify Bulk Operations:
+  //   Product line       → has id (gid://shopify/Product/...)
+  //   ProductVariant line → has id (gid://shopify/ProductVariant/...), __parentId=Product.id,
+  //                          inventoryItem embedded inline (no separate InventoryItem line)
+  //   InventoryLevel line → NO id, __parentId=ProductVariant.id, has quantities[]
+
+  type RawProduct = {
+    id: string;
+    title: string;
+    vendor: string;
+    productType: string;
+    tags: string[];
+    status: string;
+    featuredImage: { url: string } | null;
+  };
+  type RawVariant = {
+    id: string;
+    title: string;
+    sku: string | null;
+    barcode: string | null;
+    price: string;
+    inventoryItem: { unitCost: { amount: string } | null } | null;
+    __parentId: string;
+  };
+
+  const products = new Map<string, RawProduct>();
+  const variants = new Map<string, RawVariant>();
+  // variantId → available qty (first location only)
+  const variantAvailable = new Map<string, number>();
+
+  function processLine(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      console.warn("[sync] JSONL parse error, skipping line:", trimmed.slice(0, 100));
+      return;
+    }
+    const id = obj.id as string | undefined;
+    const parentId = obj.__parentId as string | undefined;
+    if (id?.startsWith("gid://shopify/Product/")) {
+      products.set(id, obj as unknown as RawProduct);
+    } else if (id?.startsWith("gid://shopify/ProductVariant/")) {
+      variants.set(id, obj as unknown as RawVariant);
+    } else if (Array.isArray(obj.quantities) && parentId) {
+      // InventoryLevel line — no GID; parentId is the variant GID
+      if (!variantAvailable.has(parentId)) {
+        const quantities = obj.quantities as { name: string; quantity: number }[];
+        const available = quantities.find((q) => q.name === "available")?.quantity ?? 0;
+        variantAvailable.set(parentId, available);
+      }
+    }
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+        processLine(buffer.slice(0, newlineIdx));
+        buffer = buffer.slice(newlineIdx + 1);
+      }
+    }
+    if (buffer) processLine(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+
+  const results: SyncVariant[] = [];
+  for (const [variantId, v] of variants) {
+    const product = products.get(v.__parentId);
+    if (!product) continue;
+    const costRaw = v.inventoryItem?.unitCost?.amount;
+    const cost = costRaw ? parseFloat(costRaw) : null;
+    const available = variantAvailable.get(variantId) ?? 0;
+    results.push({
+      productId: v.__parentId,
+      variantId,
+      title: product.title,
+      variantTitle: v.title,
+      sku: v.sku,
+      barcode: v.barcode,
+      vendor: product.vendor,
+      productType: product.productType,
+      tags: product.tags,
+      price: parseFloat(v.price) || 0,
+      cost: cost && cost > 0 ? cost : null,
+      currentInventory: available,
+      imageUrl: product.featuredImage?.url ?? null,
+      status: product.status,
+    });
+  }
   return results;
 }
 
