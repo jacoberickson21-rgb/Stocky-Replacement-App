@@ -18,6 +18,7 @@
     "@types/papaparse": "^5.5.2",
     "bcryptjs": "^3.0.3",
     "isbot": "^5.1.36",
+    "lucide-react": "^1.17.0",
     "papaparse": "^5.5.3",
     "prisma": "^5.22.0",
     "react": "^19.2.4",

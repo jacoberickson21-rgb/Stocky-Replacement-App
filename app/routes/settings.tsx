@@ -5,6 +5,7 @@ import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { getSyncStatus, resetRunningSyncs } from "../services/sync.server";
 import type { SyncLogData } from "../services/sync.server";
+import type { POImportResult } from "../utils/po-import.server";
 
 const SETTINGS_KEYS = ["marginFloor", "lowStockThreshold", "autoSyncEnabled", "autoSyncIntervalHours", "salesHistoryDays"] as const;
 const DEFAULTS: Record<typeof SETTINGS_KEYS[number], string> = {
@@ -80,6 +81,14 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ intent: "reset", error: null, resetCount });
   }
 
+  if (intent === "clearPOs") {
+    const [, invoiceResult] = await db.$transaction([
+      db.invoiceLineItem.deleteMany({}),
+      db.invoice.deleteMany({}),
+    ]);
+    return data({ intent: "clearPOs", error: null, deletedCount: invoiceResult.count });
+  }
+
   return data({ intent: "unknown", error: null });
 }
 
@@ -101,12 +110,15 @@ function fmtDuration(ms: number): string {
 
 export default function SettingsPage({ loaderData }: Route.ComponentProps) {
   const { settings, syncStatus: initialSyncStatus } = loaderData;
-  const actionData = useActionData() as { intent: string; error: string | null; resetCount?: number } | undefined;
+  const actionData = useActionData() as { intent: string; error: string | null; resetCount?: number; deletedCount?: number } | undefined;
   const navigation = useNavigation();
   const syncFetcher = useFetcher<SyncLogData>();
   const fullSyncFetcher = useFetcher<SyncLogData>();
+  const poImportFetcher = useFetcher<{ error: string | null; result: POImportResult | null }>();
   const [syncStatus, setSyncStatus] = useState<SyncLogData | null>(initialSyncStatus);
   const [autoEnabled, setAutoEnabled] = useState(settings.autoSyncEnabled === "true");
+  const [poImportKey, setPoImportKey] = useState(0);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const isRunning = syncStatus?.status === "RUNNING" || syncFetcher.state !== "idle" || fullSyncFetcher.state !== "idle";
   const isStuckRunning =
@@ -135,10 +147,16 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
     if (fullSyncFetcher.data) setSyncStatus(fullSyncFetcher.data as SyncLogData);
   }, [fullSyncFetcher.data]);
 
+  useEffect(() => {
+    if (poImportFetcher.data?.result) setPoImportKey((k) => k + 1);
+  }, [poImportFetcher.data]);
+
   const isSavingGeneral = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveGeneral";
   const isSavingSync = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveSync";
   const savedGeneral = navigation.state === "idle" && actionData?.intent === "saveGeneral" && !actionData.error;
   const savedSync = navigation.state === "idle" && actionData?.intent === "saveSync" && !actionData.error;
+  const isClearingPOs = navigation.state === "submitting" && navigation.formData?.get("intent") === "clearPOs";
+  const clearedPOs = navigation.state === "idle" && actionData?.intent === "clearPOs" && !actionData.error;
 
   const inputClass = "border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100";
   const saveBtn = (saving: boolean) =>
@@ -351,6 +369,114 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
             </button>
           </Form>
         </div>
+      </div>
+      {/* Import Historical POs */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">Import Historical POs</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-5">
+          Import header-only purchase order history from a Stocky CSV export. Existing invoice numbers are skipped.
+        </p>
+        <poImportFetcher.Form
+          key={poImportKey}
+          method="post"
+          action="/settings/po-import"
+          encType="multipart/form-data"
+          className="flex items-center gap-3 flex-wrap"
+        >
+          <input
+            type="file"
+            name="csv"
+            accept=".csv"
+            required
+            className="text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 dark:file:bg-indigo-900 dark:file:text-indigo-300 hover:file:bg-indigo-100 dark:hover:file:bg-indigo-800 file:cursor-pointer"
+          />
+          <button
+            type="submit"
+            disabled={poImportFetcher.state !== "idle"}
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors shrink-0"
+          >
+            {poImportFetcher.state !== "idle" ? "Importing…" : "Import"}
+          </button>
+        </poImportFetcher.Form>
+
+        {poImportFetcher.data?.error && (
+          <p className="mt-4 text-sm text-red-600 dark:text-red-400">{poImportFetcher.data.error}</p>
+        )}
+
+        {poImportFetcher.data?.result && (
+          <div className="mt-4 p-4 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 space-y-2">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-200">Import complete</p>
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              {poImportFetcher.data.result.imported} imported
+              {" · "}
+              {poImportFetcher.data.result.skipped} skipped (duplicate)
+              {" · "}
+              {poImportFetcher.data.result.vendorsCreated} vendor{poImportFetcher.data.result.vendorsCreated !== 1 ? "s" : ""} created
+            </p>
+            {poImportFetcher.data.result.errors.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-red-600 dark:text-red-400">
+                  {poImportFetcher.data.result.errors.length} error{poImportFetcher.data.result.errors.length !== 1 ? "s" : ""}:
+                </p>
+                <ul className="text-xs text-red-500 dark:text-red-400 space-y-0.5 max-h-40 overflow-y-auto">
+                  {poImportFetcher.data.result.errors.map((e, idx) => (
+                    <li key={idx}>Row {e.row}: {e.message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Danger Zone */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-red-200 dark:border-red-900/60 p-6">
+        <h3 className="text-sm font-semibold text-red-600 dark:text-red-400 mb-1">Danger Zone</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-5">
+          Destructive actions that cannot be undone.
+        </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Clear Purchase Orders</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Permanently delete all invoices and line items. Vendors, suppliers, credits, and settings are preserved.
+            </p>
+          </div>
+          {!showClearConfirm ? (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              disabled={isClearingPOs}
+              className="shrink-0 border border-red-500 text-red-600 dark:text-red-400 dark:border-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            >
+              Clear POs
+            </button>
+          ) : (
+            <div className="shrink-0 flex items-center gap-2">
+              <Form method="post" onSubmit={() => setShowClearConfirm(false)}>
+                <input type="hidden" name="intent" value="clearPOs" />
+                <button
+                  type="submit"
+                  disabled={isClearingPOs}
+                  className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+                >
+                  {isClearingPOs ? "Deleting…" : "Yes, delete all"}
+                </button>
+              </Form>
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+        {clearedPOs && (
+          <p className="text-sm text-green-600 dark:text-green-400 mt-4">
+            Deleted {actionData!.deletedCount} invoice{actionData!.deletedCount !== 1 ? "s" : ""}.
+          </p>
+        )}
       </div>
     </main>
   );

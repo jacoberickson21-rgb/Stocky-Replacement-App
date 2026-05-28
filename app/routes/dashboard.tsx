@@ -44,7 +44,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
   const [
-    outstandingRaw,
+    receivedUnpaidRaw,
     pendingCount,
     receivedThisPeriod,
     spentThisPeriod,
@@ -59,12 +59,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     vendorRows,
     productTypes,
   ] = await Promise.all([
-    // Outstanding balance (RECEIVED invoices - credits)
-    db.$queryRaw<{ total: number; credits: number }[]>`
+    // Awaiting payment vs overdue (both from RECEIVED invoices)
+    db.$queryRaw<{ awaiting: number; overdue: number }[]>`
       SELECT
-        COALESCE(SUM(i.total), 0)::float AS total,
-        COALESCE((SELECT SUM(ABS(c.amount)) FROM "Credit" c), 0)::float AS credits
-      FROM "Invoice" i WHERE i.status = 'RECEIVED'
+        COALESCE(SUM(CASE WHEN ("dueDate" IS NULL OR "dueDate" >= NOW()) THEN total ELSE 0 END), 0)::float AS awaiting,
+        COALESCE(SUM(CASE WHEN "dueDate" < NOW() THEN total ELSE 0 END), 0)::float AS overdue
+      FROM "Invoice" WHERE status = 'RECEIVED'
     `,
 
     // Pending (ORDERED) count
@@ -234,7 +234,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   return {
     period,
     kpis: {
-      outstandingBalance: (outstandingRaw[0]?.total ?? 0) - (outstandingRaw[0]?.credits ?? 0),
+      overdueBalance: receivedUnpaidRaw[0]?.overdue ?? 0,
+      awaitingPayment: receivedUnpaidRaw[0]?.awaiting ?? 0,
       pendingCount,
       receivedThisPeriod,
       spentThisPeriod: spentThisPeriod[0]?.total ?? 0,
@@ -534,19 +535,26 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
 
       {/* KPI Cards */}
       <Section title="Overview">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <KpiCard
-            label="Outstanding Balance"
-            value={fmt$(kpis.outstandingBalance)}
-            sub="received, unpaid"
-            color="border-rose-200 dark:border-rose-900"
+            label="Overdue Balance"
+            value={fmt$(kpis.overdueBalance)}
+            sub="past due, unpaid"
+            color="border-rose-300 dark:border-rose-800"
+            to="/invoices?status=RECEIVED&overdue=true"
+          />
+          <KpiCard
+            label="Awaiting Payment"
+            value={fmt$(kpis.awaitingPayment)}
+            sub="received, not yet due"
+            color="border-amber-200 dark:border-amber-800"
             to="/invoices?status=RECEIVED"
           />
           <KpiCard
             label="Pending Receiving"
             value={String(kpis.pendingCount)}
             sub="orders placed"
-            color="border-amber-200 dark:border-amber-900"
+            color="border-yellow-200 dark:border-yellow-800"
             to="/invoices?status=ORDERED"
           />
           <KpiCard
