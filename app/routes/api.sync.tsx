@@ -9,9 +9,12 @@ export async function loader({ request }: { request: Request }) {
 }
 
 // POST /api/sync — trigger a new sync (non-blocking, returns 202)
+// Pass forceFull=true in form data to bypass incremental and run a full sync.
 export async function action({ request }: { request: Request }) {
   await requireUserId(request);
-  const syncLogId = await startSync();
+  const formData = await request.formData();
+  const forceFull = formData.get("forceFull") === "true";
+  const syncLogId = await startSync(forceFull);
   const status = await getSyncStatus();
   return Response.json({ syncLogId, ...status }, { status: 202 });
 }

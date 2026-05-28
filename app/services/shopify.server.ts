@@ -1580,8 +1580,12 @@ export type BulkOperationStatus = {
   errorCode: string | null;
 };
 
-const BULK_PRODUCT_QUERY = `{
-  products(query: "status:active OR status:draft") {
+function buildBulkProductQuery(sinceDate?: Date): string {
+  const filter = sinceDate
+    ? `(status:active OR status:draft) updated_at:>'${sinceDate.toISOString()}'`
+    : "status:active OR status:draft";
+  return `{
+  products(query: "${filter}") {
     edges {
       node {
         id
@@ -1600,6 +1604,7 @@ const BULK_PRODUCT_QUERY = `{
               barcode
               price
               inventoryItem {
+                tracked
                 unitCost { amount }
                 inventoryLevels(first: 1) {
                   edges {
@@ -1620,8 +1625,9 @@ const BULK_PRODUCT_QUERY = `{
     }
   }
 }`;
+}
 
-export async function startBulkProductSync(): Promise<string> {
+export async function startBulkProductSync(sinceDate?: Date): Promise<string> {
   const data = await shopifyGraphQL<{
     bulkOperationRunQuery: {
       bulkOperation: { id: string } | null;
@@ -1634,7 +1640,7 @@ export async function startBulkProductSync(): Promise<string> {
         userErrors { field message }
       }
     }`,
-    { query: BULK_PRODUCT_QUERY }
+    { query: buildBulkProductQuery(sinceDate) }
   );
 
   const { bulkOperation, userErrors } = data.bulkOperationRunQuery;
@@ -1711,7 +1717,7 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
     sku: string | null;
     barcode: string | null;
     price: string;
-    inventoryItem: { unitCost: { amount: string } | null } | null;
+    inventoryItem: { tracked?: boolean; unitCost: { amount: string } | null } | null;
     __parentId: string;
   };
 
@@ -1719,6 +1725,12 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
   const variants = new Map<string, RawVariant>();
   // variantId → available qty (first location only)
   const variantAvailable = new Map<string, number>();
+  // In Shopify bulk-op JSONL, InventoryItem objects have their own GID and appear
+  // as separate lines (not embedded in the ProductVariant line).
+  // We need two extra maps to reconstruct cost and resolve InventoryLevel parentIds.
+  const inventoryItemToVariant = new Map<string, string>(); // inventoryItemGID → variantGID
+  const variantToCost = new Map<string, string>();           // variantGID → unitCost.amount
+  const variantTracked = new Map<string, boolean>();         // variantGID → tracked (false = "Don't track inventory")
 
   function processLine(line: string): void {
     const trimmed = line.trim();
@@ -1736,12 +1748,26 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
       products.set(id, obj as unknown as RawProduct);
     } else if (id?.startsWith("gid://shopify/ProductVariant/")) {
       variants.set(id, obj as unknown as RawVariant);
+    } else if (id?.startsWith("gid://shopify/InventoryItem/") && parentId) {
+      // Separate InventoryItem line — __parentId is the ProductVariant GID.
+      // unitCost.amount (cost of goods) lives here, not on the variant line.
+      const unitCostAmount = (obj.unitCost as { amount: string } | null | undefined)?.amount;
+      if (unitCostAmount) {
+        variantToCost.set(parentId, unitCostAmount);
+      }
+      // tracked=false means "Don't track inventory" in Shopify — qty is phantom/meaningless.
+      variantTracked.set(parentId, (obj.tracked as boolean | undefined) !== false);
+      // Track InventoryItem GID → variant GID so we can resolve InventoryLevel parentIds below.
+      inventoryItemToVariant.set(id, parentId);
     } else if (Array.isArray(obj.quantities) && parentId) {
-      // InventoryLevel line — no GID; parentId is the variant GID
-      if (!variantAvailable.has(parentId)) {
+      // InventoryLevel line (no GID).
+      // __parentId is the InventoryItem GID when inventoryLevels is nested under inventoryItem,
+      // so resolve it to the ProductVariant GID before storing.
+      const resolvedVariantId = inventoryItemToVariant.get(parentId) ?? parentId;
+      if (!variantAvailable.has(resolvedVariantId)) {
         const quantities = obj.quantities as { name: string; quantity: number }[];
         const available = quantities.find((q) => q.name === "available")?.quantity ?? 0;
-        variantAvailable.set(parentId, available);
+        variantAvailable.set(resolvedVariantId, available);
       }
     }
   }
@@ -1766,12 +1792,24 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
   }
 
   const results: SyncVariant[] = [];
+  let _diagCount = 0;
   for (const [variantId, v] of variants) {
     const product = products.get(v.__parentId);
     if (!product) continue;
-    const costRaw = v.inventoryItem?.unitCost?.amount;
+    // Prefer the embedded inventoryItem (regular GraphQL), fall back to the
+    // separately-parsed InventoryItem line from the bulk-op JSONL.
+    const costRaw = v.inventoryItem?.unitCost?.amount ?? variantToCost.get(variantId);
     const cost = costRaw ? parseFloat(costRaw) : null;
-    const available = variantAvailable.get(variantId) ?? 0;
+    const isTracked = (v.inventoryItem?.tracked ?? variantTracked.get(variantId)) !== false;
+    const available = isTracked ? (variantAvailable.get(variantId) ?? 0) : 0;
+    if (_diagCount < 3) {
+      _diagCount++;
+      console.log(
+        `[sync:diag] variant ${_diagCount}: SKU="${v.sku}" title="${product.title}"` +
+        ` | raw price="${v.price}" (embedded: ${v.inventoryItem?.unitCost?.amount ?? "none"}, bulk: ${variantToCost.get(variantId) ?? "none"})` +
+        ` | stored price=${parseFloat(v.price) || 0} cost=${cost ?? "null"} qty=${available}`
+      );
+    }
     results.push({
       productId: v.__parentId,
       variantId,
@@ -1808,9 +1846,12 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
   const startISO = startDate.toISOString();
   const orderQuery = `created_at:>='${startISO}' NOT financial_status:voided`;
 
+  console.log(`[getAllOrders] query: ${orderQuery}`);
+
   const results: OrderLineItem[] = [];
   let cursor: string | null = null;
   let hasNextPage = true;
+  let pageNum = 0;
 
   type OrdersPage = {
     orders: {
@@ -1832,6 +1873,8 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
   };
 
   while (hasNextPage) {
+    pageNum++;
+    const pageStart = Date.now();
     const page: OrdersPage = await shopifyGraphQL<OrdersPage>(
       `query GetAllOrders($query: String!, $after: String) {
         orders(first: 250, query: $query, after: $after) {
@@ -1854,6 +1897,9 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
       { query: orderQuery, after: cursor }
     );
 
+    const ordersOnPage = page.orders.edges.length;
+    let lineItemsOnPage = 0;
+
     for (const edge of page.orders.edges) {
       const orderDate = edge.node.createdAt;
       for (const item of edge.node.lineItems.nodes) {
@@ -1865,13 +1911,21 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
           price: parseFloat(item.originalUnitPriceSet.shopMoney.amount),
           orderDate,
         });
+        lineItemsOnPage++;
       }
     }
 
     hasNextPage = page.orders.pageInfo.hasNextPage;
     cursor = page.orders.pageInfo.endCursor;
+
+    console.log(
+      `[getAllOrders] page ${pageNum}: ${ordersOnPage} orders, ${lineItemsOnPage} line items` +
+      ` (${Date.now() - pageStart}ms) — total so far: ${results.length} line items` +
+      (hasNextPage ? " — more pages..." : " — DONE")
+    );
   }
 
+  console.log(`[getAllOrders] finished: ${pageNum} page(s), ${results.length} total line items`);
   return results;
 }
 

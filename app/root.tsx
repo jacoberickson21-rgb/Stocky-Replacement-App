@@ -12,9 +12,14 @@ import type { Route } from "./+types/root";
 import "./app.css";
 import { getSession } from "./session.server";
 import { getDb } from "./db.server";
-import { getSyncStatus, startSync } from "./services/sync.server";
+import { getSyncStatus, startSync, cleanupStaleSyncs } from "./services/sync.server";
 
 const PUBLIC_PATHS = ["/login"];
+
+// Throttle: checkAutoSync runs at most once per minute across all page loads in this process.
+// Prevents concurrent requests (multiple tabs, rapid navigation) from spawning multiple syncs.
+let lastAutoSyncCheckMs = 0;
+const AUTO_SYNC_CHECK_THROTTLE_MS = 60_000;
 
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
@@ -29,6 +34,10 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 async function checkAutoSync() {
+  const now = Date.now();
+  if (now - lastAutoSyncCheckMs < AUTO_SYNC_CHECK_THROTTLE_MS) return;
+  lastAutoSyncCheckMs = now;
+
   const db = getDb();
   const [autoEnabled, intervalSetting, lastSync] = await Promise.all([
     db.appSetting.findUnique({ where: { key: "autoSyncEnabled" } }),
@@ -37,7 +46,16 @@ async function checkAutoSync() {
   ]);
 
   if (autoEnabled?.value === "false") return;
-  if (lastSync?.status === "RUNNING") return;
+
+  // Clean up stale syncs BEFORE checking status — otherwise a stuck RUNNING
+  // sync blocks this check forever and cleanupStaleSyncs inside startSync()
+  // is never reached.
+  await cleanupStaleSyncs().catch(() => {});
+  if (lastSync?.status === "RUNNING") {
+    // Re-fetch after cleanup — the stale sync may have just been cleared
+    const refreshed = await getSyncStatus();
+    if (refreshed?.status === "RUNNING") return;
+  }
 
   const hours = parseFloat(intervalSetting?.value ?? "24");
   const stale =

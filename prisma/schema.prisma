@@ -195,6 +195,7 @@ model SalesCache {
 model SyncLog {
   id              String     @id @default(cuid())
   status          SyncStatus
+  syncType        String     @default("FULL")
   startedAt       DateTime   @default(now())
   completedAt     DateTime?
   durationMs      Int?

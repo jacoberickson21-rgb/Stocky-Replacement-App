@@ -42,22 +42,36 @@ export async function loader({ request }: Route.LoaderArgs) {
   // Summary aggregates across ALL filtered rows (not just this page)
   const allForSummary = await db.productCache.findMany({
     where,
-    select: { price: true, cost: true, currentInventory: true },
+    select: { variantId: true, title: true, variantTitle: true, vendor: true, productType: true, sku: true, price: true, cost: true, currentInventory: true },
   });
 
   let totalCostValue = 0;
   let totalRetailValue = 0;
   let marginsSum = 0;
   let withCostCount = 0;
+  const costErrors: Array<{ variantId: string; productTitle: string; vendor: string; sku: string; cost: number; price: number }> = [];
 
   for (const r of allForSummary) {
     const price = Number(r.price);
     const cost = r.cost != null ? Number(r.cost) : null;
     const qty = r.currentInventory;
-    totalRetailValue += price * qty;
-    if (cost != null) {
-      totalCostValue += cost * qty;
-      if (price > 0) {
+    if (qty > 0) {
+      totalRetailValue += price * qty;
+      if (cost != null) {
+        totalCostValue += cost * qty;
+      }
+    }
+    if (cost != null && price > 0) {
+      if (cost > price) {
+        costErrors.push({
+          variantId: r.variantId,
+          productTitle: r.title + (r.variantTitle && r.variantTitle !== "Default Title" ? ` — ${r.variantTitle}` : ""),
+          vendor: r.vendor ?? "",
+          sku: r.sku ?? "",
+          cost,
+          price,
+        });
+      } else {
         marginsSum += ((price - cost) / price) * 100;
         withCostCount++;
       }
@@ -93,7 +107,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     vendors,
     distinctVendors: distinctVendors.map((r) => r.vendor!).filter(Boolean),
     distinctTypes: distinctTypes.map((r) => r.productType!).filter(Boolean),
-    summary: { totalCostValue, totalRetailValue, avgMargin },
+    summary: { totalCostValue, totalRetailValue, avgMargin, costErrorCount: costErrors.length },
+    costErrors,
     filters: { vendor: vendorFilter, productType: productTypeFilter },
     pagination: { page, totalPages, totalCount },
     lastSyncTime: lastSync?.completedAt ?? null,
@@ -144,7 +159,7 @@ function Pagination({ page, totalPages, buildUrl }: { page: number; totalPages: 
 }
 
 export default function InventoryValuationPage({ loaderData }: Route.ComponentProps) {
-  const { rows, vendors, distinctVendors, distinctTypes, summary, filters, pagination, lastSyncTime, noSync } = loaderData;
+  const { rows, vendors, distinctVendors, distinctTypes, summary, filters, pagination, lastSyncTime, noSync, costErrors } = loaderData;
   const [, setSearchParams] = useSearchParams();
   const [localVendor, setLocalVendor] = useState(filters.vendor);
   const [localType, setLocalType] = useState(filters.productType);
@@ -216,7 +231,12 @@ export default function InventoryValuationPage({ loaderData }: Route.ComponentPr
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-amber-200 dark:border-amber-900 shadow-sm p-5">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Avg Potential Margin</p>
           <p className="text-2xl font-bold text-gray-900 dark:text-white">{summary.avgMargin.toFixed(1)}%</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">on items with known cost</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            on items with known cost
+            {summary.costErrorCount > 0 && (
+              <span className="text-amber-500 dark:text-amber-400"> · excluding {summary.costErrorCount} with cost &gt; price</span>
+            )}
+          </p>
         </div>
       </div>
 
@@ -295,6 +315,42 @@ export default function InventoryValuationPage({ loaderData }: Route.ComponentPr
         </div>
       )}
       <Pagination page={pagination.page} totalPages={pagination.totalPages} buildUrl={buildPageUrl} />
+
+      {costErrors.length > 0 && (
+        <div className="mt-10">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">Data Quality Issues</h3>
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">{costErrors.length} items</span>
+          </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">These variants have cost greater than retail price — likely data entry errors in Shopify. Fix them in Shopify to improve report accuracy.</p>
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-amber-200 dark:border-amber-800 shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800">
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Product</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Cost</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Price</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Overage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {costErrors.map((err, i) => (
+                  <tr key={err.variantId} className={i < costErrors.length - 1 ? "border-b border-amber-100 dark:border-amber-900/40" : ""}>
+                    <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{err.productTitle}</td>
+                    <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{err.sku || "—"}</td>
+                    <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{err.vendor || "—"}</td>
+                    <td className="px-5 py-3 text-right text-rose-600 dark:text-rose-400 font-medium">${err.cost.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">${err.price.toFixed(2)}</td>
+                    <td className="px-5 py-3 text-right text-rose-600 dark:text-rose-400 font-medium">+${(err.cost - err.price).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

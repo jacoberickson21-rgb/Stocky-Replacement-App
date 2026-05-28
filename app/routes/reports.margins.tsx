@@ -44,7 +44,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   const allItems = filtered.map((v) => {
     const cost = Number(v.cost!);
     const price = Number(v.price);
-    const margin = Math.round(((price - cost) / price) * 1000) / 10;
+    const costError = cost > price;
+    const margin = costError ? 0 : Math.round(((price - cost) / price) * 1000) / 10;
     return {
       variantId: v.variantId,
       productTitle: v.title + (v.variantTitle && v.variantTitle !== "Default Title" ? ` — ${v.variantTitle}` : ""),
@@ -55,19 +56,26 @@ export async function loader({ request }: Route.LoaderArgs) {
       retailPrice: price,
       margin,
       inventoryQuantity: v.currentInventory,
+      costError,
     };
   });
 
-  const marginFiltered = allItems
-    .filter((r) => {
-      if (marginFilter === "below" && !isNaN(marginThreshold)) return r.margin < marginThreshold;
-      if (marginFilter === "above" && !isNaN(marginThreshold)) return r.margin > marginThreshold;
-      return true;
-    })
-    .sort((a, b) => a.margin - b.margin);
+  const validItems = allItems.filter((r) => !r.costError);
+  const costErrorItems = allItems.filter((r) => r.costError);
 
-  const belowFloor = marginFiltered.filter((r) => r.margin < marginFloor);
-  const avgMargin = marginFiltered.length > 0 ? marginFiltered.reduce((s, r) => s + r.margin, 0) / marginFiltered.length : 0;
+  const marginFiltered = [
+    ...validItems
+      .filter((r) => {
+        if (marginFilter === "below" && !isNaN(marginThreshold)) return r.margin < marginThreshold;
+        if (marginFilter === "above" && !isNaN(marginThreshold)) return r.margin > marginThreshold;
+        return true;
+      })
+      .sort((a, b) => a.margin - b.margin),
+    ...costErrorItems,
+  ];
+
+  const belowFloor = validItems.filter((r) => r.margin < marginFloor);
+  const avgMargin = validItems.length > 0 ? validItems.reduce((s, r) => s + r.margin, 0) / validItems.length : 0;
   const atRiskValue = belowFloor.reduce((s, r) => s + r.retailPrice * Math.max(r.inventoryQuantity, 1), 0);
 
   const totalCount = marginFiltered.length;
@@ -79,7 +87,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     uniqueVendors,
     uniqueProductTypes,
     marginFloor,
-    summary: { avgMargin, belowFloorCount: belowFloor.length, atRiskValue },
+    summary: { avgMargin, belowFloorCount: belowFloor.length, atRiskValue, costErrorCount: costErrorItems.length, validCount: validItems.length },
     filters: { vendor, productType, marginFilter, marginThreshold: marginThresholdRaw },
     pagination: { page, totalPages, totalCount },
     lastSyncTime: lastSync?.completedAt ?? null,
@@ -91,11 +99,11 @@ function fmt$(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
-type MarginItem = { productTitle: string; sku: string; vendor: string; productType: string; unitCost: number; retailPrice: number; margin: number; inventoryQuantity: number };
+type MarginItem = { productTitle: string; sku: string; vendor: string; productType: string; unitCost: number; retailPrice: number; margin: number; inventoryQuantity: number; costError: boolean };
 
 function exportCsv(items: MarginItem[]) {
   const headers = ["Product", "SKU", "Vendor", "Product Type", "Qty", "Cost", "Retail", "Margin%", "Status"];
-  const rows = items.map((r) => [r.productTitle, r.sku ?? "", r.vendor, r.productType, r.inventoryQuantity, r.unitCost.toFixed(2), r.retailPrice.toFixed(2), r.margin.toFixed(1) + "%", r.margin >= 0 ? "OK" : "NEGATIVE"]);
+  const rows = items.map((r) => [r.productTitle, r.sku ?? "", r.vendor, r.productType, r.inventoryQuantity, r.unitCost.toFixed(2), r.retailPrice.toFixed(2), r.costError ? "Cost Error" : r.margin.toFixed(1) + "%", r.costError ? "Cost Error" : "OK"]);
   const csv = [headers, ...rows].map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -181,7 +189,12 @@ export default function MarginsReport({ loaderData }: Route.ComponentProps) {
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-5">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Avg Margin</p>
           <p className="text-2xl font-bold text-gray-900 dark:text-white">{summary.avgMargin.toFixed(1)}%</p>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">across {pagination.totalCount} variants</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+            across {summary.validCount} variants
+            {summary.costErrorCount > 0 && (
+              <span className="text-amber-500 dark:text-amber-400"> · excluding {summary.costErrorCount} cost errors</span>
+            )}
+          </p>
         </div>
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-rose-200 dark:border-rose-900 shadow-sm p-5">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Below Floor ({marginFloor}%)</p>
@@ -258,6 +271,23 @@ export default function MarginsReport({ loaderData }: Route.ComponentProps) {
             <tbody>
               {items.map((item, i) => {
                 const aboveFloor = item.margin >= marginFloor;
+                if (item.costError) {
+                  return (
+                    <tr key={item.variantId} className={[i < items.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : "", "bg-amber-50 dark:bg-amber-950/20"].join(" ")}>
+                      <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{item.productTitle}</td>
+                      <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{item.sku || "—"}</td>
+                      <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{item.vendor}</td>
+                      <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{item.productType || "—"}</td>
+                      <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{item.inventoryQuantity}</td>
+                      <td className="px-5 py-3 text-right text-rose-600 dark:text-rose-400">${item.unitCost.toFixed(2)}</td>
+                      <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">${item.retailPrice.toFixed(2)}</td>
+                      <td className="px-5 py-3 text-right text-gray-400 dark:text-gray-500">—</td>
+                      <td className="px-5 py-3 text-center">
+                        <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">Cost Error</span>
+                      </td>
+                    </tr>
+                  );
+                }
                 return (
                   <tr key={item.variantId} className={[i < items.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : "", !aboveFloor ? "bg-rose-50 dark:bg-rose-950/20" : ""].join(" ")}>
                     <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{item.productTitle}</td>

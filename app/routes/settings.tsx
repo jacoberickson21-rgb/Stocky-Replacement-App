@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Route } from "./+types/settings";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
-import { getSyncStatus } from "../services/sync.server";
+import { getSyncStatus, resetRunningSyncs } from "../services/sync.server";
 import type { SyncLogData } from "../services/sync.server";
 
 const SETTINGS_KEYS = ["marginFloor", "lowStockThreshold", "autoSyncEnabled", "autoSyncIntervalHours", "salesHistoryDays"] as const;
@@ -75,6 +75,11 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ intent: "saveSync", error: null });
   }
 
+  if (intent === "reset") {
+    const resetCount = await resetRunningSyncs();
+    return data({ intent: "reset", error: null, resetCount });
+  }
+
   return data({ intent: "unknown", error: null });
 }
 
@@ -96,13 +101,19 @@ function fmtDuration(ms: number): string {
 
 export default function SettingsPage({ loaderData }: Route.ComponentProps) {
   const { settings, syncStatus: initialSyncStatus } = loaderData;
-  const actionData = useActionData() as { intent: string; error: string | null } | undefined;
+  const actionData = useActionData() as { intent: string; error: string | null; resetCount?: number } | undefined;
   const navigation = useNavigation();
   const syncFetcher = useFetcher<SyncLogData>();
+  const fullSyncFetcher = useFetcher<SyncLogData>();
   const [syncStatus, setSyncStatus] = useState<SyncLogData | null>(initialSyncStatus);
   const [autoEnabled, setAutoEnabled] = useState(settings.autoSyncEnabled === "true");
 
-  const isRunning = syncStatus?.status === "RUNNING" || syncFetcher.state !== "idle";
+  const isRunning = syncStatus?.status === "RUNNING" || syncFetcher.state !== "idle" || fullSyncFetcher.state !== "idle";
+  const isStuckRunning =
+    syncStatus?.status === "RUNNING" &&
+    Date.now() - new Date(syncStatus.startedAt).getTime() > 5 * 60_000;
+  const isResetting = navigation.state === "submitting" && navigation.formData?.get("intent") === "reset";
+  const resetDone = navigation.state === "idle" && actionData?.intent === "reset" && !actionData.error;
 
   // Poll while syncing
   useEffect(() => {
@@ -119,6 +130,10 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     if (syncFetcher.data) setSyncStatus(syncFetcher.data as SyncLogData);
   }, [syncFetcher.data]);
+
+  useEffect(() => {
+    if (fullSyncFetcher.data) setSyncStatus(fullSyncFetcher.data as SyncLogData);
+  }, [fullSyncFetcher.data]);
 
   const isSavingGeneral = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveGeneral";
   const isSavingSync = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveSync";
@@ -186,27 +201,53 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
             <p className="text-sm text-gray-500 dark:text-gray-400">No sync has run yet.</p>
           )}
           {syncStatus?.status === "RUNNING" && (
-            <div className="flex items-center gap-2 text-sm text-indigo-600 dark:text-indigo-400">
-              <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <span>
-                Syncing…{" "}
-                {syncStatus.totalVariants
-                  ? `${syncStatus.currentVariant ?? 0} / ${syncStatus.totalVariants} variants`
-                  : syncStatus.currentVariant
-                  ? `${syncStatus.currentVariant} variants fetched`
-                  : ""}
-              </span>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm text-indigo-600 dark:text-indigo-400">
+                <svg className="animate-spin h-4 w-4 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span>
+                  Syncing…{" "}
+                  {syncStatus.totalVariants
+                    ? `${(syncStatus.currentVariant ?? 0).toLocaleString()} / ${syncStatus.totalVariants.toLocaleString()} variants`
+                    : syncStatus.currentVariant
+                    ? `${syncStatus.currentVariant.toLocaleString()} variants fetched`
+                    : ""}
+                </span>
+              </div>
+              {syncStatus.errorMessage && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 font-mono pl-6">{syncStatus.errorMessage}</p>
+              )}
+              {isStuckRunning && (
+                <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    This sync has been running for more than 5 minutes and may be stuck.
+                  </p>
+                  <Form method="post">
+                    <input type="hidden" name="intent" value="reset" />
+                    <button
+                      type="submit"
+                      disabled={isResetting}
+                      className="border border-red-500 text-red-600 dark:text-red-400 dark:border-red-500 hover:bg-red-50 dark:hover:bg-red-950 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+                    >
+                      {isResetting ? "Resetting…" : "Reset Stuck Syncs"}
+                    </button>
+                  </Form>
+                </div>
+              )}
             </div>
           )}
           {syncStatus?.status === "COMPLETE" && (
             <div className="text-sm text-gray-700 dark:text-gray-200 space-y-1">
               <p className="font-medium text-green-700 dark:text-green-400">Last sync completed successfully</p>
               <p className="text-gray-500 dark:text-gray-400">
-                {syncStatus.completedAt ? timeAgo(syncStatus.completedAt) : "—"} ·{" "}
-                {syncStatus.variantsSynced ?? 0} variants · {syncStatus.salesDaysSynced ?? 0} sales-days ·{" "}
+                {syncStatus.syncType ?? "FULL"} · {syncStatus.completedAt ? timeAgo(syncStatus.completedAt) : "—"} ·{" "}
+                {(syncStatus.syncType ?? "FULL") === "INCREMENTAL"
+                  ? `${(syncStatus.variantsSynced ?? 0).toLocaleString()} variants updated`
+                  : `${(syncStatus.variantsSynced ?? 0).toLocaleString()} variants in DB`
+                } ·{" "}
+                {(syncStatus.salesDaysSynced ?? 0).toLocaleString()} sales-days ·{" "}
                 {syncStatus.durationMs ? fmtDuration(syncStatus.durationMs) : ""}
               </p>
             </div>
@@ -221,7 +262,7 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
           )}
         </div>
 
-        <div className="mb-5">
+        <div className="mb-5 flex items-center gap-3 flex-wrap">
           <syncFetcher.Form method="post" action="/api/sync">
             <button
               type="submit"
@@ -231,6 +272,21 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
               {isRunning ? "Syncing…" : "Sync Now"}
             </button>
           </syncFetcher.Form>
+          <fullSyncFetcher.Form method="post" action="/api/sync">
+            <input type="hidden" name="forceFull" value="true" />
+            <button
+              type="submit"
+              disabled={isRunning}
+              className="border border-indigo-500 text-indigo-600 dark:text-indigo-400 dark:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+            >
+              Full Sync
+            </button>
+          </fullSyncFetcher.Form>
+          {resetDone && (
+            <p className="text-sm text-green-600 dark:text-green-400">
+              {actionData!.resetCount === 1 ? "1 stuck sync cleared." : `${actionData!.resetCount} stuck syncs cleared.`}
+            </p>
+          )}
         </div>
 
         <div className="border-t border-gray-200 dark:border-gray-700 pt-5">
