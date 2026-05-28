@@ -36,13 +36,19 @@ export async function loader({ request, params }: { request: Request; params: { 
     const qtyOrdered = li.quantityOrdered;
     const qtyReceived = li.quantityReceived;
     const lineTotal = qtyReceived * unitCost;
+    const diff = qtyReceived - qtyOrdered;
     const discrepancy = li.hasDiscrepancy
-      ? { expected: qtyOrdered, actual: qtyReceived, note: li.receivingNote ?? "" }
+      ? { expected: qtyOrdered, actual: qtyReceived, diff, note: li.receivingNote ?? "" }
       : null;
+    const shopifyTitle = li.shopifyProductTitle ?? "";
+    const product = shopifyTitle || li.description;
+    const variant = shopifyTitle && shopifyTitle !== li.description ? li.description : "";
     return {
       id: li.id,
       sku: li.sku ?? "",
-      description: li.description,
+      product,
+      variant,
+      barcode: li.barcode ?? "",
       qtyOrdered,
       qtyReceived,
       unitCost,
@@ -62,6 +68,8 @@ export async function loader({ request, params }: { request: Request; params: { 
       invoiceNumber: invoice.invoiceNumber,
       status: invoice.status,
       invoiceDate: invoice.invoiceDate?.toISOString() ?? null,
+      dueDate: invoice.dueDate?.toISOString() ?? null,
+      paymentTerms: invoice.paymentTerms ?? null,
       receivedAt: receiveLog?.timestamp.toISOString() ?? invoice.updatedAt.toISOString(),
       receivedBy: receiveLog?.user?.name ?? "—",
     },
@@ -72,19 +80,386 @@ export async function loader({ request, params }: { request: Request; params: { 
   };
 }
 
+// ─── Formatters ───────────────────────────────────────────────────────────────
+
 function fmt$(n: number) {
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function fmtDate(iso: string | null) {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
 }
+
+function fmtPaymentTerms(terms: string | null) {
+  if (!terms) return "—";
+  const map: Record<string, string> = {
+    NET30: "Net 30",
+    NET60: "Net 60",
+    DUE_ON_RECEIPT: "Due on Receipt",
+    CUSTOM: "Custom",
+  };
+  return map[terms] ?? terms;
+}
+
+function fmtDateTime(iso: string) {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const CSS = `
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #1e293b;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* ── Print action bar ─────────────────────────────────────────────────────── */
+  .print-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 10px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .print-bar-info { display: flex; flex-direction: column; gap: 1px; }
+  .print-bar-title { font-size: 13px; font-weight: 600; color: #1e293b; }
+  .print-bar-sub { font-size: 11px; color: #64748b; }
+  .print-bar-actions { display: flex; gap: 8px; align-items: center; }
+  .print-btn {
+    background: #4f46e5;
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: -0.1px;
+    transition: background 0.15s;
+  }
+  .print-btn:hover { background: #4338ca; }
+  .csv-btn {
+    background: #fff;
+    color: #374151;
+    border: 1.5px solid #d1d5db;
+    border-radius: 7px;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: -0.1px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .csv-btn:hover { background: #f9fafb; border-color: #9ca3af; }
+  .close-btn {
+    background: #fff;
+    color: #6b7280;
+    border: 1.5px solid #e5e7eb;
+    border-radius: 7px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .close-btn:hover { background: #f3f4f6; }
+
+  /* ── Page wrapper ─────────────────────────────────────────────────────────── */
+  .page { max-width: 1020px; margin: 0 auto; padding: 40px; }
+
+  /* ── Document header ──────────────────────────────────────────────────────── */
+  .doc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-bottom: 18px;
+    border-bottom: 2.5px solid #1e293b;
+  }
+  .brand {
+    font-size: 28px;
+    font-weight: 800;
+    color: #4f46e5;
+    letter-spacing: -1.5px;
+    line-height: 1;
+  }
+  .doc-subtitle {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #64748b;
+    margin-top: 7px;
+  }
+  .doc-right { text-align: right; }
+  .inv-number {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1e293b;
+    font-family: ui-monospace, "SF Mono", Consolas, monospace;
+    letter-spacing: -0.5px;
+    line-height: 1;
+  }
+  .inv-meta { font-size: 11px; color: #64748b; margin-top: 4px; }
+
+  /* ── Info strip ───────────────────────────────────────────────────────────── */
+  .info-strip {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    border-bottom: 1px solid #e2e8f0;
+    margin-bottom: 30px;
+  }
+  .info-cell { padding: 16px 20px; }
+  .info-cell + .info-cell { border-left: 1px solid #e2e8f0; }
+  .info-cell-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #94a3b8;
+    margin-bottom: 5px;
+  }
+  .info-cell-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1e293b;
+    line-height: 1.3;
+  }
+  .info-cell-value-lg {
+    font-size: 17px;
+    font-weight: 700;
+    color: #4338ca;
+  }
+
+  /* ── Section label ────────────────────────────────────────────────────────── */
+  .section-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #94a3b8;
+    margin-bottom: 8px;
+    padding: 0 1px;
+  }
+
+  /* ── Line items table ─────────────────────────────────────────────────────── */
+  .table-wrap { margin-bottom: 30px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead tr { background: #1e293b; }
+  th {
+    padding: 9px 10px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th.r, td.r { text-align: right; }
+  th.c, td.c { text-align: center; }
+
+  td {
+    padding: 7px 10px;
+    vertical-align: middle;
+    color: #334155;
+    font-size: 12px;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  tr.even td { background: #f8fafc; }
+  tr.odd  td { background: #ffffff; }
+  tr.disc td { background: #fffbeb !important; border-bottom-color: #fde68a; }
+
+  .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+  .sku-cell  { font-size: 11px; color: #64748b; }
+  .bar-cell  { font-size: 10px; color: #94a3b8; }
+  .prod-cell { font-weight: 500; color: #1e293b; }
+  .var-cell  { font-size: 11px; color: #64748b; }
+  .dim       { color: #cbd5e1; }
+  .qty-disc  { font-weight: 700; color: #b45309; }
+  .fw6       { font-weight: 600; color: #1e293b; }
+
+  .ok-badge {
+    color: #16a34a;
+    font-weight: 700;
+    font-size: 14px;
+  }
+  .disc-badge {
+    display: inline-block;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid #fcd34d;
+    white-space: nowrap;
+  }
+  .disc-note-inline {
+    font-size: 10px;
+    color: #92400e;
+    margin-top: 3px;
+    font-style: italic;
+  }
+
+  /* ── Summary cards ────────────────────────────────────────────────────────── */
+  .summary-wrap { margin-bottom: 24px; }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    border: 1.5px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 16px;
+    background: #fff;
+  }
+  .stat-warn  { border-color: #fcd34d; background: #fffbeb; }
+  .stat-total { border-color: #a5b4fc; background: #eef2ff; }
+  .stat-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #94a3b8;
+    margin-bottom: 6px;
+  }
+  .stat-value { font-size: 26px; font-weight: 800; color: #1e293b; line-height: 1; }
+  .stat-value-warn  { color: #92400e; }
+  .stat-ok-tick     { font-size: 18px; color: #16a34a; margin-left: 4px; }
+  .stat-value-total { font-size: 19px; color: #4338ca; }
+
+  /* ── Discrepancy notes ────────────────────────────────────────────────────── */
+  .disc-notes {
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .disc-notes-heading {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #92400e;
+    margin-bottom: 10px;
+  }
+  .disc-note-row {
+    display: grid;
+    grid-template-columns: 90px 1fr auto;
+    gap: 16px;
+    padding: 6px 0;
+    border-top: 1px solid #fde68a;
+    font-size: 11px;
+    color: #78350f;
+    align-items: baseline;
+  }
+  .disc-note-row:first-of-type { border-top: none; }
+  .disc-note-sku    { font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600; }
+  .disc-note-prod   { font-weight: 500; }
+  .disc-note-status { white-space: nowrap; font-weight: 600; }
+  .disc-note-memo   { grid-column: 2 / -1; font-style: italic; color: #92400e; font-size: 10px; padding-bottom: 4px; }
+
+  /* ── Footer ───────────────────────────────────────────────────────────────── */
+  .doc-footer {
+    margin-top: 28px;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 12px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #94a3b8;
+  }
+
+  /* ── Print overrides ──────────────────────────────────────────────────────── */
+  @media print {
+    .no-print { display: none !important; }
+    body { font-size: 10px; }
+    .page { padding: 0; max-width: 100%; }
+    .doc-header { padding-bottom: 14px; }
+    .info-strip { margin-bottom: 20px; }
+    .table-wrap { margin-bottom: 20px; }
+    .summary-wrap { margin-bottom: 20px; }
+
+    @page {
+      size: letter landscape;
+      margin: 1.2cm 1.5cm;
+    }
+
+    thead, tr.disc, tr.even {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
+`;
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 type LoaderData = Awaited<ReturnType<typeof loader>>;
 
+function exportCsv(invoice: LoaderData["invoice"], vendor: LoaderData["vendor"], lineItems: LoaderData["lineItems"]) {
+  const headers = ["SKU", "Product", "Variant", "Barcode", "Qty Ordered", "Qty Received", "Unit Cost", "Line Total", "Discrepancy", "Note"];
+  const rows = lineItems.map((li) => [
+    li.sku,
+    li.product,
+    li.variant,
+    li.barcode,
+    li.qtyOrdered,
+    li.qtyReceived,
+    li.unitCost.toFixed(2),
+    li.lineTotal.toFixed(2),
+    li.discrepancy
+      ? (li.discrepancy.diff < 0 ? `Short ${Math.abs(li.discrepancy.diff)}` : `Over ${li.discrepancy.diff}`)
+      : "OK",
+    li.discrepancy?.note ?? "",
+  ]);
+
+  const csv = [headers, ...rows]
+    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+    .join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `receiving-summary-${invoice.invoiceNumber}-${vendor.name.replace(/\s+/g, "-")}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function ReceivingSummaryPage({ loaderData }: { loaderData: LoaderData }) {
   const { invoice, vendor, lineItems, summary, generatedAt } = loaderData;
+
+  const discrepantItems = lineItems.filter((li) => li.discrepancy !== null);
 
   return (
     <html lang="en">
@@ -92,151 +467,193 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>Receiving Summary — {invoice.invoiceNumber}</title>
-        <style>{`
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; color: #111; background: #fff; padding: 40px; }
-          .page { max-width: 900px; margin: 0 auto; }
-          .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; border-bottom: 2px solid #111; padding-bottom: 16px; }
-          .brand { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; color: #4f46e5; }
-          .doc-title { font-size: 18px; font-weight: 600; color: #374151; margin-top: 4px; }
-          .meta-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 28px; }
-          .meta-item .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 3px; }
-          .meta-item .value { font-size: 13px; font-weight: 500; color: #111; }
-          table { width: 100%; border-collapse: collapse; margin-bottom: 28px; }
-          thead { background: #f3f4f6; }
-          th { text-align: left; padding: 8px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; border-bottom: 1px solid #d1d5db; }
-          th.right, td.right { text-align: right; }
-          th.center, td.center { text-align: center; }
-          td { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; color: #374151; vertical-align: top; }
-          tr.discrepancy-row td { background: #fff7ed; }
-          .disc-badge { display: inline-block; background: #fef3c7; color: #92400e; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 9999px; border: 1px solid #fcd34d; }
-          .disc-note { font-size: 11px; color: #92400e; margin-top: 3px; }
-          .summary-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px; }
-          .summary-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
-          .summary-card .s-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 4px; }
-          .summary-card .s-value { font-size: 20px; font-weight: 700; color: #111; }
-          .summary-card.highlight { border-color: #4f46e5; }
-          .summary-card.warn { border-color: #f59e0b; }
-          .footer { border-top: 1px solid #e5e7eb; padding-top: 12px; display: flex; justify-content: space-between; color: #9ca3af; font-size: 11px; }
-          .mono { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; }
-          @media print {
-            body { padding: 20px; }
-            .no-print { display: none !important; }
-            @page { margin: 1.5cm; }
-          }
-        `}</style>
+        <style>{CSS}</style>
       </head>
       <body>
-        <div className="page">
-          {/* Header */}
-          <div className="header">
-            <div>
-              <div className="brand">Receively</div>
-              <div className="doc-title">Receiving Summary</div>
-            </div>
-            <button
-              onClick={() => window.print()}
-              className="no-print"
-              style={{ padding: "8px 16px", background: "#4f46e5", color: "#fff", border: "none", borderRadius: "8px", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
-            >
+        {/* ── Screen action bar ── */}
+        <div className="print-bar no-print">
+          <div className="print-bar-info">
+            <span className="print-bar-title">Receiving Summary</span>
+            <span className="print-bar-sub">
+              Invoice #{invoice.invoiceNumber} · {vendor.name}
+            </span>
+          </div>
+          <div className="print-bar-actions">
+            <button className="print-btn" onClick={() => window.print()}>
               Print / Save PDF
             </button>
-          </div>
-
-          {/* Invoice Metadata */}
-          <div className="meta-grid">
-            <div className="meta-item">
-              <div className="label">Invoice #</div>
-              <div className="value mono">{invoice.invoiceNumber}</div>
-            </div>
-            <div className="meta-item">
-              <div className="label">Vendor</div>
-              <div className="value">{vendor.name}</div>
-            </div>
-            <div className="meta-item">
-              <div className="label">Date Received</div>
-              <div className="value">{fmtDate(invoice.receivedAt)}</div>
-            </div>
-            <div className="meta-item">
-              <div className="label">Received By</div>
-              <div className="value">{invoice.receivedBy}</div>
-            </div>
-          </div>
-
-          {/* Summary Cards */}
-          <div className="summary-box">
-            <div className="summary-card">
-              <div className="s-label">Items Ordered</div>
-              <div className="s-value">{summary.totalOrdered}</div>
-            </div>
-            <div className="summary-card">
-              <div className="s-label">Items Received</div>
-              <div className="s-value">{summary.totalReceived}</div>
-            </div>
-            <div className={`summary-card ${summary.totalDiscrepancies > 0 ? "warn" : ""}`}>
-              <div className="s-label">Discrepancies</div>
-              <div className="s-value" style={{ color: summary.totalDiscrepancies > 0 ? "#d97706" : "#111" }}>
-                {summary.totalDiscrepancies}
-              </div>
-            </div>
-            <div className="summary-card highlight">
-              <div className="s-label">Invoice Total</div>
-              <div className="s-value" style={{ fontSize: "16px" }}>{fmt$(summary.invoiceTotal)}</div>
-            </div>
-          </div>
-
-          {/* Line Items */}
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: "12%" }}>SKU</th>
-                <th style={{ width: "34%" }}>Description</th>
-                <th className="right" style={{ width: "10%" }}>Qty Ordered</th>
-                <th className="right" style={{ width: "10%" }}>Qty Received</th>
-                <th className="right" style={{ width: "11%" }}>Unit Cost</th>
-                <th className="right" style={{ width: "11%" }}>Line Total</th>
-                <th className="center" style={{ width: "12%" }}>Discrepancy</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lineItems.map((li) => (
-                <tr key={li.id} className={li.discrepancy ? "discrepancy-row" : ""}>
-                  <td className="mono">{li.sku || "—"}</td>
-                  <td>{li.description}</td>
-                  <td className="right">{li.qtyOrdered}</td>
-                  <td className="right">{li.qtyReceived}</td>
-                  <td className="right">{fmt$(li.unitCost)}</td>
-                  <td className="right">{fmt$(li.lineTotal)}</td>
-                  <td className="center">
-                    {li.discrepancy ? (
-                      <div>
-                        <span className="disc-badge">
-                          {li.discrepancy.actual < li.discrepancy.expected ? "Short" : "Over"}{" "}
-                          {Math.abs(li.discrepancy.actual - li.discrepancy.expected)}
-                        </span>
-                        {li.discrepancy.note && <div className="disc-note">{li.discrepancy.note}</div>}
-                      </div>
-                    ) : (
-                      <span style={{ color: "#9ca3af" }}>—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {/* Footer */}
-          <div className="footer">
-            <span>Generated by Receively</span>
-            <span>{new Date(generatedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</span>
+            <button className="csv-btn" onClick={() => exportCsv(invoice, vendor, lineItems)}>
+              Export CSV
+            </button>
+            <button className="close-btn" onClick={() => window.close()}>
+              Close
+            </button>
           </div>
         </div>
 
-        <script
-          dangerouslySetInnerHTML={{
-            __html: "if (window.location.search !== '?noprint') { window.addEventListener('load', () => window.print()); }",
-          }}
-        />
+        <div className="page">
+          {/* ── Document header ── */}
+          <div className="doc-header">
+            <div>
+              <div className="brand">Receively</div>
+              <div className="doc-subtitle">Receiving Summary</div>
+            </div>
+            <div className="doc-right">
+              <div className="inv-number">#{invoice.invoiceNumber}</div>
+              <div className="inv-meta">Received {fmtDate(invoice.receivedAt)}</div>
+              {invoice.invoiceDate && (
+                <div className="inv-meta">Invoice Date: {fmtDate(invoice.invoiceDate)}</div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Info strip ── */}
+          <div className="info-strip">
+            <div className="info-cell">
+              <div className="info-cell-label">Vendor</div>
+              <div className="info-cell-value">{vendor.name}</div>
+            </div>
+            <div className="info-cell">
+              <div className="info-cell-label">Received By</div>
+              <div className="info-cell-value">{invoice.receivedBy}</div>
+            </div>
+            <div className="info-cell">
+              <div className="info-cell-label">Date Received</div>
+              <div className="info-cell-value">{fmtDate(invoice.receivedAt)}</div>
+            </div>
+            <div className="info-cell">
+              <div className="info-cell-label">Due Date</div>
+              <div className="info-cell-value">{fmtDate(invoice.dueDate)}</div>
+            </div>
+            <div className="info-cell">
+              <div className="info-cell-label">Payment Terms</div>
+              <div className="info-cell-value">{fmtPaymentTerms(invoice.paymentTerms)}</div>
+            </div>
+            <div className="info-cell">
+              <div className="info-cell-label">Invoice Total</div>
+              <div className="info-cell-value info-cell-value-lg">{fmt$(summary.invoiceTotal)}</div>
+            </div>
+          </div>
+
+          {/* ── Line items ── */}
+          <div className="table-wrap">
+            <div className="section-label">Line Items ({lineItems.length})</div>
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: "8%" }}>SKU</th>
+                  <th style={{ width: "22%" }}>Product</th>
+                  <th style={{ width: "13%" }}>Variant</th>
+                  <th style={{ width: "11%" }}>Barcode</th>
+                  <th className="r" style={{ width: "6%" }}>Ord.</th>
+                  <th className="r" style={{ width: "6%" }}>Rec.</th>
+                  <th className="r" style={{ width: "9%" }}>Unit Cost</th>
+                  <th className="r" style={{ width: "10%" }}>Line Total</th>
+                  <th className="c" style={{ width: "15%" }}>Discrepancy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineItems.map((li, i) => {
+                  const isDisc = li.discrepancy !== null;
+                  const rowClass = isDisc ? "disc" : i % 2 === 0 ? "even" : "odd";
+                  const diff = isDisc ? li.discrepancy!.diff : 0;
+                  return (
+                    <tr key={li.id} className={rowClass}>
+                      <td className="mono sku-cell">{li.sku || <span className="dim">—</span>}</td>
+                      <td className="prod-cell">{li.product}</td>
+                      <td className="var-cell">
+                        {li.variant || <span className="dim">—</span>}
+                      </td>
+                      <td className="mono bar-cell">
+                        {li.barcode || <span className="dim">—</span>}
+                      </td>
+                      <td className="r">{li.qtyOrdered}</td>
+                      <td className={`r${isDisc ? " qty-disc" : ""}`}>{li.qtyReceived}</td>
+                      <td className="r">{fmt$(li.unitCost)}</td>
+                      <td className="r fw6">{fmt$(li.lineTotal)}</td>
+                      <td className="c">
+                        {isDisc ? (
+                          <div>
+                            <span className="disc-badge">
+                              {diff < 0 ? `⚠ Short ${Math.abs(diff)}` : `⚠ Over ${diff}`}
+                            </span>
+                            {li.discrepancy!.note && (
+                              <div className="disc-note-inline">{li.discrepancy!.note}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="ok-badge">✓</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Summary ── */}
+          <div className="summary-wrap">
+            <div className="section-label">Summary</div>
+            <div className="summary-grid">
+              <div className="stat">
+                <div className="stat-label">Items Ordered</div>
+                <div className="stat-value">{summary.totalOrdered}</div>
+              </div>
+              <div className="stat">
+                <div className="stat-label">Items Received</div>
+                <div className="stat-value">{summary.totalReceived}</div>
+              </div>
+              <div className={`stat${summary.totalDiscrepancies > 0 ? " stat-warn" : ""}`}>
+                <div className="stat-label">Discrepancies</div>
+                <div className={`stat-value${summary.totalDiscrepancies > 0 ? " stat-value-warn" : ""}`}>
+                  {summary.totalDiscrepancies}
+                  {summary.totalDiscrepancies === 0 && (
+                    <span className="stat-ok-tick">✓</span>
+                  )}
+                </div>
+              </div>
+              <div className="stat stat-total">
+                <div className="stat-label">Invoice Total</div>
+                <div className="stat-value stat-value-total">{fmt$(summary.invoiceTotal)}</div>
+              </div>
+            </div>
+
+            {discrepantItems.length > 0 && (
+              <div className="disc-notes">
+                <div className="disc-notes-heading">
+                  Discrepancy Notes — {discrepantItems.length} line item{discrepantItems.length !== 1 ? "s" : ""}
+                </div>
+                {discrepantItems.map((li) => {
+                  const diff = li.discrepancy!.diff;
+                  return (
+                    <div key={li.id}>
+                      <div className="disc-note-row">
+                        <span className="disc-note-sku mono">{li.sku || "—"}</span>
+                        <span className="disc-note-prod">{li.product}</span>
+                        <span className="disc-note-status">
+                          {diff < 0
+                            ? `Short ${Math.abs(diff)}`
+                            : `Over ${diff}`}
+                          {" · "}ordered {li.discrepancy!.expected}, received {li.discrepancy!.actual}
+                        </span>
+                      </div>
+                      {li.discrepancy!.note && (
+                        <div className="disc-note-memo">"{li.discrepancy!.note}"</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── Footer ── */}
+          <div className="doc-footer">
+            <span>Generated by Receively</span>
+            <span>{fmtDateTime(generatedAt)}</span>
+          </div>
+        </div>
       </body>
     </html>
   );

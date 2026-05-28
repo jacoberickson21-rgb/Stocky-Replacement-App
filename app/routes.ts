@@ -9,6 +9,7 @@ export default [
   route("api/sync", "routes/api.sync.tsx"),
   route("api/sync/debug", "routes/api.sync.debug.tsx"),
   route("api/sync/reset", "routes/api.sync.reset.tsx"),
+  route("invoices/:id/receiving-summary", "routes/invoices.$id.receiving-summary.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
     route("products", "routes/products.tsx"),
@@ -17,7 +18,6 @@ export default [
     route("invoices/upload", "routes/invoices.upload.tsx"),
     route("invoices/:id", "routes/invoices.$id.tsx"),
     route("invoices/:id/receive", "routes/invoices.$id.receive.tsx"),
-    route("invoices/:id/receiving-summary", "routes/invoices.$id.receiving-summary.tsx"),
     route("suppliers", "routes/suppliers.tsx"),
     route("suppliers/new", "routes/suppliers.new.tsx"),
     route("suppliers/:id", "routes/suppliers.$id.tsx"),
