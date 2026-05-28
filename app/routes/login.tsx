@@ -4,6 +4,40 @@ import type { Route } from "./+types/login";
 import { getDb } from "../db.server";
 import { getSession, commitSession } from "../session.server";
 
+// ─── In-memory rate limiter ────────────────────────────────────────────────────
+const RATE_LIMIT_MAX = 10;
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+
+const loginAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function getClientIp(request: Request): string {
+  return (
+    request.headers.get("X-Forwarded-For")?.split(",")[0].trim() ??
+    request.headers.get("CF-Connecting-IP") ??
+    "unknown"
+  );
+}
+
+function checkRateLimit(ip: string): boolean {
+  const entry = loginAttempts.get(ip);
+  if (!entry || Date.now() > entry.resetAt) return false;
+  return entry.count >= RATE_LIMIT_MAX;
+}
+
+function recordFailedAttempt(ip: string): void {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+  } else {
+    entry.count++;
+  }
+}
+
+function clearAttempts(ip: string): void {
+  loginAttempts.delete(ip);
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   const session = await getSession(request.headers.get("Cookie"));
   if (session.get("userId")) throw redirect("/dashboard");
@@ -11,6 +45,15 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export async function action({ request }: Route.ActionArgs) {
+  const ip = getClientIp(request);
+
+  if (checkRateLimit(ip)) {
+    return data(
+      { error: "Too many login attempts. Please try again later." },
+      { status: 429 },
+    );
+  }
+
   try {
     const form = await request.formData();
     const username = String(form.get("username") ?? "");
@@ -19,9 +62,11 @@ export async function action({ request }: Route.ActionArgs) {
     const user = await getDb().user.findUnique({ where: { username } });
 
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      recordFailedAttempt(ip);
       return data({ error: "Invalid username or password." }, { status: 401 });
     }
 
+    clearAttempts(ip);
     const session = await getSession(request.headers.get("Cookie"));
     session.set("userId", user.id);
 
