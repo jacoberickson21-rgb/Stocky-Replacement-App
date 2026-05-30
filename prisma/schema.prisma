@@ -20,13 +20,14 @@ model User {
 }
 
 model Supplier {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   name        String
   contactName String?
   email       String?
   phone       String?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   vendors     Vendor[]
+  invoices    Invoice[]
 }
 
 model Vendor {
@@ -62,6 +63,8 @@ model Invoice {
   invoiceNumber   String
   vendor          Vendor            @relation(fields: [vendorId], references: [id])
   vendorId        Int
+  supplier        Supplier?         @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierId      Int?
   status          InvoiceStatus     @default(ORDERED)
   invoiceDate     DateTime?
   paymentTerms    String?

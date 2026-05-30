@@ -15,11 +15,15 @@ import type { DraftProductVariantInput } from "../services/shopify.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
-  const vendors = await getDb().vendor.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, shopifyVendorName: true },
-  });
-  return { vendors };
+  const db = getDb();
+  const [vendors, suppliers] = await Promise.all([
+    db.vendor.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, shopifyVendorName: true, supplierId: true },
+    }),
+    db.supplier.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
+  ]);
+  return { vendors, suppliers };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -252,6 +256,7 @@ export async function action({ request }: Route.ActionArgs) {
   // ── Manual entry path ────────────────────────────────────────────────────
   if (intent === "createManual") {
     const vendorId = String(form.get("vendorId") ?? "").trim();
+    const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
@@ -313,12 +318,14 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+    const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
     const { created: invoice, savedLineItems } = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
         data: {
           invoiceNumber,
           vendorId: Number(vendorId),
+          supplierId,
           status: "ORDERED",
           invoiceDate,
           paymentTerms,
@@ -499,7 +506,8 @@ export async function action({ request }: Route.ActionArgs) {
 
 // ── Component ─────────────────────────────────────────────────────────────
 
-type Vendor = { id: number; name: string; shopifyVendorName: string | null };
+type Vendor = { id: number; name: string; shopifyVendorName: string | null; supplierId: number | null };
+type Supplier = { id: number; name: string };
 
 type LineItemRow = {
   key: string;
@@ -785,6 +793,7 @@ const DRAFT_KEY = "draft-invoice";
 
 type DraftData = {
   vendorId: string;
+  supplierId: string;
   invoiceNumber: string;
   invoiceDate: string;
   paymentTerms: string;
@@ -796,9 +805,11 @@ type DraftData = {
 
 function ManualEntryForm({
   vendors,
+  suppliers,
   errors,
 }: {
   vendors: Vendor[];
+  suppliers: Supplier[];
   errors: Record<string, string>;
 }) {
   const navigation = useNavigation();
@@ -807,6 +818,7 @@ function ManualEntryForm({
 
   const [lineItems, setLineItems] = useState<LineItemRow[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [paymentTerms, setPaymentTerms] = useState("");
@@ -838,12 +850,12 @@ function ManualEntryForm({
     if (!hasContent) return;
     const timer = setInterval(() => {
       try {
-        const draft: DraftData = { vendorId: selectedVendorId, invoiceNumber, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments, lineItems };
+        const draft: DraftData = { vendorId: selectedVendorId, supplierId: selectedSupplierId, invoiceNumber, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments, lineItems };
         localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* ignore */ }
     }, 30_000);
     return () => clearInterval(timer);
-  }, [lineItems, invoiceNumber, selectedVendorId, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments]);
+  }, [lineItems, invoiceNumber, selectedVendorId, selectedSupplierId, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments]);
 
   // Clear draft when the form is submitted successfully
   useEffect(() => {
@@ -855,6 +867,7 @@ function ManualEntryForm({
   function resumeDraft() {
     if (!pendingDraft) return;
     setSelectedVendorId(pendingDraft.vendorId ?? "");
+    setSelectedSupplierId(pendingDraft.supplierId ?? "");
     setInvoiceNumber(pendingDraft.invoiceNumber ?? "");
     setInvoiceDate(pendingDraft.invoiceDate ?? "");
     setPaymentTerms(pendingDraft.paymentTerms ?? "");
@@ -873,6 +886,10 @@ function ManualEntryForm({
     setHasDraft(false);
     setPendingDraft(null);
   }
+
+  const filteredVendors = selectedSupplierId
+    ? vendors.filter((v) => v.supplierId === Number(selectedSupplierId))
+    : vendors;
 
   const selectedVendor = vendors.find((v) => String(v.id) === selectedVendorId) ?? null;
 
@@ -1306,6 +1323,7 @@ function ManualEntryForm({
       <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
       <input type="hidden" name="shippingCost" value={shippingCost} />
       <input type="hidden" name="adjustments" value={adjustments} />
+      <input type="hidden" name="supplierId" value={selectedSupplierId} />
 
       {/* Draft resume banner */}
       {hasDraft && (
@@ -1333,6 +1351,25 @@ function ManualEntryForm({
       {/* Header fields */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+          {suppliers.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Supplier</label>
+              <select
+                value={selectedSupplierId}
+                onChange={(e) => {
+                  setSelectedSupplierId(e.target.value);
+                  setSelectedVendorId("");
+                }}
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+              >
+                <option value="">— None —</option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={String(s.id)}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
               Vendor <span className="text-red-500">*</span>
@@ -1346,7 +1383,7 @@ function ManualEntryForm({
               }`}
             >
               <option value="" disabled>Select a vendor…</option>
-              {vendors.map((v) => (
+              {filteredVendors.map((v) => (
                 <option key={v.id} value={String(v.id)}>{v.name}</option>
               ))}
             </select>
@@ -3010,7 +3047,7 @@ function ReviewScreen({
 }
 
 export default function InvoiceUploadPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { vendors } = loaderData;
+  const { vendors, suppliers } = loaderData;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ad = actionData as any;
   const [uploadMode, setUploadMode] = useState<"csv" | "pdf" | "manual">(
@@ -3095,7 +3132,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
       </div>
 
       {uploadMode === "manual" && (
-        <ManualEntryForm vendors={vendors} errors={manualErrors} />
+        <ManualEntryForm vendors={vendors} suppliers={suppliers} errors={manualErrors} />
       )}
 
       {uploadMode !== "manual" && <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-8">

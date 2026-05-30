@@ -40,12 +40,14 @@ export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const url = new URL(request.url);
   const vendorParam = url.searchParams.get("vendor");
+  const supplierParam = url.searchParams.get("supplier");
   const statusParam = url.searchParams.get("status") as InvoiceStatus | null;
   const searchParam = url.searchParams.get("search");
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
   const where: Record<string, unknown> = {};
   if (vendorParam) where.vendorId = Number(vendorParam);
+  if (supplierParam) where.supplierId = Number(supplierParam);
   if (statusParam && ["ORDERED", "RECEIVED", "PAID"].includes(statusParam)) {
     where.status = statusParam;
   }
@@ -57,16 +59,17 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const db = getDb();
-  const [totalCount, invoices, vendors] = await Promise.all([
+  const [totalCount, invoices, vendors, suppliers] = await Promise.all([
     db.invoice.count({ where }),
     db.invoice.findMany({
       where,
-      include: { vendor: true },
+      include: { vendor: true, supplier: true },
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
     db.vendor.findMany({ orderBy: { name: "asc" } }),
+    db.supplier.findMany({ orderBy: { name: "asc" } }),
   ]);
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -74,7 +77,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   return {
     invoices: invoices.map((inv) => ({ ...inv, total: Number(inv.total) })),
     vendors,
+    suppliers,
     vendorParam,
+    supplierParam,
     statusParam,
     searchParam,
     pagination: { page, totalPages, totalCount },
@@ -96,11 +101,13 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
 function buildInvoicePageUrl(
   page: number,
   vendorParam: string | null,
+  supplierParam: string | null,
   statusParam: string | null,
   searchParam: string | null
 ) {
   const params = new URLSearchParams();
   if (vendorParam) params.set("vendor", vendorParam);
+  if (supplierParam) params.set("supplier", supplierParam);
   if (statusParam) params.set("status", statusParam);
   if (searchParam) params.set("search", searchParam);
   params.set("page", String(page));
@@ -108,7 +115,7 @@ function buildInvoicePageUrl(
 }
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
-  const { invoices, vendors, vendorParam, statusParam, searchParam, pagination } = loaderData;
+  const { invoices, vendors, suppliers, vendorParam, supplierParam, statusParam, searchParam, pagination } = loaderData;
   const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState(searchParam ?? "");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,6 +126,16 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
       params.set("vendor", e.target.value);
     } else {
       params.delete("vendor");
+    }
+    navigate(`/invoices?${params.toString()}`);
+  }
+
+  function handleSupplierChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const params = new URLSearchParams(window.location.search);
+    if (e.target.value) {
+      params.set("supplier", e.target.value);
+    } else {
+      params.delete("supplier");
     }
     navigate(`/invoices?${params.toString()}`);
   }
@@ -148,7 +165,8 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
     }, 300);
   }
 
-  const hasFilters = vendorParam || statusParam || searchParam;
+  const hasFilters = vendorParam || supplierParam || statusParam || searchParam;
+  const hasAnySupplier = invoices.some((inv) => (inv as typeof inv & { supplier: { name: string } | null }).supplier);
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
@@ -163,7 +181,22 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
         </button>
       </div>
 
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-6 flex-wrap">
+        {suppliers.length > 0 && (
+          <select
+            value={supplierParam ?? ""}
+            onChange={handleSupplierChange}
+            className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="">All Suppliers</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        )}
+
         <select
           value={vendorParam ?? ""}
           onChange={handleVendorChange}
@@ -218,6 +251,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
+                {hasAnySupplier && <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Supplier</th>}
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Due Date</th>
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Total</th>
@@ -239,6 +273,11 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                     </Link>
                   </td>
                   <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{invoice.vendor.name}</td>
+                  {hasAnySupplier && (
+                    <td className="px-6 py-4 text-gray-500 dark:text-gray-400">
+                      {(invoice as typeof invoice & { supplier: { name: string } | null }).supplier?.name ?? "—"}
+                    </td>
+                  )}
                   <td className="px-6 py-4">
                     <span
                       className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_BADGE[invoice.status]}`}
@@ -291,7 +330,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <div>
             {pagination.page > 1 && (
               <Link
-                to={buildInvoicePageUrl(pagination.page - 1, vendorParam, statusParam, searchParam)}
+                to={buildInvoicePageUrl(pagination.page - 1, vendorParam, supplierParam, statusParam, searchParam)}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >
                 ← Previous
@@ -304,7 +343,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <div>
             {pagination.page < pagination.totalPages && (
               <Link
-                to={buildInvoicePageUrl(pagination.page + 1, vendorParam, statusParam, searchParam)}
+                to={buildInvoicePageUrl(pagination.page + 1, vendorParam, supplierParam, statusParam, searchParam)}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >
                 Next →

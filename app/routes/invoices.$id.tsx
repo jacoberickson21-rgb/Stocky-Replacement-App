@@ -12,7 +12,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const id = Number(params.id);
   const invoice = await getDb().invoice.findUnique({
     where: { id },
-    include: { vendor: true, lineItems: true },
+    include: { vendor: true, supplier: true, lineItems: true },
   });
   if (!invoice) throw new Response("Not Found", { status: 404 });
   return {
@@ -236,6 +236,12 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Vendor</p>
             <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor.name}</p>
           </div>
+          {invoice.supplier && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Supplier</p>
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{invoice.supplier.name}</p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Invoice Date</p>
             <p className="text-sm text-gray-800 dark:text-gray-100">

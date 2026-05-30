@@ -15,12 +15,13 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   await requireUserId(request);
   const id = Number(params.id);
   const db = getDb();
-  const [invoice, vendors] = await Promise.all([
+  const [invoice, vendors, suppliers] = await Promise.all([
     db.invoice.findUnique({
       where: { id },
       include: { vendor: true, lineItems: { orderBy: { id: "asc" } } },
     }),
-    db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, shopifyVendorName: true } }),
+    db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, shopifyVendorName: true, supplierId: true } }),
+    db.supplier.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
   ]);
 
   if (!invoice) throw new Response("Not Found", { status: 404 });
@@ -41,6 +42,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       })),
     },
     vendors,
+    suppliers,
   };
 }
 
@@ -54,6 +56,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   if (intent === "updateInvoice") {
     const vendorId = Number(String(form.get("vendorId") ?? "").trim());
+    const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
@@ -99,6 +102,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+    const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
     const db = getDb();
 
@@ -111,6 +115,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         where: { id },
         data: {
           vendorId,
+          supplierId,
           invoiceNumber,
           invoiceDate,
           paymentTerms,
@@ -435,7 +440,8 @@ function BarcodeInput({
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Vendor = { id: number; name: string; shopifyVendorName: string | null };
+type Vendor = { id: number; name: string; shopifyVendorName: string | null; supplierId: number | null };
+type Supplier = { id: number; name: string };
 
 type LineItemRow = {
   key: string;
@@ -460,7 +466,7 @@ type LineItemRow = {
 // ── Page component ────────────────────────────────────────────────────────────
 
 export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
-  const { invoice, vendors } = loaderData;
+  const { invoice, vendors, suppliers } = loaderData as { invoice: typeof loaderData.invoice; vendors: Vendor[]; suppliers: Supplier[] };
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const keyCounter = useRef(invoice.lineItems.length);
@@ -489,6 +495,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
   );
 
   const [selectedVendorId, setSelectedVendorId] = useState(String(invoice.vendorId));
+  const [selectedSupplierId, setSelectedSupplierId] = useState(invoice.supplierId ? String(invoice.supplierId) : "");
   const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
   const [invoiceDate, setInvoiceDate] = useState(invoice.invoiceDate ?? "");
   const [paymentTerms, setPaymentTerms] = useState(invoice.paymentTerms ?? "");
@@ -496,6 +503,10 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
   const [shippingCost, setShippingCost] = useState(invoice.shippingCost != null ? String(invoice.shippingCost) : "0");
   const [adjustments, setAdjustments] = useState(invoice.adjustments != null ? String(invoice.adjustments) : "0");
   const [ptfKey] = useState(0);
+
+  const filteredVendors = selectedSupplierId
+    ? vendors.filter((v) => v.supplierId === Number(selectedSupplierId))
+    : vendors;
 
   const shopifyVendorNames = [...new Set(
     vendors.map((v) => v.shopifyVendorName).filter((n): n is string => !!n)
@@ -655,7 +666,27 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
 
         {/* Header fields */}
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <input type="hidden" name="supplierId" value={selectedSupplierId} />
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            {suppliers.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Supplier</label>
+                <select
+                  value={selectedSupplierId}
+                  onChange={(e) => {
+                    setSelectedSupplierId(e.target.value);
+                    setSelectedVendorId("");
+                  }}
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <option value="">— None —</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={String(s.id)}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 Vendor <span className="text-red-500">*</span>
@@ -667,7 +698,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
                 className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="" disabled>Select a vendor…</option>
-                {vendors.map((v) => (
+                {filteredVendors.map((v) => (
                   <option key={v.id} value={String(v.id)}>{v.name}</option>
                 ))}
               </select>
