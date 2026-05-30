@@ -284,6 +284,7 @@ export async function action({ request }: Route.ActionArgs) {
       productTitle: string | null;
       variantTitle: string | null;
       barcode?: string;
+      vendorId?: string;
     };
 
     let lineItems: ManualLineItem[] = [];
@@ -320,11 +321,21 @@ export async function action({ request }: Route.ActionArgs) {
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
+    // Compute primary vendor: most common per-item vendorId, fallback to form field
+    const itemVendorCounts = new Map<number, number>();
+    for (const item of lineItems) {
+      const vid = item.vendorId ? Number(item.vendorId) : Number(vendorId);
+      if (vid) itemVendorCounts.set(vid, (itemVendorCounts.get(vid) ?? 0) + 1);
+    }
+    const primaryVendorId = itemVendorCounts.size > 0
+      ? [...itemVendorCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+      : Number(vendorId);
+
     const { created: invoice, savedLineItems } = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
         data: {
           invoiceNumber,
-          vendorId: Number(vendorId),
+          vendorId: primaryVendorId,
           supplierId,
           status: "ORDERED",
           invoiceDate,
@@ -338,7 +349,7 @@ export async function action({ request }: Route.ActionArgs) {
       const saved = await tx.invoiceLineItem.createManyAndReturn({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
-          vendorId: Number(vendorId),
+          vendorId: item.vendorId ? Number(item.vendorId) : primaryVendorId,
           sku: item.sku || null,
           description: item.description,
           quantityOrdered: item.quantity,
@@ -411,7 +422,7 @@ export async function action({ request }: Route.ActionArgs) {
 
     if (unlinkedEntries.length > 0) {
       const vendorRecord = await getDb().vendor.findUnique({
-        where: { id: Number(vendorId) },
+        where: { id: primaryVendorId },
         select: { name: true },
       });
       const vendorName = vendorRecord?.name ?? "";
@@ -526,6 +537,7 @@ type LineItemRow = {
   productTitle: string | null;
   variantTitle: string | null;
   barcode: string;
+  vendorId: string;
 };
 
 // Items added via AddItemSection in the PDF review screen
@@ -794,6 +806,8 @@ const DRAFT_KEY = "draft-invoice";
 type DraftData = {
   vendorId: string;
   supplierId: string;
+  checkedVendorIds: string[];
+  addItemVendorId: string;
   invoiceNumber: string;
   invoiceDate: string;
   paymentTerms: string;
@@ -817,8 +831,10 @@ function ManualEntryForm({
   const keyCounter = useRef(0);
 
   const [lineItems, setLineItems] = useState<LineItemRow[]>([]);
-  const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [selectedVendorId, setSelectedVendorId] = useState(""); // no-supplier mode
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [checkedVendorIds, setCheckedVendorIds] = useState<string[]>([]); // supplier mode
+  const [addItemVendorId, setAddItemVendorId] = useState(""); // active vendor for new items in supplier mode
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [paymentTerms, setPaymentTerms] = useState("");
@@ -846,16 +862,16 @@ function ManualEntryForm({
 
   // Auto-save every 30 seconds when the form has content
   useEffect(() => {
-    const hasContent = lineItems.length > 0 || invoiceNumber || selectedVendorId;
+    const hasContent = lineItems.length > 0 || invoiceNumber || selectedVendorId || checkedVendorIds.length > 0;
     if (!hasContent) return;
     const timer = setInterval(() => {
       try {
-        const draft: DraftData = { vendorId: selectedVendorId, supplierId: selectedSupplierId, invoiceNumber, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments, lineItems };
+        const draft: DraftData = { vendorId: selectedVendorId, supplierId: selectedSupplierId, checkedVendorIds, addItemVendorId, invoiceNumber, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments, lineItems };
         localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* ignore */ }
     }, 30_000);
     return () => clearInterval(timer);
-  }, [lineItems, invoiceNumber, selectedVendorId, selectedSupplierId, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments]);
+  }, [lineItems, invoiceNumber, selectedVendorId, selectedSupplierId, checkedVendorIds, addItemVendorId, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments]);
 
   // Clear draft when the form is submitted successfully
   useEffect(() => {
@@ -868,6 +884,8 @@ function ManualEntryForm({
     if (!pendingDraft) return;
     setSelectedVendorId(pendingDraft.vendorId ?? "");
     setSelectedSupplierId(pendingDraft.supplierId ?? "");
+    setCheckedVendorIds(pendingDraft.checkedVendorIds ?? []);
+    setAddItemVendorId(pendingDraft.addItemVendorId ?? "");
     setInvoiceNumber(pendingDraft.invoiceNumber ?? "");
     setInvoiceDate(pendingDraft.invoiceDate ?? "");
     setPaymentTerms(pendingDraft.paymentTerms ?? "");
@@ -887,9 +905,49 @@ function ManualEntryForm({
     setPendingDraft(null);
   }
 
-  const filteredVendors = selectedSupplierId
+  const supplierVendors = selectedSupplierId
     ? vendors.filter((v) => v.supplierId === Number(selectedSupplierId))
-    : vendors;
+    : [];
+  const filteredVendors = selectedSupplierId ? supplierVendors : vendors;
+
+  // When supplier changes, reset checked vendors and auto-check if only one option
+  useEffect(() => {
+    if (!selectedSupplierId) { setCheckedVendorIds([]); setAddItemVendorId(""); return; }
+    const ids = supplierVendors.map((v) => String(v.id));
+    if (ids.length === 1) {
+      setCheckedVendorIds(ids);
+      setAddItemVendorId(ids[0]);
+    } else {
+      setCheckedVendorIds([]);
+      setAddItemVendorId("");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSupplierId]);
+
+  function toggleVendor(id: string) {
+    setCheckedVendorIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((v) => v !== id) : [...prev, id];
+      if (!next.includes(addItemVendorId)) setAddItemVendorId(next[0] ?? "");
+      return next;
+    });
+  }
+
+  // Primary vendor for the invoice: most-frequent in items, fallback to first checked / selectedVendorId
+  const primaryVendorId = (() => {
+    if (!selectedSupplierId) return selectedVendorId;
+    if (lineItems.length > 0) {
+      const counts = new Map<string, number>();
+      for (const item of lineItems) {
+        const vid = item.vendorId || checkedVendorIds[0] || "";
+        if (vid) counts.set(vid, (counts.get(vid) ?? 0) + 1);
+      }
+      if (counts.size > 0) return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    }
+    return checkedVendorIds[0] ?? "";
+  })();
+
+  const inSupplierMode = !!selectedSupplierId;
+  const multiVendorMode = inSupplierMode && checkedVendorIds.length > 1;
 
   const selectedVendor = vendors.find((v) => String(v.id) === selectedVendorId) ?? null;
 
@@ -952,6 +1010,7 @@ function ManualEntryForm({
         productTitle: target.productTitle,
         variantTitle: variantLabel,
         barcode: variant.barcode ?? "",
+        vendorId: addItemVendorId || selectedVendorId,
       },
     ]);
     setAddVariantTarget(null);
@@ -966,9 +1025,14 @@ function ManualEntryForm({
 
   // Auto-populate vendor filter when invoice vendor changes
   useEffect(() => {
-    setSearchVendorFilter(selectedVendor?.shopifyVendorName ?? "");
+    if (inSupplierMode) {
+      // In multi-vendor mode don't auto-set a search filter
+      setSearchVendorFilter("");
+    } else {
+      setSearchVendorFilter(selectedVendor?.shopifyVendorName ?? "");
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVendorId]);
+  }, [selectedVendorId, inSupplierMode]);
 
   useEffect(() => {
     if (searchQuery.length < 2) {
@@ -1085,6 +1149,7 @@ function ManualEntryForm({
     const toAdd = searchResults.filter((r) => selectedIds.has(r.variantId));
     if (toAdd.length === 0) return;
     toAdd.forEach((r) => console.log(`[addSelected] sku=${r.sku} barcode=${r.barcode}`));
+    const vid = addItemVendorId || selectedVendorId;
     setLineItems((prev) => [
       ...prev,
       ...toAdd.map((result) => ({
@@ -1104,6 +1169,7 @@ function ManualEntryForm({
         productTitle: null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
         barcode: result.barcode ?? "",
+        vendorId: vid,
       })),
     ]);
     setSelectedIds(new Set());
@@ -1144,6 +1210,7 @@ function ManualEntryForm({
         productTitle: null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
         barcode: result.barcode ?? "",
+        vendorId: addItemVendorId || selectedVendorId,
       },
     ]);
     setSearchQuery("");
@@ -1202,6 +1269,7 @@ function ManualEntryForm({
         const combos = cartesian(validOptions.map((o) => o.values.map((v) => ({ name: o.name.trim(), value: v }))));
         if (combos.length > 0) {
           const groupKey = crypto.randomUUID();
+          const vid = addItemVendorId || selectedVendorId;
           setLineItems((prev) => [
             ...prev,
             ...combos.map((combo, idx) => ({
@@ -1221,6 +1289,7 @@ function ManualEntryForm({
               productTitle: desc,
               variantTitle: null,
               barcode: "",
+              vendorId: vid,
             })),
           ]);
           setManualSku("");
@@ -1257,6 +1326,7 @@ function ManualEntryForm({
         productTitle: null,
         variantTitle: null,
         barcode: manualBarcode.trim(),
+        vendorId: addItemVendorId || selectedVendorId,
       },
     ]);
     setManualSku("");
@@ -1320,6 +1390,7 @@ function ManualEntryForm({
   return (
     <Form method="post" className="space-y-6">
       <input type="hidden" name="intent" value="createManual" />
+      <input type="hidden" name="vendorId" value={primaryVendorId} />
       <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
       <input type="hidden" name="shippingCost" value={shippingCost} />
       <input type="hidden" name="adjustments" value={adjustments} />
@@ -1356,10 +1427,7 @@ function ManualEntryForm({
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Supplier</label>
               <select
                 value={selectedSupplierId}
-                onChange={(e) => {
-                  setSelectedSupplierId(e.target.value);
-                  setSelectedVendorId("");
-                }}
+                onChange={(e) => setSelectedSupplierId(e.target.value)}
                 className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
               >
                 <option value="">— None —</option>
@@ -1370,25 +1438,50 @@ function ManualEntryForm({
             </div>
           )}
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Vendor <span className="text-red-500">*</span>
-            </label>
-            <select
-              name="vendorId"
-              value={selectedVendorId}
-              onChange={(e) => setSelectedVendorId(e.target.value)}
-              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-gray-100 ${
-                errors.vendorId ? "border-red-400" : "border-gray-300 dark:border-gray-600"
-              }`}
-            >
-              <option value="" disabled>Select a vendor…</option>
-              {filteredVendors.map((v) => (
-                <option key={v.id} value={String(v.id)}>{v.name}</option>
-              ))}
-            </select>
-            {errors.vendorId && <p className="mt-1 text-xs text-red-600">{errors.vendorId}</p>}
-          </div>
+          {inSupplierMode ? (
+            <div className={supplierVendors.length > 4 ? "sm:col-span-2" : ""}>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Vendors <span className="text-red-500">*</span>
+              </label>
+              {supplierVendors.length === 0 ? (
+                <p className="text-xs text-gray-400 dark:text-gray-500 italic">No vendors linked to this supplier.</p>
+              ) : (
+                <div className="flex flex-wrap gap-x-5 gap-y-1.5 pt-0.5">
+                  {supplierVendors.map((v) => (
+                    <label key={v.id} className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={checkedVendorIds.includes(String(v.id))}
+                        onChange={() => toggleVendor(String(v.id))}
+                        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="text-sm text-gray-700 dark:text-gray-200">{v.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {errors.vendorId && <p className="mt-1 text-xs text-red-600">{errors.vendorId}</p>}
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Vendor <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={selectedVendorId}
+                onChange={(e) => setSelectedVendorId(e.target.value)}
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-gray-100 ${
+                  errors.vendorId ? "border-red-400" : "border-gray-300 dark:border-gray-600"
+                }`}
+              >
+                <option value="" disabled>Select a vendor…</option>
+                {vendors.map((v) => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+              {errors.vendorId && <p className="mt-1 text-xs text-red-600">{errors.vendorId}</p>}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -1446,7 +1539,24 @@ function ManualEntryForm({
 
       {/* Line items */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Line Items</h3>
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Line Items</h3>
+          {inSupplierMode && checkedVendorIds.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">Adding for:</span>
+              <select
+                value={addItemVendorId}
+                onChange={(e) => setAddItemVendorId(e.target.value)}
+                className="border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs bg-white dark:bg-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {checkedVendorIds.map((id) => {
+                  const v = vendors.find((v) => String(v.id) === id);
+                  return <option key={id} value={id}>{v?.name ?? id}</option>;
+                })}
+              </select>
+            </div>
+          )}
+        </div>
 
         {/* Shopify product search */}
         {shopifyVendorNames.length > 0 && (
@@ -1898,6 +2008,7 @@ function ManualEntryForm({
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
                   <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400">Product / SKU</th>
+                  {multiVendorMode && <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-28">Vendor</th>}
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Retail Price</th>
@@ -1931,6 +2042,20 @@ function ManualEntryForm({
                         </span>
                       )}
                     </td>
+                    {multiVendorMode && (
+                      <td className="px-4 py-2.5">
+                        <select
+                          value={item.vendorId}
+                          onChange={(e) => setLineItems((prev) => prev.map((r) => r.key === item.key ? { ...r, vendorId: e.target.value } : r))}
+                          className="border border-gray-200 dark:border-gray-600 rounded px-1.5 py-0.5 text-xs bg-white dark:bg-gray-800 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          {checkedVendorIds.map((id) => {
+                            const v = vendors.find((v) => String(v.id) === id);
+                            return <option key={id} value={id}>{v?.name ?? id}</option>;
+                          })}
+                        </select>
+                      </td>
+                    )}
                     <td className="px-4 py-2.5 text-right">
                       <input
                         type="number"
