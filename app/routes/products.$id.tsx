@@ -22,6 +22,7 @@ import {
   reorderProductImages,
   publishProduct,
   unpublishProduct,
+  productVariantsBulkCreate,
 } from "../services/shopify.server";
 import type { Publication } from "../services/shopify.server";
 
@@ -214,6 +215,64 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
   }
 
+  if (intent === "addVariant") {
+    const price = String(formData.get("price") ?? "").trim();
+    const costRaw = String(formData.get("cost") ?? "").trim();
+    const sku = String(formData.get("sku") ?? "").trim();
+    const barcode = String(formData.get("barcode") ?? "").trim();
+    const optionNamesRaw = String(formData.get("optionNames") ?? "[]");
+
+    let optionNames: string[] = [];
+    try { optionNames = JSON.parse(optionNamesRaw); } catch { /* ignore */ }
+
+    const optionValues = optionNames
+      .map((name) => ({ optionName: name, name: String(formData.get(`option_${name}`) ?? "").trim() }))
+      .filter((ov) => ov.name);
+
+    if (!price || isNaN(parseFloat(price))) return { intent, error: "Price is required." };
+    if (optionNames.length > 0 && optionValues.length !== optionNames.length) {
+      return { intent, error: "Please fill in all option values." };
+    }
+
+    try {
+      const created = await productVariantsBulkCreate(rawId, [{
+        optionValues,
+        price: parseFloat(price).toFixed(2),
+        sku,
+        barcode,
+      }]);
+      const newVar = created[0];
+      if (!newVar) throw new Error("No variant returned from Shopify.");
+
+      const cost = costRaw && !isNaN(parseFloat(costRaw)) ? parseFloat(costRaw) : null;
+      if (cost !== null) {
+        await updateInventoryItemCost(newVar.inventoryItemId, cost);
+      }
+
+      return {
+        intent,
+        success: true,
+        newVariant: {
+          id: newVar.id,
+          title: newVar.title,
+          price: newVar.price,
+          compareAtPrice: null as string | null,
+          sku: newVar.sku,
+          barcode: newVar.barcode,
+          inventoryQuantity: 0,
+          inventoryItemId: newVar.inventoryItemId,
+          cost,
+          imageUrl: null as string | null,
+          imageId: null as string | null,
+        },
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await logFailure("shopify:add-variant", sku || rawId, msg);
+      return { intent, error: msg };
+    }
+  }
+
   return null;
 }
 
@@ -251,6 +310,7 @@ type ActionResult = {
   inventoryItemId?: string;
   imageId?: string;
   publicationId?: string;
+  newVariant?: Variant;
 } | null | undefined;
 
 // ─── SaveFeedback ─────────────────────────────────────────────────────────────
@@ -625,15 +685,173 @@ function VariantRow({ variant }: { variant: Variant }) {
 
 // ─── VariantsSection ──────────────────────────────────────────────────────────
 
-function VariantsSection({ variants }: { variants: Variant[] }) {
+type ProductOption = { id: string; name: string; values: string[] };
+
+function VariantsSection({
+  productId,
+  initialVariants,
+  options,
+}: {
+  productId: string;
+  initialVariants: Variant[];
+  options: ProductOption[];
+}) {
+  const [variants, setVariants] = useState<Variant[]>(initialVariants);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [optionValues, setOptionValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(options.map((o) => [o.name, ""]))
+  );
+  const [newPrice, setNewPrice] = useState("");
+  const [newCost, setNewCost] = useState("");
+  const [newSku, setNewSku] = useState("");
+  const [newBarcode, setNewBarcode] = useState("");
+
+  const addFetcher = useFetcher<ActionResult>();
+  const addResult = addFetcher.data as ActionResult;
+
+  useEffect(() => {
+    if (addFetcher.state !== "idle") return;
+    if (addResult?.intent !== "addVariant" || !addResult.success) return;
+    if (addResult.newVariant) {
+      setVariants((prev) => [...prev, addResult.newVariant!]);
+    }
+    setShowAddForm(false);
+    setOptionValues(Object.fromEntries(options.map((o) => [o.name, ""])));
+    setNewPrice("");
+    setNewCost("");
+    setNewSku("");
+    setNewBarcode("");
+  }, [addFetcher.state, addResult]);
+
+  function submitAddVariant() {
+    const fd = new FormData();
+    fd.append("intent", "addVariant");
+    fd.append("price", newPrice);
+    fd.append("cost", newCost);
+    fd.append("sku", newSku);
+    fd.append("barcode", newBarcode);
+    fd.append("optionNames", JSON.stringify(options.map((o) => o.name)));
+    for (const [optName, optValue] of Object.entries(optionValues)) {
+      fd.append(`option_${optName}`, optValue);
+    }
+    addFetcher.submit(fd, { method: "post", action: `/products/${encodeURIComponent(productId)}` });
+  }
+
+  const isSaving = addFetcher.state !== "idle";
+
   return (
     <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
-      <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Variants</h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Variants</h3>
+        <button
+          type="button"
+          onClick={() => setShowAddForm((v) => !v)}
+          className={btnPrimary}
+        >
+          {showAddForm ? "Cancel" : "Add Variant"}
+        </button>
+      </div>
+
       <div className="space-y-3">
         {variants.map((v) => (
           <VariantRow key={v.id} variant={v} />
         ))}
       </div>
+
+      {showAddForm && (
+        <div className="mt-4 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/20 p-4 space-y-3">
+          <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">New Variant</p>
+
+          {options.length > 0 && (
+            <div className={`grid gap-3 ${options.length === 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 sm:grid-cols-3"}`}>
+              {options.map((opt) => (
+                <div key={opt.id}>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{opt.name}</label>
+                  <input
+                    type="text"
+                    list={`opt-${opt.id}-list`}
+                    value={optionValues[opt.name] ?? ""}
+                    onChange={(e) => setOptionValues((prev) => ({ ...prev, [opt.name]: e.target.value }))}
+                    placeholder={`e.g. ${opt.values[0] ?? opt.name}`}
+                    className={`${inputClass} w-full`}
+                  />
+                  <datalist id={`opt-${opt.id}-list`}>
+                    {opt.values.map((v) => <option key={v} value={v} />)}
+                  </datalist>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Price <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={newPrice}
+                onChange={(e) => setNewPrice(e.target.value)}
+                placeholder="0.00"
+                className={`${inputClass} w-full`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Cost</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={newCost}
+                onChange={(e) => setNewCost(e.target.value)}
+                placeholder="0.00"
+                className={`${inputClass} w-full`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU</label>
+              <input
+                type="text"
+                value={newSku}
+                onChange={(e) => setNewSku(e.target.value)}
+                className={`${inputClass} w-full`}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
+              <input
+                type="text"
+                value={newBarcode}
+                onChange={(e) => setNewBarcode(e.target.value)}
+                className={`${inputClass} w-full`}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={submitAddVariant}
+              disabled={isSaving || !newPrice}
+              className={btnPrimary}
+            >
+              {isSaving ? "Saving…" : "Save Variant"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddForm(false)}
+              className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+            >
+              Cancel
+            </button>
+            {addResult?.intent === "addVariant" && addResult.error && (
+              <span className="text-sm text-red-600 dark:text-red-400">{addResult.error}</span>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -966,7 +1184,7 @@ export default function ProductDetailPage({ loaderData }: Route.ComponentProps) 
         allTags={allTags}
         actionData={actionData}
       />
-      <VariantsSection variants={product.variants} />
+      <VariantsSection productId={product.id} initialVariants={product.variants} options={product.options} />
       <ImagesSection initialImages={product.images} variants={product.variants} />
       <SalesChannelsSection publications={publications} initialPublishedIds={publishedIds} />
     </main>

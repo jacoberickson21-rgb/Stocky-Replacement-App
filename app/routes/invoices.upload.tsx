@@ -505,11 +505,17 @@ function PaymentTermsFields({
   initialPaymentTerms = "",
   initialDueDate = "",
   dueDateFlagged = false,
+  onInvoiceDateChange,
+  onPaymentTermsChange,
+  onDueDateChange,
 }: {
   initialInvoiceDate?: string;
   initialPaymentTerms?: string;
   initialDueDate?: string;
   dueDateFlagged?: boolean;
+  onInvoiceDateChange?: (v: string) => void;
+  onPaymentTermsChange?: (v: string) => void;
+  onDueDateChange?: (v: string) => void;
 }) {
   const [invoiceDate, setInvoiceDate] = useState(initialInvoiceDate);
   const [paymentTerms, setPaymentTerms] = useState(initialPaymentTerms);
@@ -519,9 +525,8 @@ function PaymentTermsFields({
     if (!paymentTerms || paymentTerms === "CUSTOM") return;
     if (paymentTerms === "DUE_ON_RECEIPT") {
       const t = new Date();
-      setDueDate(
-        `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`
-      );
+      const computed = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+      setDueDate(computed);
       return;
     }
     if (!invoiceDate) { setDueDate(""); return; }
@@ -532,6 +537,10 @@ function PaymentTermsFields({
       `${result.getFullYear()}-${String(result.getMonth() + 1).padStart(2, "0")}-${String(result.getDate()).padStart(2, "0")}`
     );
   }, [paymentTerms, invoiceDate]);
+
+  useEffect(() => { onInvoiceDateChange?.(invoiceDate); }, [invoiceDate]);
+  useEffect(() => { onPaymentTermsChange?.(paymentTerms); }, [paymentTerms]);
+  useEffect(() => { onDueDateChange?.(dueDate); }, [dueDate]);
 
   const isAutoDate = ["NET30", "NET60", "NET90", "DUE_ON_RECEIPT"].includes(paymentTerms);
 
@@ -725,6 +734,17 @@ function BarcodeInput({
   );
 }
 
+const DRAFT_KEY = "draft-invoice";
+
+type DraftData = {
+  vendorId: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  paymentTerms: string;
+  dueDate: string;
+  lineItems: LineItemRow[];
+};
+
 function ManualEntryForm({
   vendors,
   errors,
@@ -738,6 +758,68 @@ function ManualEntryForm({
 
   const [lineItems, setLineItems] = useState<LineItemRow[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceDate, setInvoiceDate] = useState("");
+  const [paymentTerms, setPaymentTerms] = useState("");
+  const [dueDate, setDueDate] = useState("");
+
+  // key used to remount PaymentTermsFields when restoring a draft
+  const [ptfKey, setPtfKey] = useState(0);
+  const [hasDraft, setHasDraft] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState<DraftData | null>(null);
+
+  // On mount: check for a saved draft
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as DraftData;
+      if (draft && (draft.lineItems?.length > 0 || draft.invoiceNumber || draft.vendorId)) {
+        setPendingDraft(draft);
+        setHasDraft(true);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // Auto-save every 30 seconds when the form has content
+  useEffect(() => {
+    const hasContent = lineItems.length > 0 || invoiceNumber || selectedVendorId;
+    if (!hasContent) return;
+    const timer = setInterval(() => {
+      try {
+        const draft: DraftData = { vendorId: selectedVendorId, invoiceNumber, invoiceDate, paymentTerms, dueDate, lineItems };
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      } catch { /* ignore */ }
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [lineItems, invoiceNumber, selectedVendorId, invoiceDate, paymentTerms, dueDate]);
+
+  // Clear draft when the form is submitted successfully
+  useEffect(() => {
+    if (navigation.state === "submitting") {
+      try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+    }
+  }, [navigation.state]);
+
+  function resumeDraft() {
+    if (!pendingDraft) return;
+    setSelectedVendorId(pendingDraft.vendorId ?? "");
+    setInvoiceNumber(pendingDraft.invoiceNumber ?? "");
+    setInvoiceDate(pendingDraft.invoiceDate ?? "");
+    setPaymentTerms(pendingDraft.paymentTerms ?? "");
+    setDueDate(pendingDraft.dueDate ?? "");
+    setLineItems(pendingDraft.lineItems ?? []);
+    // Remount PaymentTermsFields so it picks up the restored initial values
+    setPtfKey((k) => k + 1);
+    setHasDraft(false);
+    setPendingDraft(null);
+  }
+
+  function discardDraft() {
+    try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+    setHasDraft(false);
+    setPendingDraft(null);
+  }
 
   const selectedVendor = vendors.find((v) => String(v.id) === selectedVendorId) ?? null;
 
@@ -751,6 +833,65 @@ function ManualEntryForm({
   const [searchVendorFilter, setSearchVendorFilter] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Add-variant mini-form
+  type AddVariantTarget = {
+    productId: string;
+    productTitle: string;
+    productOptions: { id: string; name: string; values: string[] }[];
+    suggestedPrice: string;
+    suggestedCost: string;
+  };
+  type CreatedVariantData = { id: string; title: string; price: string; sku: string; barcode: string | null; inventoryItemId: string; unitCost: number | null };
+  const variantFetcher = useFetcher<{ variant: CreatedVariantData } | { error: string }>();
+  const [addVariantTarget, setAddVariantTarget] = useState<AddVariantTarget | null>(null);
+  const [avOptionValues, setAvOptionValues] = useState<Record<string, string>>({});
+  const [avPrice, setAvPrice] = useState("");
+  const [avCost, setAvCost] = useState("");
+  const [avSku, setAvSku] = useState("");
+  const [avBarcode, setAvBarcode] = useState("");
+  const [avError, setAvError] = useState<string | null>(null);
+
+  // On successful variant creation: add to line items and close mini-form
+  useEffect(() => {
+    if (!variantFetcher.data || variantFetcher.state !== "idle") return;
+    if ("error" in variantFetcher.data) {
+      setAvError(variantFetcher.data.error);
+      return;
+    }
+    const { variant } = variantFetcher.data;
+    const target = addVariantTarget;
+    if (!target) return;
+    const variantLabel = variant.title && variant.title !== "Default Title" ? variant.title : null;
+    setLineItems((prev) => [
+      ...prev,
+      {
+        key: String(++keyCounter.current),
+        sku: variant.sku ?? "",
+        description: variantLabel ? `${target.productTitle} — ${variantLabel}` : target.productTitle,
+        quantity: 1,
+        unitCost: variant.unitCost ?? (avCost ? parseFloat(avCost) : 0),
+        retailPrice: null,
+        shopifyCost: variant.unitCost,
+        updateShopifyCost: false,
+        variantId: variant.id,
+        inventoryItemId: variant.inventoryItemId,
+        productGroupKey: null,
+        variantOptions: null,
+        productTitle: target.productTitle,
+        variantTitle: variantLabel,
+        barcode: variant.barcode ?? "",
+      },
+    ]);
+    setAddVariantTarget(null);
+    setAvOptionValues({});
+    setAvPrice("");
+    setAvCost("");
+    setAvSku("");
+    setAvBarcode("");
+    setAvError(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variantFetcher.data, variantFetcher.state]);
 
   // Auto-populate vendor filter when invoice vendor changes
   useEffect(() => {
@@ -788,6 +929,77 @@ function ManualEntryForm({
     }
     return score(b) - score(a);
   });
+
+  // Group results by productId to render "Add variant" option per product
+  type ProductGroup = {
+    productId: string;
+    productTitle: string;
+    productOptions: { id: string; name: string; values: string[] }[];
+    suggestedPrice: string;
+    suggestedCost: string;
+    variants: ProductSearchResult[];
+  };
+  const groupedResults: ProductGroup[] = [];
+  const groupMap = new Map<string, ProductGroup>();
+  for (const r of searchResults) {
+    let group = groupMap.get(r.productId);
+    if (!group) {
+      group = {
+        productId: r.productId,
+        productTitle: r.productTitle,
+        productOptions: r.productOptions,
+        suggestedPrice: r.unitCost != null ? String(r.unitCost) : "",
+        suggestedCost: r.unitCost != null ? String(r.unitCost) : "",
+        variants: [],
+      };
+      groupMap.set(r.productId, group);
+      groupedResults.push(group);
+    }
+    group.variants.push(r);
+  }
+  if (groupedResults.length > 0) {
+    console.log('[ManualEntryForm] groupedResults[0]:', {
+      productId: groupedResults[0].productId,
+      productTitle: groupedResults[0].productTitle,
+      variantsCount: groupedResults[0].variants.length,
+      productOptions: groupedResults[0].productOptions,
+    });
+  }
+
+  function openAddVariantForm(group: ProductGroup) {
+    setShowDropdown(false);
+    setSelectedIds(new Set());
+    setAvOptionValues(Object.fromEntries(group.productOptions.map((o) => [o.name, ""])));
+    setAvPrice(group.suggestedPrice);
+    setAvCost(group.suggestedCost);
+    setAvSku("");
+    setAvBarcode("");
+    setAvError(null);
+    setAddVariantTarget({
+      productId: group.productId,
+      productTitle: group.productTitle,
+      productOptions: group.productOptions,
+      suggestedPrice: group.suggestedPrice,
+      suggestedCost: group.suggestedCost,
+    });
+  }
+
+  function submitAddVariant() {
+    if (!addVariantTarget) return;
+    const fd = new FormData();
+    fd.set("productId", addVariantTarget.productId);
+    fd.set("price", avPrice);
+    fd.set("cost", avCost);
+    fd.set("sku", avSku);
+    fd.set("barcode", avBarcode);
+    const optionNames = addVariantTarget.productOptions.map((o) => o.name);
+    fd.set("optionNames", JSON.stringify(optionNames));
+    for (const name of optionNames) {
+      fd.set(`option_${name}`, avOptionValues[name] ?? "");
+    }
+    setAvError(null);
+    variantFetcher.submit(fd, { method: "POST", action: "/api/shopify/variants" });
+  }
 
   function toggleSelection(variantId: string) {
     setSelectedIds((prev) => {
@@ -1023,6 +1235,29 @@ function ManualEntryForm({
       <input type="hidden" name="intent" value="createManual" />
       <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
 
+      {/* Draft resume banner */}
+      {hasDraft && (
+        <div className="flex items-center gap-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-4 py-3">
+          <span className="text-sm text-amber-800 dark:text-amber-300 flex-1">
+            You have an unsaved draft from a previous session.
+          </span>
+          <button
+            type="button"
+            onClick={resumeDraft}
+            className="text-sm font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 transition-colors"
+          >
+            Resume
+          </button>
+          <button
+            type="button"
+            onClick={discardDraft}
+            className="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+          >
+            Discard
+          </button>
+        </div>
+      )}
+
       {/* Header fields */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
@@ -1053,6 +1288,8 @@ function ManualEntryForm({
             <input
               name="invoiceNumber"
               type="text"
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
               className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-gray-800 dark:text-gray-100 ${
                 errors.invoiceNumber ? "border-red-400" : "border-gray-300 dark:border-gray-600"
               }`}
@@ -1060,7 +1297,15 @@ function ManualEntryForm({
             {errors.invoiceNumber && <p className="mt-1 text-xs text-red-600">{errors.invoiceNumber}</p>}
           </div>
 
-          <PaymentTermsFields />
+          <PaymentTermsFields
+            key={ptfKey}
+            initialInvoiceDate={invoiceDate}
+            initialPaymentTerms={paymentTerms}
+            initialDueDate={dueDate}
+            onInvoiceDateChange={setInvoiceDate}
+            onPaymentTermsChange={setPaymentTerms}
+            onDueDateChange={setDueDate}
+          />
         </div>
       </div>
 
@@ -1102,40 +1347,52 @@ function ManualEntryForm({
               onMouseDown={(e) => e.preventDefault()}
             >
               <div className="max-h-64 overflow-y-auto">
-                {searchResults.length === 0 && !isSearching && (
+                {groupedResults.length === 0 && !isSearching && (
                   <p className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No products found.</p>
                 )}
-                {searchResults.map((result) => {
-                  const displayName =
-                    result.variantTitle && result.variantTitle !== "Default Title"
-                      ? `${result.productTitle} — ${result.variantTitle}`
-                      : result.productTitle;
-                  const isChecked = selectedIds.has(result.variantId);
-                  return (
-                    <div
-                      key={result.variantId}
-                      onClick={() => addShopifyItem(result)}
-                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0 transition-colors"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleSelection(result.variantId)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
-                        {result.sku && (
-                          <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
-                        )}
-                      </div>
-                      <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
-                        {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
-                      </span>
-                    </div>
-                  );
-                })}
+                {groupedResults.map((group) => (
+                  <div key={group.productId}>
+                    {group.variants.map((result) => {
+                      const displayName =
+                        result.variantTitle && result.variantTitle !== "Default Title"
+                          ? `${result.productTitle} — ${result.variantTitle}`
+                          : result.productTitle;
+                      const isChecked = selectedIds.has(result.variantId);
+                      return (
+                        <div
+                          key={result.variantId}
+                          onClick={() => addShopifyItem(result)}
+                          className="group flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleSelection(result.variantId)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
+                            {result.sku && (
+                              <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
+                            )}
+                          </div>
+                          <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
+                            {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
+                          </span>
+                          <span className="text-gray-300 dark:text-gray-600 shrink-0">|</span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openAddVariantForm(group); }}
+                            className="shrink-0 text-xs text-indigo-500 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-200 transition-colors"
+                          >
+                            + Variant
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
               {selectedIds.size > 0 && (
                 <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-2.5 flex items-center justify-between">
@@ -1152,6 +1409,123 @@ function ManualEntryForm({
             </div>
           )}
         </div>
+
+        {/* Add-variant mini-form */}
+        {addVariantTarget && (
+          <div className="mb-4 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 mb-0.5">Add variant to Shopify</p>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{addVariantTarget.productTitle}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddVariantTarget(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none ml-3"
+              >
+                ×
+              </button>
+            </div>
+
+            {addVariantTarget.productOptions.length > 0 && (
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                {addVariantTarget.productOptions.map((opt) => (
+                  <div key={opt.name}>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      {opt.name} <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      list={`av-opt-${opt.name}`}
+                      type="text"
+                      value={avOptionValues[opt.name] ?? ""}
+                      onChange={(e) => setAvOptionValues((prev) => ({ ...prev, [opt.name]: e.target.value }))}
+                      placeholder={`e.g. ${opt.values[0] ?? opt.name}`}
+                      className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                    />
+                    <datalist id={`av-opt-${opt.name}`}>
+                      {opt.values.map((v) => <option key={v} value={v} />)}
+                    </datalist>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Price <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={avPrice}
+                  onChange={(e) => setAvPrice(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Cost</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={avCost}
+                  onChange={(e) => setAvCost(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU</label>
+                <input
+                  type="text"
+                  value={avSku}
+                  onChange={(e) => setAvSku(e.target.value)}
+                  placeholder="e.g. PROD-XL-BLK"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Barcode <span className="text-xs text-gray-400 font-normal">(optional)</span>
+                </label>
+                <BarcodeInput
+                  value={avBarcode}
+                  onChange={setAvBarcode}
+                  placeholder="Scan or type…"
+                  inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                />
+              </div>
+            </div>
+
+            {avError && (
+              <p className="mb-3 text-xs text-red-600 dark:text-red-400">{avError}</p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={submitAddVariant}
+                disabled={variantFetcher.state === "submitting"}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg px-4 py-2 transition-colors"
+              >
+                {variantFetcher.state === "submitting" ? "Creating…" : "Create Variant & Add to PO"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddVariantTarget(null)}
+                className="text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Add manually toggle */}
         {!showManualAdd ? (
@@ -1785,6 +2159,84 @@ function AddItemSection({
     return score(b) - score(a);
   });
 
+  // Group by productId for the "Add variant" entry per product
+  type AddItemGroup = {
+    productId: string;
+    productTitle: string;
+    productOptions: { id: string; name: string; values: string[] }[];
+    suggestedPrice: string;
+    suggestedCost: string;
+    variants: ProductSearchResult[];
+  };
+  const addItemGroups: AddItemGroup[] = [];
+  const addItemGroupMap = new Map<string, AddItemGroup>();
+  for (const r of searchResults) {
+    let g = addItemGroupMap.get(r.productId);
+    if (!g) {
+      g = { productId: r.productId, productTitle: r.productTitle, productOptions: r.productOptions, suggestedPrice: r.unitCost != null ? String(r.unitCost) : "", suggestedCost: r.unitCost != null ? String(r.unitCost) : "", variants: [] };
+      addItemGroupMap.set(r.productId, g);
+      addItemGroups.push(g);
+    }
+    g.variants.push(r);
+  }
+
+  // Add-variant mini-form state (within AddItemSection)
+  type AddItemVariantTarget = { productId: string; productTitle: string; productOptions: { id: string; name: string; values: string[] }[]; suggestedPrice: string; suggestedCost: string };
+  type AddItemCreatedVariant = { id: string; title: string; price: string; sku: string; barcode: string | null; inventoryItemId: string; unitCost: number | null };
+  const aiFetcher = useFetcher<{ variant: AddItemCreatedVariant } | { error: string }>();
+  const [aiTarget, setAiTarget] = useState<AddItemVariantTarget | null>(null);
+  const [aiOptionValues, setAiOptionValues] = useState<Record<string, string>>({});
+  const [aiPrice, setAiPrice] = useState("");
+  const [aiCost, setAiCost] = useState("");
+  const [aiSku, setAiSku] = useState("");
+  const [aiBarcode, setAiBarcode] = useState("");
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!aiFetcher.data || aiFetcher.state !== "idle" || !aiTarget) return;
+    if ("error" in aiFetcher.data) { setAiError(aiFetcher.data.error); return; }
+    const { variant } = aiFetcher.data;
+    const variantLabel = variant.title && variant.title !== "Default Title" ? variant.title : null;
+    onAdd({
+      key: String(++keyCounter.current),
+      sku: variant.sku ?? "",
+      description: variantLabel ? `${aiTarget.productTitle} — ${variantLabel}` : aiTarget.productTitle,
+      quantity: 1,
+      unitCost: variant.unitCost ?? (aiCost ? parseFloat(aiCost) : 0),
+      barcode: variant.barcode ?? "",
+      variantId: variant.id,
+      inventoryItemId: variant.inventoryItemId,
+    });
+    setAiTarget(null);
+    setAiOptionValues({});
+    setAiPrice(""); setAiCost(""); setAiSku(""); setAiBarcode(""); setAiError(null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiFetcher.data, aiFetcher.state]);
+
+  function openAiForm(g: AddItemGroup) {
+    setShowDropdown(false);
+    setAiOptionValues(Object.fromEntries(g.productOptions.map((o) => [o.name, ""])));
+    setAiPrice(g.suggestedPrice);
+    setAiCost(g.suggestedCost);
+    setAiSku(""); setAiBarcode(""); setAiError(null);
+    setAiTarget({ productId: g.productId, productTitle: g.productTitle, productOptions: g.productOptions, suggestedPrice: g.suggestedPrice, suggestedCost: g.suggestedCost });
+  }
+
+  function submitAiVariant() {
+    if (!aiTarget) return;
+    const fd = new FormData();
+    fd.set("productId", aiTarget.productId);
+    fd.set("price", aiPrice);
+    fd.set("cost", aiCost);
+    fd.set("sku", aiSku);
+    fd.set("barcode", aiBarcode);
+    const optionNames = aiTarget.productOptions.map((o) => o.name);
+    fd.set("optionNames", JSON.stringify(optionNames));
+    for (const name of optionNames) fd.set(`option_${name}`, aiOptionValues[name] ?? "");
+    setAiError(null);
+    aiFetcher.submit(fd, { method: "POST", action: "/api/shopify/variants" });
+  }
+
   // Manual add state
   const [manualSku, setManualSku] = useState("");
   const [manualDesc, setManualDesc] = useState("");
@@ -1892,36 +2344,113 @@ function AddItemSection({
                 onMouseDown={(e) => e.preventDefault()}
               >
                 <div className="max-h-56 overflow-y-auto">
-                  {searchResults.length === 0 && !isSearching && (
+                  {addItemGroups.length === 0 && !isSearching && (
                     <p className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No products found.</p>
                   )}
-                  {searchResults.map((result) => {
-                    const displayName =
-                      result.variantTitle && result.variantTitle !== "Default Title"
-                        ? `${result.productTitle} — ${result.variantTitle}`
-                        : result.productTitle;
-                    return (
-                      <div
-                        key={result.variantId}
-                        onClick={() => addFromSearch(result)}
-                        className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0 transition-colors"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
-                          {result.sku && (
-                            <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
-                          )}
-                        </div>
-                        <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
-                          {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
-                        </span>
-                      </div>
-                    );
-                  })}
+                  {addItemGroups.map((group) => (
+                    <div key={group.productId}>
+                      {group.variants.map((result) => {
+                        const displayName =
+                          result.variantTitle && result.variantTitle !== "Default Title"
+                            ? `${result.productTitle} — ${result.variantTitle}`
+                            : result.productTitle;
+                        return (
+                          <div
+                            key={result.variantId}
+                            onClick={() => addFromSearch(result)}
+                            className="group flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-gray-800 dark:text-gray-100 leading-snug">{displayName}</span>
+                              {result.sku && (
+                                <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
+                              )}
+                            </div>
+                            <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
+                              {result.inventoryQty !== null ? `${result.inventoryQty} in stock` : ""}
+                            </span>
+                            <span className="text-gray-300 dark:text-gray-600 shrink-0">|</span>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); openAiForm(group); }}
+                              className="shrink-0 text-xs text-indigo-500 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-200 transition-colors"
+                            >
+                              + Variant
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
           </div>
+
+          {/* Add-variant mini-form */}
+          {aiTarget && (
+            <div className="mt-3 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-300 mb-0.5">Add variant to Shopify</p>
+                  <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{aiTarget.productTitle}</p>
+                </div>
+                <button type="button" onClick={() => setAiTarget(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none ml-3">×</button>
+              </div>
+
+              {aiTarget.productOptions.length > 0 && (
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  {aiTarget.productOptions.map((opt) => (
+                    <div key={opt.name}>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{opt.name} <span className="text-red-500">*</span></label>
+                      <input
+                        list={`ai-opt-${opt.name}`}
+                        type="text"
+                        value={aiOptionValues[opt.name] ?? ""}
+                        onChange={(e) => setAiOptionValues((prev) => ({ ...prev, [opt.name]: e.target.value }))}
+                        placeholder={`e.g. ${opt.values[0] ?? opt.name}`}
+                        className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100"
+                      />
+                      <datalist id={`ai-opt-${opt.name}`}>
+                        {opt.values.map((v) => <option key={v} value={v} />)}
+                      </datalist>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Price <span className="text-red-500">*</span></label>
+                  <input type="number" min="0" step="0.01" value={aiPrice} onChange={(e) => setAiPrice(e.target.value)} placeholder="0.00" className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Cost</label>
+                  <input type="number" min="0" step="0.01" value={aiCost} onChange={(e) => setAiCost(e.target.value)} placeholder="0.00" className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU</label>
+                  <input type="text" value={aiSku} onChange={(e) => setAiSku(e.target.value)} placeholder="e.g. PROD-XL-BLK" className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode <span className="text-xs text-gray-400 font-normal">(optional)</span></label>
+                  <BarcodeInput value={aiBarcode} onChange={setAiBarcode} placeholder="Scan or type…" inputClassName="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-900 dark:text-gray-100" />
+                </div>
+              </div>
+
+              {aiError && <p className="mb-3 text-xs text-red-600 dark:text-red-400">{aiError}</p>}
+
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={submitAiVariant} disabled={aiFetcher.state === "submitting"} className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs font-semibold rounded-lg px-4 py-2 transition-colors">
+                  {aiFetcher.state === "submitting" ? "Creating…" : "Create Variant & Add to PO"}
+                </button>
+                <button type="button" onClick={() => setAiTarget(null)} className="text-xs font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors">Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

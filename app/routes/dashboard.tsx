@@ -397,9 +397,9 @@ function Empty({ msg }: { msg: string }) {
 
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell, Label,
   AreaChart, Area,
-  ResponsiveContainer, CartesianGrid, Legend,
+  ResponsiveContainer, CartesianGrid,
 } from "recharts";
 
 function SpendByVendorChart({ data, dark }: { data: { name: string; value: number }[]; dark: boolean }) {
@@ -419,28 +419,53 @@ function SpendByVendorChart({ data, dark }: { data: { name: string; value: numbe
 
 function StatusPieChart({ data, dark }: { data: { name: string; value: number }[]; dark: boolean }) {
   const textColor = dark ? "#9ca3af" : "#6b7280";
+  const total = data.reduce((s, d) => s + d.value, 0);
+
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <PieChart>
-        <Pie
-          data={data}
-          cx="50%"
-          cy="50%"
-          innerRadius={55}
-          outerRadius={85}
-          paddingAngle={3}
-          dataKey="value"
-          label={({ name, value }) => `${name} (${value})`}
-          labelLine={false}
-        >
-          {data.map((entry) => (
-            <Cell key={entry.name} fill={STATUS_COLORS[entry.name] ?? "#94a3b8"} />
-          ))}
-        </Pie>
-        <Tooltip contentStyle={{ background: dark ? "#1f2937" : "#fff", border: "none", borderRadius: 8, fontSize: 12 }} />
-        <Legend wrapperStyle={{ fontSize: 12, color: textColor }} />
-      </PieChart>
-    </ResponsiveContainer>
+    <div>
+      <ResponsiveContainer width="100%" height={200}>
+        <PieChart>
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            innerRadius={55}
+            outerRadius={85}
+            paddingAngle={3}
+            dataKey="value"
+          >
+            {data.map((entry) => (
+              <Cell key={entry.name} fill={STATUS_COLORS[entry.name] ?? "#94a3b8"} />
+            ))}
+            <Label
+              content={({ viewBox }) => {
+                const { cx, cy } = viewBox as { cx: number; cy: number };
+                return (
+                  <text textAnchor="middle">
+                    <tspan x={cx} y={cy - 6} fontSize="22" fontWeight="700" fill={dark ? "#f9fafb" : "#1e293b"}>
+                      {total.toLocaleString()}
+                    </tspan>
+                    <tspan x={cx} y={cy + 13} fontSize="10" fill={textColor}>
+                      orders
+                    </tspan>
+                  </text>
+                );
+              }}
+              position="center"
+            />
+          </Pie>
+          <Tooltip contentStyle={{ background: dark ? "#1f2937" : "#fff", border: "none", borderRadius: 8, fontSize: 12 }} />
+        </PieChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", justifyContent: "center", gap: 16, flexWrap: "wrap", marginTop: 6 }}>
+        {data.map((entry) => (
+          <div key={entry.name} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: textColor }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: STATUS_COLORS[entry.name] ?? "#94a3b8", flexShrink: 0, display: "inline-block" }} />
+            {entry.name} ({entry.value.toLocaleString()})
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -67,7 +67,9 @@ export type UpdateInventoryInput = {
 };
 
 export type ProductSearchResult = {
+  productId: string;
   productTitle: string;
+  productOptions: { id: string; name: string; values: string[] }[];
   variantTitle: string;
   variantId: string;
   sku: string;
@@ -103,7 +105,9 @@ type RawSearchVariantNode = {
 };
 
 type RawSearchProductNode = {
+  id: string;
   title: string;
+  options: { id: string; name: string; values: string[] }[];
   variants: { edges: { node: RawSearchVariantNode }[] };
 };
 
@@ -821,6 +825,12 @@ export type ProductImage = {
   position: number;
 };
 
+export type ProductOption = {
+  id: string;
+  name: string;
+  values: string[];
+};
+
 export type ProductDetail = {
   id: string;
   title: string;
@@ -829,6 +839,7 @@ export type ProductDetail = {
   vendor: string;
   tags: string[];
   status: string;
+  options: ProductOption[];
   variants: ProductDetailVariant[];
   images: ProductImage[];
 };
@@ -890,6 +901,7 @@ export async function getProductById(id: string): Promise<ProductDetail | null> 
     image: { id: string; url: string } | null;
   };
   type RawImage = { id: string; url: string; altText: string | null };
+  type RawOption = { id: string; name: string; values: string[] };
   type RawDetail = {
     id: string;
     title: string;
@@ -900,12 +912,14 @@ export async function getProductById(id: string): Promise<ProductDetail | null> 
     status: string;
     variants: { nodes: RawVariant[] };
     images: { nodes: RawImage[] };
+    options: RawOption[];
   };
 
   const data = await shopifyGraphQL<{ product: RawDetail | null }>(
     `query GetProduct($id: ID!) {
       product(id: $id) {
         id title descriptionHtml productType vendor tags status
+        options { id name values }
         variants(first: 100) {
           nodes {
             id title price compareAtPrice sku barcode inventoryQuantity
@@ -932,6 +946,11 @@ export async function getProductById(id: string): Promise<ProductDetail | null> 
     vendor: p.vendor,
     tags: p.tags,
     status: p.status,
+    options: p.options.map((o) => ({
+      id: o.id,
+      name: o.name,
+      values: o.values,
+    })),
     variants: p.variants.nodes.map((v) => ({
       id: v.id,
       title: v.title,
@@ -952,6 +971,66 @@ export async function getProductById(id: string): Promise<ProductDetail | null> 
       position: idx + 1,
     })),
   };
+}
+
+export async function productVariantsBulkCreate(
+  productId: string,
+  variants: {
+    optionValues: { optionName: string; name: string }[];
+    price: string;
+    sku: string;
+    barcode: string;
+  }[]
+): Promise<{ id: string; title: string; price: string; sku: string; barcode: string | null; inventoryItemId: string }[]> {
+  type RawCreatedVariant = {
+    id: string;
+    title: string;
+    price: string;
+    sku: string;
+    barcode: string | null;
+    inventoryItem: { id: string };
+  };
+  const data = await shopifyGraphQL<{
+    productVariantsBulkCreate: {
+      productVariants: RawCreatedVariant[];
+      userErrors: UserError[];
+    };
+  }>(
+    `mutation ProductVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkCreate(productId: $productId, variants: $variants) {
+        productVariants {
+          id title price sku barcode
+          inventoryItem { id }
+        }
+        userErrors { field message }
+      }
+    }`,
+    {
+      productId,
+      variants: variants.map((v) => ({
+        optionValues: v.optionValues,
+        price: v.price,
+        sku: v.sku || undefined,
+        barcode: v.barcode || undefined,
+      })),
+    }
+  );
+
+  const { productVariants, userErrors } = data.productVariantsBulkCreate;
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(
+      `Variant creation failed: ${userErrors.map((e) => `${e.field.join(".")}: ${e.message}`).join("; ")}`
+    );
+  }
+
+  return productVariants.map((v) => ({
+    id: v.id,
+    title: v.title,
+    price: v.price,
+    sku: v.sku,
+    barcode: v.barcode,
+    inventoryItemId: v.inventoryItem.id,
+  }));
 }
 
 export async function getProductTypes(): Promise<string[]> {
@@ -1321,7 +1400,9 @@ export async function searchProducts(
       products(first: 15, query: $query) {
         edges {
           node {
+            id
             title
+            options { id name values }
             variants(first: 50) {
               edges {
                 node {
@@ -1358,6 +1439,11 @@ export async function searchProducts(
   const results: ProductSearchResult[] = [];
   for (const productEdge of data.products.edges) {
     const product = productEdge.node;
+    const productOptions = product.options.map((o) => ({
+      id: o.id,
+      name: o.name,
+      values: o.values,
+    }));
     for (const variantEdge of product.variants.edges) {
       const variant = variantEdge.node;
       const levelNode =
@@ -1369,7 +1455,9 @@ export async function searchProducts(
       const unitCost = unitCostRaw != null ? parseFloat(unitCostRaw) : null;
       console.log(`[search] variant ${variant.sku} barcode: ${variant.barcode}`);
       results.push({
+        productId: product.id,
         productTitle: product.title,
+        productOptions,
         variantTitle: variant.title,
         variantId: variant.id,
         sku: variant.sku,
