@@ -181,6 +181,16 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
 
     // Push updated retail prices to Shopify where price differs from original
+    const priceUpdateVariantIds = lineItems
+      .filter((i) => i.variantId && i.retailPrice != null && i.shopifyPrice != null && i.retailPrice !== i.shopifyPrice)
+      .map((i) => i.variantId!);
+    const priceUpdateCacheEntries = priceUpdateVariantIds.length
+      ? await db.productCache.findMany({
+          where: { variantId: { in: priceUpdateVariantIds } },
+          select: { variantId: true, productId: true },
+        })
+      : [];
+    const productIdByVariantId = new Map(priceUpdateCacheEntries.map((e) => [e.variantId, e.productId]));
     for (const item of lineItems) {
       if (
         item.variantId &&
@@ -189,7 +199,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         item.retailPrice !== item.shopifyPrice
       ) {
         try {
-          await updateVariantPrice(item.variantId, item.retailPrice.toFixed(2), null);
+          await updateVariantPrice(productIdByVariantId.get(item.variantId) ?? "", item.variantId, item.retailPrice.toFixed(2), null);
         } catch (err) {
           await logFailure(
             "shopify:set-price",

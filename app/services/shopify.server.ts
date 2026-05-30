@@ -566,21 +566,22 @@ export async function updateInventoryItemSku(
 }
 
 export async function updateVariantBarcode(
+  productId: string,
   variantId: string,
   barcode: string
 ): Promise<void> {
   const data = await shopifyGraphQL<{
-    productVariantUpdate: { productVariant: { id: string } | null; userErrors: UserError[] };
+    productVariantsBulkUpdate: { productVariants: { id: string }[] | null; userErrors: UserError[] };
   }>(
-    `mutation UpdateVariantBarcode($input: ProductVariantInput!) {
-      productVariantUpdate(input: $input) {
-        productVariant { id }
+    `mutation UpdateVariantBarcode($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id }
         userErrors { field message }
       }
     }`,
-    { input: { id: variantId, barcode } }
+    { productId, variants: [{ id: variantId, barcode }] }
   );
-  const { userErrors } = data.productVariantUpdate;
+  const { userErrors } = data.productVariantsBulkUpdate;
   if (userErrors.length > 0) {
     const messages = userErrors.map((e) => e.message).join("; ");
     throw new ShopifyUserError(`Variant barcode update failed: ${messages}`);
@@ -1136,22 +1137,25 @@ export async function updateProductMetadata(
 }
 
 export async function updateVariantPrice(
+  productId: string,
   variantId: string,
   price: string,
   compareAtPrice: string | null
 ): Promise<void> {
+  const variantInput: Record<string, unknown> = { id: variantId, price };
+  if (compareAtPrice !== null) variantInput.compareAtPrice = compareAtPrice;
   const data = await shopifyGraphQL<{
-    productVariantUpdate: { userErrors: UserError[] };
+    productVariantsBulkUpdate: { userErrors: UserError[] };
   }>(
-    `mutation UpdateVariantPrice($input: ProductVariantInput!) {
-      productVariantUpdate(input: $input) {
-        productVariant { id }
+    `mutation UpdateVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id }
         userErrors { field message }
       }
     }`,
-    { input: { id: variantId, price, compareAtPrice: compareAtPrice || null } }
+    { productId, variants: [variantInput] }
   );
-  const { userErrors } = data.productVariantUpdate;
+  const { userErrors } = data.productVariantsBulkUpdate;
   if (userErrors.length > 0) {
     throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
   }

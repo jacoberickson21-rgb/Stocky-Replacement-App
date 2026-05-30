@@ -119,8 +119,12 @@ export async function action({ request, params }: Route.ActionArgs) {
     });
 
     if (lineItem?.shopifyVariantId && barcode) {
+      const cached = await db.productCache.findUnique({
+        where: { variantId: lineItem.shopifyVariantId },
+        select: { productId: true },
+      });
       try {
-        await updateVariantBarcode(lineItem.shopifyVariantId, barcode);
+        await updateVariantBarcode(cached?.productId ?? "", lineItem.shopifyVariantId, barcode);
       } catch (err) {
         await logFailure(
           "shopify:set-barcode",

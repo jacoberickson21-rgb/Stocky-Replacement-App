@@ -81,13 +81,14 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   if (intent === "updateVariantPrice") {
+    const productId = String(formData.get("productId") ?? "");
     const variantId = String(formData.get("variantId") ?? "");
     const label = String(formData.get("label") ?? variantId);
     const price = String(formData.get("price") ?? "").trim();
     const compareAtPrice = String(formData.get("compareAtPrice") ?? "").trim() || null;
     if (!price || isNaN(parseFloat(price))) return { intent, variantId, error: "Invalid price." };
     try {
-      await updateVariantPrice(variantId, parseFloat(price).toFixed(2), compareAtPrice ? parseFloat(compareAtPrice).toFixed(2) : null);
+      await updateVariantPrice(productId, variantId, parseFloat(price).toFixed(2), compareAtPrice ? parseFloat(compareAtPrice).toFixed(2) : null);
       return { intent, variantId, success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -126,11 +127,12 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 
   if (intent === "updateVariantBarcode") {
+    const productId = String(formData.get("productId") ?? "");
     const variantId = String(formData.get("variantId") ?? "");
     const label = String(formData.get("label") ?? variantId);
     const barcode = String(formData.get("barcode") ?? "").trim();
     try {
-      await updateVariantBarcode(variantId, barcode);
+      await updateVariantBarcode(productId, variantId, barcode);
       return { intent, variantId, success: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -578,7 +580,7 @@ type Variant = {
   imageId: string | null;
 };
 
-function VariantRow({ variant }: { variant: Variant }) {
+function VariantRow({ variant, productId }: { variant: Variant; productId: string }) {
   const priceFetcher = useFetcher<ActionResult>();
   const costFetcher = useFetcher<ActionResult>();
   const skuFetcher = useFetcher<ActionResult>();
@@ -618,6 +620,7 @@ function VariantRow({ variant }: { variant: Variant }) {
           <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Price</label>
           <priceFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantPrice" />
+            <input type="hidden" name="productId" value={productId} />
             <input type="hidden" name="variantId" value={variant.id} />
             <input type="hidden" name="label" value={label} />
             <input type="hidden" name="compareAtPrice" value={variant.compareAtPrice ?? ""} />
@@ -667,6 +670,7 @@ function VariantRow({ variant }: { variant: Variant }) {
           <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
           <barcodeFetcher.Form method="post" className="flex gap-1">
             <input type="hidden" name="intent" value="updateVariantBarcode" />
+            <input type="hidden" name="productId" value={productId} />
             <input type="hidden" name="variantId" value={variant.id} />
             <input type="hidden" name="label" value={label} />
             <input name="barcode" type="text" defaultValue={variant.barcode ?? ""} className={`${inputClass} w-full`} />
@@ -754,7 +758,7 @@ function VariantsSection({
 
       <div className="space-y-3">
         {variants.map((v) => (
-          <VariantRow key={v.id} variant={v} />
+          <VariantRow key={v.id} variant={v} productId={productId} />
         ))}
       </div>
 
