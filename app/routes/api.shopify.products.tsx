@@ -14,6 +14,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   try {
     const results = await searchProducts(q, vendorName);
     console.log("[api] search results:", JSON.stringify(results.slice(0, 2), null, 2));
+    if (results.length > 0) {
+      console.log(`[api] first result price: ${results[0].price} (sku: ${results[0].sku})`);
+    }
     return data(results, { status: 200 });
   } catch {
     return data([], { status: 200 });

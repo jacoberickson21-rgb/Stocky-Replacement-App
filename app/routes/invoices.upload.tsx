@@ -10,7 +10,7 @@ import type { ExtendedExtractionResult } from "../services/pdf-parser-client.ser
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult } from "../services/shopify.server";
-import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants } from "../services/shopify.server";
+import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -256,6 +256,8 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
+    const shippingCostRaw = String(form.get("shippingCost") ?? "0");
+    const adjustmentsRaw = String(form.get("adjustments") ?? "0");
     const lineItemsRaw = String(form.get("lineItems") ?? "[]");
 
     const errors: Record<string, string> = {};
@@ -268,6 +270,7 @@ export async function action({ request }: Route.ActionArgs) {
       quantity: number;
       unitCost: number;
       retailPrice: number | null;
+      shopifyPrice: number | null;
       variantId: string | null;
       inventoryItemId: string | null;
       updateShopifyCost: boolean;
@@ -303,14 +306,27 @@ export async function action({ request }: Route.ActionArgs) {
       return data({ step: "manualEntry" as const, errors, general: null }, { status: 400 });
     }
 
-    const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+    const shippingCostVal = parseFloat(shippingCostRaw) || 0;
+    const adjustmentsVal = parseFloat(adjustmentsRaw) || 0;
+    const subtotal = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
+    const total = subtotal + shippingCostVal + adjustmentsVal;
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
 
     const { created: invoice, savedLineItems } = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: Number(vendorId), status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: {
+          invoiceNumber,
+          vendorId: Number(vendorId),
+          status: "ORDERED",
+          invoiceDate,
+          paymentTerms,
+          dueDate,
+          total,
+          shippingCost: shippingCostVal || null,
+          adjustments: adjustmentsVal || null,
+        },
       });
       const saved = await tx.invoiceLineItem.createManyAndReturn({
         data: lineItems.map((item) => ({
@@ -343,6 +359,26 @@ export async function action({ request }: Route.ActionArgs) {
             `Cost update failed for inventoryItem ${item.inventoryItemId}: ${
               err instanceof Error ? err.message : String(err)
             }`
+          );
+        }
+      }
+    }
+
+    // Push updated retail prices to Shopify where price differs from original
+    for (const item of lineItems) {
+      if (
+        item.variantId &&
+        item.retailPrice != null &&
+        item.shopifyPrice != null &&
+        item.retailPrice !== item.shopifyPrice
+      ) {
+        try {
+          await updateVariantPrice(item.variantId, item.retailPrice.toFixed(2), null);
+        } catch (err) {
+          await logFailure(
+            "shopify:set-price",
+            item.sku || item.description,
+            `Price update failed for variant ${item.variantId}: ${err instanceof Error ? err.message : String(err)}`
           );
         }
       }
@@ -462,6 +498,7 @@ type LineItemRow = {
   quantity: number;
   unitCost: number;
   retailPrice: number | null;
+  shopifyPrice: number | null;
   shopifyCost: number | null;
   updateShopifyCost: boolean;
   variantId: string | null;
@@ -742,6 +779,8 @@ type DraftData = {
   invoiceDate: string;
   paymentTerms: string;
   dueDate: string;
+  shippingCost: string;
+  adjustments: string;
   lineItems: LineItemRow[];
 };
 
@@ -762,6 +801,8 @@ function ManualEntryForm({
   const [invoiceDate, setInvoiceDate] = useState("");
   const [paymentTerms, setPaymentTerms] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [shippingCost, setShippingCost] = useState("0");
+  const [adjustments, setAdjustments] = useState("0");
 
   // key used to remount PaymentTermsFields when restoring a draft
   const [ptfKey, setPtfKey] = useState(0);
@@ -787,12 +828,12 @@ function ManualEntryForm({
     if (!hasContent) return;
     const timer = setInterval(() => {
       try {
-        const draft: DraftData = { vendorId: selectedVendorId, invoiceNumber, invoiceDate, paymentTerms, dueDate, lineItems };
+        const draft: DraftData = { vendorId: selectedVendorId, invoiceNumber, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments, lineItems };
         localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
       } catch { /* ignore */ }
     }, 30_000);
     return () => clearInterval(timer);
-  }, [lineItems, invoiceNumber, selectedVendorId, invoiceDate, paymentTerms, dueDate]);
+  }, [lineItems, invoiceNumber, selectedVendorId, invoiceDate, paymentTerms, dueDate, shippingCost, adjustments]);
 
   // Clear draft when the form is submitted successfully
   useEffect(() => {
@@ -808,6 +849,8 @@ function ManualEntryForm({
     setInvoiceDate(pendingDraft.invoiceDate ?? "");
     setPaymentTerms(pendingDraft.paymentTerms ?? "");
     setDueDate(pendingDraft.dueDate ?? "");
+    setShippingCost(pendingDraft.shippingCost ?? "0");
+    setAdjustments(pendingDraft.adjustments ?? "0");
     setLineItems(pendingDraft.lineItems ?? []);
     // Remount PaymentTermsFields so it picks up the restored initial values
     setPtfKey((k) => k + 1);
@@ -871,7 +914,8 @@ function ManualEntryForm({
         description: variantLabel ? `${target.productTitle} — ${variantLabel}` : target.productTitle,
         quantity: 1,
         unitCost: variant.unitCost ?? (avCost ? parseFloat(avCost) : 0),
-        retailPrice: null,
+        retailPrice: variant.price ? parseFloat(variant.price) : null,
+        shopifyPrice: variant.price ? parseFloat(variant.price) : null,
         shopifyCost: variant.unitCost,
         updateShopifyCost: false,
         variantId: variant.id,
@@ -1022,7 +1066,8 @@ function ManualEntryForm({
         description: result.productTitle,
         quantity: 1,
         unitCost: result.unitCost ?? 0,
-        retailPrice: null,
+        retailPrice: result.price ?? null,
+        shopifyPrice: result.price ?? null,
         shopifyCost: result.unitCost,
         updateShopifyCost: false,
         variantId: result.variantId,
@@ -1061,7 +1106,8 @@ function ManualEntryForm({
         description: result.productTitle,
         quantity: 1,
         unitCost: result.unitCost ?? 0,
-        retailPrice: null,
+        retailPrice: result.price ?? null,
+        shopifyPrice: result.price ?? null,
         shopifyCost: result.unitCost,
         updateShopifyCost: false,
         variantId: result.variantId,
@@ -1138,6 +1184,7 @@ function ManualEntryForm({
               quantity: qty,
               unitCost: cost,
               retailPrice: retailVal,
+              shopifyPrice: null,
               shopifyCost: null,
               updateShopifyCost: false,
               variantId: null,
@@ -1173,6 +1220,7 @@ function ManualEntryForm({
         quantity: qty,
         unitCost: cost,
         retailPrice: retailVal,
+        shopifyPrice: null,
         shopifyCost: null,
         updateShopifyCost: false,
         variantId: null,
@@ -1200,6 +1248,18 @@ function ManualEntryForm({
   function updateItem(key: string, field: "quantity" | "unitCost", value: number) {
     setLineItems((prev) =>
       prev.map((item) => (item.key === key ? { ...item, [field]: value } : item))
+    );
+  }
+
+  function updateItemSku(key: string, value: string) {
+    setLineItems((prev) =>
+      prev.map((item) => (item.key === key ? { ...item, sku: value } : item))
+    );
+  }
+
+  function updateItemRetailPrice(key: string, value: number | null) {
+    setLineItems((prev) =>
+      prev.map((item) => (item.key === key ? { ...item, retailPrice: value } : item))
     );
   }
 
@@ -1234,6 +1294,8 @@ function ManualEntryForm({
     <Form method="post" className="space-y-6">
       <input type="hidden" name="intent" value="createManual" />
       <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
+      <input type="hidden" name="shippingCost" value={shippingCost} />
+      <input type="hidden" name="adjustments" value={adjustments} />
 
       {/* Draft resume banner */}
       {hasDraft && (
@@ -1306,6 +1368,32 @@ function ManualEntryForm({
             onPaymentTermsChange={setPaymentTerms}
             onDueDateChange={setDueDate}
           />
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Shipping Cost</label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={shippingCost}
+              onChange={(e) => setShippingCost(e.target.value)}
+              placeholder="0.00"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Adjustments</label>
+            <input
+              type="number"
+              step="0.01"
+              value={adjustments}
+              onChange={(e) => setAdjustments(e.target.value)}
+              placeholder="0.00"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+            />
+            <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">Can be negative (e.g. discounts)</p>
+          </div>
         </div>
       </div>
 
@@ -1765,6 +1853,8 @@ function ManualEntryForm({
                   <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400">Product / SKU</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
                   <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Retail Price</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-24">Margin</th>
                   <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-44">Barcode</th>
                   <th className="w-10" />
                 </tr>
@@ -1777,7 +1867,17 @@ function ManualEntryForm({
                       {item.variantTitle && (
                         <div className="text-xs text-gray-500 dark:text-gray-400">{item.variantTitle}</div>
                       )}
-                      <div className="text-xs text-gray-400 dark:text-gray-500 font-mono">{item.sku}</div>
+                      {item.variantId === null ? (
+                        <input
+                          type="text"
+                          value={item.sku}
+                          onChange={(e) => updateItemSku(item.key, e.target.value)}
+                          placeholder="SKU"
+                          className="mt-0.5 w-full font-mono text-xs border border-gray-300 dark:border-gray-600 rounded px-1.5 py-0.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                      ) : (
+                        <div className="text-xs text-gray-400 dark:text-gray-500 font-mono">{item.sku}</div>
+                      )}
                       {item.variantId === null && (
                         <span className="mt-0.5 inline-block text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700 rounded px-1 py-0.5">
                           Manual
@@ -1815,6 +1915,31 @@ function ManualEntryForm({
                           </label>
                         )}
                     </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={item.retailPrice ?? ""}
+                        onChange={(e) => updateItemRetailPrice(item.key, e.target.value ? Number(e.target.value) : null)}
+                        placeholder="—"
+                        className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                      />
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      {(() => {
+                        const rp = item.retailPrice;
+                        const uc = item.unitCost;
+                        if (!rp || rp === 0 || !uc || uc === 0) return <span className="text-sm text-gray-400 dark:text-gray-500">—</span>;
+                        const pct = ((rp - uc) / rp) * 100;
+                        const cls = pct >= 40
+                          ? "text-green-600 dark:text-green-400 font-medium"
+                          : pct >= 20
+                          ? "text-amber-600 dark:text-amber-400 font-medium"
+                          : "text-red-600 dark:text-red-400 font-medium";
+                        return <span className={`text-sm tabular-nums ${cls}`}>{pct.toFixed(1)}%</span>;
+                      })()}
+                    </td>
                     <td className="px-4 py-2.5">
                       <BarcodeInput
                         value={item.barcode}
@@ -1845,22 +1970,57 @@ function ManualEntryForm({
         )}
       </div>
 
-      {/* Submit */}
-      <div className="flex gap-3">
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
-        >
-          {isSubmitting ? "Creating…" : "Create Invoice"}
-        </button>
-        <Link
-          to="/invoices"
-          className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-5 py-2.5 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-        >
-          Cancel
-        </Link>
-      </div>
+      {/* Totals summary + Submit */}
+      {(() => {
+        const subtotal = lineItems.reduce((s, i) => s + i.quantity * i.unitCost, 0);
+        const shippingVal = parseFloat(shippingCost) || 0;
+        const adjustmentsVal = parseFloat(adjustments) || 0;
+        const grandTotal = subtotal + shippingVal + adjustmentsVal;
+        const showBreakdown = shippingVal !== 0 || adjustmentsVal !== 0;
+        return (
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex gap-3">
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+              >
+                {isSubmitting ? "Creating…" : "Create Invoice"}
+              </button>
+              <Link
+                to="/invoices"
+                className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-gray-800 dark:hover:text-gray-100 rounded-lg px-5 py-2.5 border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              >
+                Cancel
+              </Link>
+            </div>
+            {lineItems.length > 0 && (
+              <div className="text-sm text-right space-y-0.5">
+                {showBreakdown && (
+                  <>
+                    <div className="text-gray-500 dark:text-gray-400">
+                      Subtotal: <span className="font-mono tabular-nums">${subtotal.toFixed(2)}</span>
+                    </div>
+                    {shippingVal !== 0 && (
+                      <div className="text-gray-500 dark:text-gray-400">
+                        Shipping: <span className="font-mono tabular-nums">+${shippingVal.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {adjustmentsVal !== 0 && (
+                      <div className="text-gray-500 dark:text-gray-400">
+                        Adjustments: <span className="font-mono tabular-nums">{adjustmentsVal >= 0 ? "+" : ""}${adjustmentsVal.toFixed(2)}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+                <div className="font-semibold text-gray-800 dark:text-gray-100">
+                  Total: <span className="font-mono tabular-nums">${grandTotal.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </Form>
   );
 }

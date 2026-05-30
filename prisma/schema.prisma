@@ -67,6 +67,8 @@ model Invoice {
   paymentTerms    String?
   dueDate         DateTime?
   total           Decimal           @db.Decimal(10, 2)
+  shippingCost    Decimal?          @db.Decimal(10, 2)
+  adjustments     Decimal?          @db.Decimal(10, 2)
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   lineItems       InvoiceLineItem[]

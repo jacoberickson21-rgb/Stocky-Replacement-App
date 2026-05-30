@@ -19,7 +19,10 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     invoice: {
       ...invoice,
       total: Number(invoice.total),
+      shippingCost: invoice.shippingCost !== null ? Number(invoice.shippingCost) : null,
+      adjustments: invoice.adjustments !== null ? Number(invoice.adjustments) : null,
       invoiceDate: invoice.invoiceDate ? invoice.invoiceDate.toISOString() : null,
+      dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
       paymentTerms: invoice.paymentTerms ?? null,
       lineItems: invoice.lineItems.map((item) => ({
         ...item,
@@ -255,6 +258,22 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               {STATUS_LABELS[invoice.status]}
             </span>
           </div>
+          {(invoice.shippingCost !== null && invoice.shippingCost !== 0) && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Shipping</p>
+              <p className="text-sm text-gray-800 dark:text-gray-100">
+                ${Number(invoice.shippingCost).toFixed(2)}
+              </p>
+            </div>
+          )}
+          {(invoice.adjustments !== null && invoice.adjustments !== 0) && (
+            <div>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Adjustments</p>
+              <p className="text-sm text-gray-800 dark:text-gray-100">
+                {Number(invoice.adjustments) >= 0 ? "+" : ""}${Number(invoice.adjustments).toFixed(2)}
+              </p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Total</p>
             <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
@@ -272,6 +291,14 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             Begin Receiving
+          </Link>
+        )}
+        {invoice.status === "ORDERED" && (
+          <Link
+            to={`/invoices/${invoice.id}/edit`}
+            className="text-sm font-medium px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+          >
+            Edit Invoice
           </Link>
         )}
         {invoice.status === "RECEIVED" && (
@@ -487,14 +514,44 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             })}
           </tbody>
           <tfoot>
-            <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-              <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
-                Total
-              </td>
-              <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
-                ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </td>
-            </tr>
+            {(() => {
+              const subtotal = lineItems.reduce((s, i) => s + i.quantityOrdered * i.unitCost, 0);
+              const shipping = invoice.shippingCost ?? 0;
+              const adj = invoice.adjustments ?? 0;
+              const showBreakdown = shipping !== 0 || adj !== 0;
+              return (
+                <>
+                  {showBreakdown && (
+                    <>
+                      <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                        <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
+                        <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">${subtotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      </tr>
+                      {shipping !== 0 && (
+                        <tr className="bg-gray-50 dark:bg-gray-800">
+                          <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
+                          <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">+${shipping.toFixed(2)}</td>
+                        </tr>
+                      )}
+                      {adj !== 0 && (
+                        <tr className="bg-gray-50 dark:bg-gray-800">
+                          <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
+                          <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}${adj.toFixed(2)}</td>
+                        </tr>
+                      )}
+                    </>
+                  )}
+                  <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                    <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
+                      Total
+                    </td>
+                    <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
+                      ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </>
+              );
+            })()}
           </tfoot>
         </table>
       </div>

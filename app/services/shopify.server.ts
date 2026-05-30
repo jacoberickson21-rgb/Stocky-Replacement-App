@@ -76,6 +76,7 @@ export type ProductSearchResult = {
   inventoryItemId: string;
   inventoryQty: number | null;
   unitCost: number | null;
+  price: number | null;
   barcode: string | null;
 };
 
@@ -91,6 +92,7 @@ type RawSearchVariantNode = {
   title: string;
   sku: string;
   barcode: string | null;
+  price: string;
   inventoryItem: {
     id: string;
     unitCost: { amount: string } | null;
@@ -658,7 +660,7 @@ export async function createDraftProductWithVariants(
     };
   }>(
     `mutation ProductOptionsCreate($productId: ID!, $options: [OptionCreateInput!]!) {
-      productOptionsCreate(productId: $productId, options: $options, variantsStrategy: CREATE) {
+      productOptionsCreate(productId: $productId, options: $options) {
         product {
           variants(first: 50) {
             edges { node { id selectedOptions { name value } inventoryItem { id } } }
@@ -986,9 +988,8 @@ export async function productVariantsBulkCreate(
     id: string;
     title: string;
     price: string;
-    sku: string;
     barcode: string | null;
-    inventoryItem: { id: string };
+    inventoryItem: { id: string; sku: string };
   };
   const data = await shopifyGraphQL<{
     productVariantsBulkCreate: {
@@ -999,8 +1000,8 @@ export async function productVariantsBulkCreate(
     `mutation ProductVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkCreate(productId: $productId, variants: $variants) {
         productVariants {
-          id title price sku barcode
-          inventoryItem { id }
+          id title price barcode
+          inventoryItem { id sku }
         }
         userErrors { field message }
       }
@@ -1030,7 +1031,7 @@ export async function productVariantsBulkCreate(
     id: v.id,
     title: v.title,
     price: v.price,
-    sku: v.sku,
+    sku: v.inventoryItem.sku ?? "",
     barcode: v.barcode,
     inventoryItemId: v.inventoryItem.id,
   }));
@@ -1413,6 +1414,7 @@ export async function searchProducts(
                   title
                   sku
                   barcode
+                  price
                   inventoryItem {
                     id
                     unitCost {
@@ -1467,6 +1469,7 @@ export async function searchProducts(
         inventoryItemId: variant.inventoryItem.id,
         inventoryQty,
         unitCost,
+        price: variant.price ? parseFloat(variant.price) : null,
         barcode: variant.barcode ?? null,
       });
     }
