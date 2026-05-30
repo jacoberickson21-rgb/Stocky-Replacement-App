@@ -1010,8 +1010,11 @@ export async function productVariantsBulkCreate(
       variants: variants.map((v) => ({
         optionValues: v.optionValues,
         price: v.price,
-        sku: v.sku || undefined,
         barcode: v.barcode || undefined,
+        inventoryItem: {
+          sku: v.sku || undefined,
+          tracked: true,
+        },
       })),
     }
   );
