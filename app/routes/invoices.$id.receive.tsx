@@ -17,6 +17,7 @@ import {
   getLocationId,
   updateInventoryLevel,
   getVariantPrice,
+  updateVariantBarcode,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -221,6 +222,26 @@ export async function action({ request, params }: Route.ActionArgs) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await logFailure("RETAIL_PRICE_FETCH", item.sku ?? item.description, msg);
+      }
+    }
+  }
+
+  // Barcode sync — best-effort after DB commit
+  for (const item of invoice.lineItems) {
+    if (item.shopifyVariantId && item.barcode) {
+      const cached = await db.productCache.findUnique({
+        where: { variantId: item.shopifyVariantId },
+        select: { productId: true },
+      });
+      try {
+        await updateVariantBarcode(
+          cached?.productId ?? "",
+          item.shopifyVariantId,
+          item.barcode
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await logFailure("BARCODE_SYNC", item.sku ?? item.description, msg);
       }
     }
   }
