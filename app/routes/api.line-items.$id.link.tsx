@@ -13,8 +13,8 @@ export async function action({ request, params }: Route.ActionArgs) {
   const formData = await request.formData();
   const variantId = (formData.get("variantId") as string | null) ?? "";
   const productTitle = (formData.get("productTitle") as string | null) ?? "";
-  const inventoryItemId =
-    (formData.get("inventoryItemId") as string | null) ?? "";
+  const inventoryItemId = (formData.get("inventoryItemId") as string | null) ?? "";
+  const barcode = (formData.get("barcode") as string | null) ?? "";
 
   if (!variantId || !productTitle || !inventoryItemId) {
     return data({ error: "Missing required fields" }, { status: 400 });
@@ -26,6 +26,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       shopifyVariantId: variantId,
       shopifyProductTitle: productTitle,
       shopifyInventoryItemId: inventoryItemId,
+      ...(barcode ? { barcode } : {}),
     },
   });
 

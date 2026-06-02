@@ -289,28 +289,39 @@ const PRODUCT_FIELDS = `
 export async function lookupProduct(opts: {
   sku?: string;
   barcode?: string;
-}): Promise<ShopifyProduct | null> {
+}): Promise<{ product: ShopifyProduct; matchedBy: "sku" | "barcode" } | null> {
   if (!opts.sku && !opts.barcode) {
     throw new Error("lookupProduct requires sku or barcode");
   }
 
-  const queryStr = opts.sku ? `sku:${opts.sku}` : `barcode:${opts.barcode}`;
-
-  const data = await shopifyGraphQL<{
-    products: { edges: { node: RawProductNode }[] };
-  }>(
-    `query LookupProduct($query: String!) {
-      products(first: 1, query: $query) {
-        edges {
-          node { ${PRODUCT_FIELDS} }
+  async function runQuery(queryStr: string): Promise<ShopifyProduct | null> {
+    const result = await shopifyGraphQL<{
+      products: { edges: { node: RawProductNode }[] };
+    }>(
+      `query LookupProduct($query: String!) {
+        products(first: 1, query: $query) {
+          edges {
+            node { ${PRODUCT_FIELDS} }
+          }
         }
-      }
-    }`,
-    { query: queryStr }
-  );
+      }`,
+      { query: queryStr }
+    );
+    const edge = result.products.edges[0];
+    return edge ? parseProduct(edge.node) : null;
+  }
 
-  const edge = data.products.edges[0];
-  return edge ? parseProduct(edge.node) : null;
+  if (opts.sku) {
+    const bySku = await runQuery(`sku:${opts.sku}`);
+    if (bySku) return { product: bySku, matchedBy: "sku" };
+    // SKU value might be stored as a barcode in Shopify
+    const byBarcode = await runQuery(`barcode:${opts.sku}`);
+    if (byBarcode) return { product: byBarcode, matchedBy: "barcode" };
+    return null;
+  }
+
+  const byBarcode = await runQuery(`barcode:${opts.barcode}`);
+  return byBarcode ? { product: byBarcode, matchedBy: "barcode" } : null;
 }
 
 export async function createDraftProduct(

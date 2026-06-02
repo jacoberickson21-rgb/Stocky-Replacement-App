@@ -1,10 +1,11 @@
-import { Link, Form, redirect, useFetcher } from "react-router";
-import { useState, useEffect } from "react";
+import { Link, Form, redirect, useFetcher, useSearchParams } from "react-router";
+import { useState, useEffect, useRef } from "react";
 import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
-import { updateInventoryItemSku, updateVariantBarcode } from "../services/shopify.server";
+import { updateInventoryItemSku, updateVariantBarcode, createDraftProduct } from "../services/shopify.server";
+import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -137,6 +138,57 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { success: true, intent: "updateBarcode" as const, lineItemId, barcode };
   }
 
+  if (intent === "skipItem") {
+    const lineItemId = Number(formData.get("lineItemId"));
+    await getDb().invoiceLineItem.update({ where: { id: lineItemId }, data: { skipped: true } });
+    return { ok: true, intent: "skipItem" as const, lineItemId };
+  }
+
+  if (intent === "createSkeletonProduct") {
+    const lineItemId = Number(formData.get("lineItemId"));
+    const db = getDb();
+
+    const lineItem = await db.invoiceLineItem.findUnique({
+      where: { id: lineItemId },
+      select: { sku: true, description: true, unitCost: true, retailPrice: true, invoiceId: true },
+    });
+    if (!lineItem) return { ok: false, intent: "createSkeletonProduct" as const, lineItemId, error: "Line item not found" };
+
+    const inv = await db.invoice.findUnique({
+      where: { id: lineItem.invoiceId },
+      select: { vendor: { select: { name: true } } },
+    });
+
+    try {
+      const product = await createDraftProduct({
+        title: lineItem.description,
+        sku: lineItem.sku || undefined,
+        vendor: inv?.vendor.name ?? "",
+        costPrice: Number(lineItem.unitCost),
+        retailPrice: lineItem.retailPrice ? Number(lineItem.retailPrice) : undefined,
+      });
+      const variant = product.variants[0];
+      if (variant) {
+        await db.invoiceLineItem.update({
+          where: { id: lineItemId },
+          data: {
+            shopifyVariantId: variant.id,
+            shopifyInventoryItemId: variant.inventoryItemId,
+            shopifyProductTitle: product.title,
+          },
+        });
+      }
+      return { ok: true, intent: "createSkeletonProduct" as const, lineItemId };
+    } catch (err) {
+      await logFailure(
+        "shopify:create-product",
+        lineItem.sku || lineItem.description,
+        `Skeleton creation failed from invoice detail: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return { ok: false, intent: "createSkeletonProduct" as const, lineItemId, error: "Product creation failed — check the failure log" };
+    }
+  }
+
   return redirect(`/invoices/${id}`);
 }
 
@@ -163,6 +215,7 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
 export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) {
   const { invoice } = loaderData;
   const { vendor, lineItems } = invoice;
+  const [searchParams] = useSearchParams();
 
   // SKU inline edit
   const skuFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; sku: string }>();
@@ -216,6 +269,53 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     barcodeFetcher.submit(fd, { method: "post" });
   }
 
+  // ── Unlinked items management ─────────────────────────────────────────────
+  const skipFetcher = useFetcher<{ ok: boolean; intent: "skipItem"; lineItemId: number }>();
+  const createProductFetcher = useFetcher<{ ok: boolean; intent: "createSkeletonProduct"; lineItemId: number; error?: string }>();
+  const linkFetcher = useFetcher<{ ok: boolean }>();
+  const searchFetcher = useFetcher<ProductSearchResult[]>();
+
+  const [openSearchItemId, setOpenSearchItemId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [linkingItemId, setLinkingItemId] = useState<number | null>(null);
+  const [hiddenItemIds, setHiddenItemIds] = useState<Set<number>>(new Set());
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (skipFetcher.state === "idle" && skipFetcher.data?.ok && skipFetcher.data.intent === "skipItem") {
+      setHiddenItemIds((prev) => new Set(prev).add(skipFetcher.data!.lineItemId));
+    }
+  }, [skipFetcher.state, skipFetcher.data]);
+
+  useEffect(() => {
+    if (createProductFetcher.state === "idle" && createProductFetcher.data?.ok && createProductFetcher.data.intent === "createSkeletonProduct") {
+      setHiddenItemIds((prev) => new Set(prev).add(createProductFetcher.data!.lineItemId));
+    }
+  }, [createProductFetcher.state, createProductFetcher.data]);
+
+  useEffect(() => {
+    if (linkFetcher.state === "idle" && linkFetcher.data?.ok && linkingItemId !== null) {
+      setHiddenItemIds((prev) => new Set(prev).add(linkingItemId));
+      setLinkingItemId(null);
+      setOpenSearchItemId(null);
+      setSearchQuery("");
+    }
+  }, [linkFetcher.state, linkFetcher.data, linkingItemId]);
+
+  function handleSelectVariant(itemId: number, variant: ProductSearchResult["variants"][0], productTitle: string) {
+    setLinkingItemId(itemId);
+    const fd = new FormData();
+    fd.append("variantId", variant.id);
+    fd.append("productTitle", productTitle);
+    fd.append("inventoryItemId", variant.inventoryItemId);
+    if (variant.barcode) fd.append("barcode", variant.barcode);
+    linkFetcher.submit(fd, { method: "post", action: `/api/line-items/${itemId}/link` });
+  }
+
+  const unlinkedItems = lineItems.filter(
+    (item) => !item.shopifyVariantId && !item.skipped && !hiddenItemIds.has(item.id)
+  );
+
   return (
     <main className="p-8 max-w-5xl mx-auto">
       <div className="flex items-center gap-3 mb-6">
@@ -228,6 +328,19 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">{invoice.invoiceNumber}</h2>
       </div>
+
+      {/* CSV import summary banner */}
+      {searchParams.has("imported") && (() => {
+        const imported = Number(searchParams.get("imported"));
+        const skippedZero = Number(searchParams.get("skippedZero") ?? 0);
+        const parts = [`${imported} imported`];
+        if (skippedZero > 0) parts.push(`${skippedZero} skipped (zero quantity)`);
+        return (
+          <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 text-sm text-blue-800 dark:text-blue-200">
+            CSV import complete: {parts.join(", ")}.
+          </div>
+        );
+      })()}
 
       {/* Header card */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
@@ -353,17 +466,6 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           </button>
         </Form>
       </div>
-
-      {/* Unlinked Shopify products notice */}
-      {lineItems.some((li) => !li.shopifyVariantId) && (
-        <div className="mb-6 flex items-start gap-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-300">
-          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold shrink-0 mt-0.5">!</span>
-          <span>
-            <strong>{lineItems.filter((li) => !li.shopifyVariantId).length} line item{lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "s" : ""}</strong> {lineItems.filter((li) => !li.shopifyVariantId).length !== 1 ? "have" : "has"} no linked Shopify product.
-            {" "}Skeleton creation may still be pending — check the <Link to="/failures" className="underline hover:text-amber-900 dark:hover:text-amber-200">failure log</Link> if this persists.
-          </span>
-        </div>
-      )}
 
       {/* Line items table */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
@@ -565,6 +667,166 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           </tfoot>
         </table>
       </div>
+
+      {/* Unlinked Items - Action Required */}
+      {unlinkedItems.length > 0 && (
+        <div className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20 overflow-hidden">
+          <div className="flex items-center gap-2 px-6 py-3 border-b border-amber-200 dark:border-amber-700 bg-amber-100/60 dark:bg-amber-900/20">
+            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold shrink-0">!</span>
+            <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+              Unlinked Items — Action Required
+              <span className="ml-1.5 font-normal text-amber-600 dark:text-amber-400">({unlinkedItems.length})</span>
+            </h3>
+          </div>
+
+          <div className="divide-y divide-amber-100 dark:divide-amber-800/40">
+            {unlinkedItems.map((item) => {
+              const isCreating =
+                createProductFetcher.state !== "idle" &&
+                Number(createProductFetcher.formData?.get("lineItemId")) === item.id;
+              const isSkipping =
+                skipFetcher.state !== "idle" &&
+                Number(skipFetcher.formData?.get("lineItemId")) === item.id;
+              const isLinking = linkFetcher.state !== "idle" && linkingItemId === item.id;
+              const createFailed =
+                createProductFetcher.state === "idle" &&
+                createProductFetcher.data?.ok === false &&
+                createProductFetcher.data.lineItemId === item.id;
+
+              return (
+                <div key={item.id}>
+                  <div className="flex items-center gap-4 px-6 py-3">
+                    {/* Item info */}
+                    <div className="flex-1 min-w-0 grid grid-cols-4 gap-3 text-sm">
+                      <div>
+                        <p className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide mb-0.5">SKU</p>
+                        <p className="font-mono text-gray-700 dark:text-gray-200 truncate">{item.sku || <span className="italic text-gray-400">—</span>}</p>
+                      </div>
+                      <div className="col-span-2">
+                        <p className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide mb-0.5">Description</p>
+                        <p className="text-gray-700 dark:text-gray-200 truncate">{item.description}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide mb-0.5">Qty / Cost</p>
+                        <p className="text-gray-700 dark:text-gray-200">{item.quantityOrdered} × ${Number(item.unitCost).toFixed(2)}</p>
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (openSearchItemId === item.id) {
+                            setOpenSearchItemId(null);
+                            setSearchQuery("");
+                          } else {
+                            setOpenSearchItemId(item.id);
+                            setSearchQuery(item.sku || item.description.split(" ").slice(0, 3).join(" "));
+                          }
+                        }}
+                        disabled={isLinking}
+                        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors disabled:opacity-50"
+                      >
+                        {isLinking ? "Linking…" : openSearchItemId === item.id ? "Close Search" : "Search Shopify"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fd = new FormData();
+                          fd.append("intent", "createSkeletonProduct");
+                          fd.append("lineItemId", String(item.id));
+                          createProductFetcher.submit(fd, { method: "post" });
+                        }}
+                        disabled={isCreating}
+                        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+                      >
+                        {isCreating ? "Creating…" : "Create Product"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fd = new FormData();
+                          fd.append("intent", "skipItem");
+                          fd.append("lineItemId", String(item.id));
+                          skipFetcher.submit(fd, { method: "post" });
+                        }}
+                        disabled={isSkipping}
+                        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+                      >
+                        {isSkipping ? "Skipping…" : "Skip"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Create product error */}
+                  {createFailed && (
+                    <p className="px-6 pb-2 text-xs text-red-600 dark:text-red-400">
+                      {createProductFetcher.data?.error ?? "Product creation failed — check the failure log"}
+                    </p>
+                  )}
+
+                  {/* Inline Shopify search */}
+                  {openSearchItemId === item.id && (
+                    <div className="px-6 pb-4">
+                      <div className="relative">
+                        <input
+                          autoFocus
+                          type="text"
+                          value={searchQuery}
+                          onChange={(e) => {
+                            const q = e.target.value;
+                            setSearchQuery(q);
+                            if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+                            if (q.length >= 2) {
+                              searchDebounceRef.current = setTimeout(() => {
+                                searchFetcher.load(`/api/shopify/products?q=${encodeURIComponent(q)}`);
+                              }, 300);
+                            }
+                          }}
+                          placeholder="Search by name or SKU…"
+                          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                        />
+                        {searchFetcher.state === "loading" && (
+                          <span className="absolute right-3 top-2 text-xs text-gray-400 pointer-events-none">Searching…</span>
+                        )}
+                      </div>
+                      {searchFetcher.data !== undefined && searchQuery.length >= 2 && (
+                        <div className="mt-1 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden shadow-sm bg-white dark:bg-gray-900">
+                          {searchFetcher.data.length === 0 ? (
+                            <p className="px-3 py-2 text-xs text-gray-400">No results found</p>
+                          ) : (
+                            <div className="max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
+                              {searchFetcher.data.flatMap((product) =>
+                                product.variants.map((variant) => (
+                                  <button
+                                    key={variant.id}
+                                    type="button"
+                                    onClick={() => handleSelectVariant(item.id, variant, product.title)}
+                                    className="w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors"
+                                  >
+                                    <span className="font-medium text-gray-800 dark:text-gray-100">{product.title}</span>
+                                    {variant.title !== "Default Title" && (
+                                      <span className="text-gray-500 dark:text-gray-400 ml-1">— {variant.title}</span>
+                                    )}
+                                    {variant.sku && (
+                                      <span className="font-mono text-gray-400 dark:text-gray-500 ml-1.5">({variant.sku})</span>
+                                    )}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -33,16 +33,23 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   if (!invoice) throw new Response("Not Found", { status: 404 });
   if (invoice.status !== "ORDERED") return redirect(`/invoices/${id}`);
 
-  // Auto-match unlinked items against Shopify by exact SKU
+  // Auto-match unlinked items against Shopify by SKU (with barcode fallback)
   const unlinked = invoice.lineItems.filter((item) => !item.shopifyVariantId);
   if (unlinked.length > 0) {
     const matchResults = await Promise.allSettled(
       unlinked.map((item) => lookupProduct({ sku: item.sku ?? undefined }))
     );
     for (let i = 0; i < unlinked.length; i++) {
-      const result = matchResults[i];
-      if (result.status === "fulfilled" && result.value) {
-        const product = result.value;
+      const skuResult = matchResults[i];
+      let lookupResult = skuResult.status === "fulfilled" ? skuResult.value : null;
+      // Barcode fallback if SKU lookup found nothing
+      if (!lookupResult && unlinked[i].barcode) {
+        try {
+          lookupResult = await lookupProduct({ barcode: unlinked[i].barcode! });
+        } catch { /* ignore */ }
+      }
+      if (lookupResult) {
+        const { product } = lookupResult;
         const variant = product.variants[0];
         if (variant) {
           const barcodeUpdate =

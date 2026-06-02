@@ -13,6 +13,26 @@ import type { ProductSearchResult } from "../services/shopify.server";
 import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
+// Flexible CSV column lookup — checks multiple header name variants
+function findCsvColumn(row: Record<string, string>, candidates: string[]): string {
+  for (const candidate of candidates) {
+    const value = row[candidate];
+    if (value !== undefined && value.trim() !== "") return value.trim();
+  }
+  return "";
+}
+
+// Convert common date formats to YYYY-MM-DD for <input type="date">
+function parseDateToInputFormat(dateStr: string): string {
+  if (!dateStr) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+  const mdySlash = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mdySlash) return `${mdySlash[3]}-${mdySlash[1].padStart(2, "0")}-${mdySlash[2].padStart(2, "0")}`;
+  const mdyDash = dateStr.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (mdyDash) return `${mdyDash[3]}-${mdyDash[1].padStart(2, "0")}-${mdyDash[2].padStart(2, "0")}`;
+  return "";
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const db = getDb();
@@ -35,43 +55,62 @@ export async function action({ request }: Route.ActionArgs) {
   // ── CSV path ──────────────────────────────────────────────────────────────
   if (intent === "uploadCsv") {
     const vendorId = String(form.get("vendorId") ?? "").trim();
-    const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
-    const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const csvFile = form.get("csvFile");
 
     const errors: Record<string, string> = {};
     if (!vendorId) errors.vendorId = "Vendor is required.";
-    if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
-    if (!csvFile || !(csvFile instanceof File) || csvFile.size === 0) {
+
+    // Parse CSV before validation so we can extract invoice metadata as fallbacks
+    type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null };
+    let parsedRows: Record<string, string>[] = [];
+    if (csvFile instanceof File && csvFile.size > 0) {
+      const csvText = await csvFile.text();
+      const parsed = Papa.parse<Record<string, string>>(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (h) => h.trim(),
+      });
+      parsedRows = parsed.data;
+    } else {
       errors.csvFile = "Please select a CSV file.";
     }
+
+    // Use form values, falling back to CSV metadata if fields are blank
+    const firstRow = parsedRows[0] ?? {};
+    let invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
+    let invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
+    if (!invoiceNumber) {
+      invoiceNumber = findCsvColumn(firstRow, ["Invoice Number", "invoice_number", "Invoice #", "Invoice No"]);
+    }
+    if (!invoiceDateRaw) {
+      invoiceDateRaw = findCsvColumn(firstRow, ["Invoice Date", "invoice_date", "Date"]);
+    }
+
+    if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
     if (Object.keys(errors).length > 0) {
       return data({ step: "uploadCsv" as const, errors, general: null }, { status: 400 });
     }
 
-    const csvText = await (csvFile as File).text();
-    const parsed = Papa.parse<Record<string, string>>(csvText, {
-      header: true,
-      skipEmptyLines: true,
-      transformHeader: (h) => h.trim().toLowerCase(),
-    });
-
-    type LineItem = { sku: string; description: string; quantity: number; unitCost: number };
     const lineItems: LineItem[] = [];
-    for (const row of parsed.data) {
-      const sku = (row["sku"] ?? "").trim();
-      const description = (row["description"] ?? "").trim();
-      const quantity = parseInt(row["quantity"] ?? "", 10);
-      const unitCost = parseFloat(row["unit_cost"] ?? "");
-      if (!sku || !description || isNaN(quantity) || isNaN(unitCost) || quantity <= 0 || unitCost < 0) continue;
-      lineItems.push({ sku, description, quantity, unitCost });
+    let zeroQtyCount = 0;
+    for (const row of parsedRows) {
+      const sku = findCsvColumn(row, ["SKU", "sku", "Item Code", "item_code", "Item #"]);
+      const description = findCsvColumn(row, ["Product Name", "description", "Description", "product_name", "Item Description", "Name"]);
+      const quantityStr = findCsvColumn(row, ["Quantity", "quantity", "Qty", "qty", "QTY"]);
+      const unitCostStr = findCsvColumn(row, ["Unit Cost", "unit_cost", "Cost", "Price", "Unit Price", "unit_price"]).replace(/[$,]/g, "");
+      const barcode = findCsvColumn(row, ["Barcode", "barcode", "UPC", "EAN", "upc", "ean"]) || null;
+      const quantity = parseInt(quantityStr, 10);
+      const unitCost = parseFloat(unitCostStr);
+      if (!sku || !description || isNaN(quantity) || isNaN(unitCost) || unitCost < 0) continue;
+      if (quantity <= 0) { zeroQtyCount++; continue; }
+      lineItems.push({ sku, description, quantity, unitCost, barcode });
     }
 
     if (lineItems.length === 0) {
       return data(
-        { step: "uploadCsv" as const, errors: {}, general: "No valid line items found. Ensure the CSV has columns: sku, description, quantity, unit_cost — with at least one complete row." },
+        { step: "uploadCsv" as const, errors: {}, general: "No valid line items found. Check that the CSV has SKU, Product Name, Quantity, and Unit Cost columns with at least one complete row." },
         { status: 400 }
       );
     }
@@ -92,12 +131,82 @@ export async function action({ request }: Route.ActionArgs) {
           description: item.description,
           quantityOrdered: item.quantity,
           unitCost: item.unitCost,
+          barcode: item.barcode,
         })),
       });
       return created;
     });
 
-    return redirect(`/invoices/${invoice.id}`);
+    // Auto-match saved line items against Shopify using multiple SKU strategies + barcode
+    const savedItems = await getDb().invoiceLineItem.findMany({
+      where: { invoiceId: invoice.id, sku: { not: null } },
+      select: { id: true, sku: true, barcode: true },
+    });
+    let matchCount = 0;
+    let skuMatchCount = 0;
+    let barcodeMatchCount = 0;
+    for (const item of savedItems) {
+      const raw = item.sku!;
+      const stripped = parseInt(raw, 10);
+      const skuVariants = [...new Set([
+        raw,
+        raw.toUpperCase(),
+        raw.toLowerCase(),
+        isNaN(stripped) ? null : String(stripped),
+      ].filter(Boolean) as string[])];
+
+      let matched = false;
+      for (const sku of skuVariants) {
+        if (matched) break;
+        try {
+          const result = await lookupProduct({ sku });
+          if (result?.product.variants[0]) {
+            const { product, matchedBy } = result;
+            const variant = product.variants[0];
+            await getDb().invoiceLineItem.update({
+              where: { id: item.id },
+              data: {
+                shopifyProductTitle: product.title,
+                shopifyVariantId: variant.id,
+                shopifyInventoryItemId: variant.inventoryItemId,
+                ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+              },
+            });
+            matchCount++;
+            if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
+            matched = true;
+          }
+        } catch { /* ignore individual lookup errors */ }
+      }
+
+      // Fallback: try item's barcode directly if SKU strategies all missed
+      if (!matched && item.barcode) {
+        try {
+          const result = await lookupProduct({ barcode: item.barcode });
+          if (result?.product.variants[0]) {
+            const { product } = result;
+            const variant = product.variants[0];
+            await getDb().invoiceLineItem.update({
+              where: { id: item.id },
+              data: {
+                shopifyProductTitle: product.title,
+                shopifyVariantId: variant.id,
+                shopifyInventoryItemId: variant.inventoryItemId,
+              },
+            });
+            matchCount++;
+            barcodeMatchCount++;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    if (savedItems.length > 0) {
+      console.log(`CSV import match: ${matchCount} / ${savedItems.length} items linked (${skuMatchCount} by SKU, ${barcodeMatchCount} by barcode)`);
+    }
+
+    const importParams = new URLSearchParams({ imported: String(lineItems.length) });
+    if (zeroQtyCount > 0) importParams.set("skippedZero", String(zeroQtyCount));
+    return redirect(`/invoices/${invoice.id}?${importParams}`);
   }
 
   // ── PDF extract path ──────────────────────────────────────────────────────
@@ -209,35 +318,71 @@ export async function action({ request }: Route.ActionArgs) {
       return created;
     });
 
-    // Auto-match line items against Shopify by exact SKU (best-effort)
+    // Auto-match line items against Shopify using multiple SKU strategies + barcode
     const savedItems = await getDb().invoiceLineItem.findMany({
       where: { invoiceId: invoice.id, sku: { not: null } },
       select: { id: true, sku: true, barcode: true },
     });
     if (savedItems.length > 0) {
-      const matchResults = await Promise.allSettled(
-        savedItems.map((item) => lookupProduct({ sku: item.sku! }))
-      );
-      for (let i = 0; i < savedItems.length; i++) {
-        const result = matchResults[i];
-        if (result.status === "fulfilled" && result.value) {
-          const product = result.value;
-          const variant = product.variants[0];
-          if (variant) {
-            await getDb().invoiceLineItem.update({
-              where: { id: savedItems[i].id },
-              data: {
-                shopifyProductTitle: product.title,
-                shopifyVariantId: variant.id,
-                shopifyInventoryItemId: variant.inventoryItemId,
-                ...(!savedItems[i].barcode && variant.barcode
-                  ? { barcode: variant.barcode }
-                  : {}),
-              },
-            });
-          }
+      let matchCount = 0;
+      let skuMatchCount = 0;
+      let barcodeMatchCount = 0;
+      for (const item of savedItems) {
+        const raw = item.sku!;
+        const stripped = parseInt(raw, 10);
+        const skuVariants = [...new Set([
+          raw,
+          raw.toUpperCase(),
+          raw.toLowerCase(),
+          isNaN(stripped) ? null : String(stripped),
+        ].filter(Boolean) as string[])];
+
+        let matched = false;
+        for (const sku of skuVariants) {
+          if (matched) break;
+          try {
+            const result = await lookupProduct({ sku });
+            if (result?.product.variants[0]) {
+              const { product, matchedBy } = result;
+              const variant = product.variants[0];
+              await getDb().invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: product.title,
+                  shopifyVariantId: variant.id,
+                  shopifyInventoryItemId: variant.inventoryItemId,
+                  ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+                },
+              });
+              matchCount++;
+              if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
+        // Fallback: try item's barcode directly if SKU strategies all missed
+        if (!matched && item.barcode) {
+          try {
+            const result = await lookupProduct({ barcode: item.barcode });
+            if (result?.product.variants[0]) {
+              const { product } = result;
+              const variant = product.variants[0];
+              await getDb().invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: product.title,
+                  shopifyVariantId: variant.id,
+                  shopifyInventoryItemId: variant.inventoryItemId,
+                },
+              });
+              matchCount++;
+              barcodeMatchCount++;
+            }
+          } catch { /* ignore */ }
         }
       }
+      console.log(`PDF import match: ${matchCount} / ${savedItems.length} items linked (${skuMatchCount} by SKU, ${barcodeMatchCount} by barcode)`);
     }
 
     return redirect(`/invoices/${invoice.id}`);
@@ -667,6 +812,40 @@ function CsvUploadForm({
   vendors: Vendor[];
   errors: Record<string, string>;
 }) {
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceDate, setInvoiceDate] = useState("");
+  const [ptfKey, setPtfKey] = useState(0);
+
+  function handleCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      if (typeof text !== "string") return;
+      const parsed = Papa.parse<Record<string, string>>(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (h) => h.trim(),
+      });
+      const firstRow = parsed.data[0] ?? {};
+      const csvNum = findCsvColumn(firstRow, ["Invoice Number", "invoice_number", "Invoice #", "Invoice No"]);
+      const csvDate = findCsvColumn(firstRow, ["Invoice Date", "invoice_date", "Date"]);
+      if (csvNum) setInvoiceNumber((prev) => prev || csvNum);
+      if (csvDate) {
+        const formatted = parseDateToInputFormat(csvDate);
+        if (formatted) {
+          setInvoiceDate((prev) => {
+            if (prev) return prev;
+            setPtfKey((k) => k + 1);
+            return formatted;
+          });
+        }
+      }
+    };
+    reader.readAsText(file);
+  }
+
   return (
     <form method="post" encType="multipart/form-data" className="space-y-5">
       <input type="hidden" name="intent" value="uploadCsv" />
@@ -696,13 +875,15 @@ function CsvUploadForm({
           id="invoiceNumber"
           name="invoiceNumber"
           type="text"
+          value={invoiceNumber}
+          onChange={(e) => setInvoiceNumber(e.target.value)}
           className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
         />
         {errors.invoiceNumber && <p className="mt-1 text-xs text-red-600">{errors.invoiceNumber}</p>}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-        <PaymentTermsFields />
+        <PaymentTermsFields key={ptfKey} initialInvoiceDate={invoiceDate} />
       </div>
 
       <div>
@@ -714,11 +895,12 @@ function CsvUploadForm({
           name="csvFile"
           type="file"
           accept=".csv"
+          onChange={handleCsvChange}
           className="w-full text-sm text-gray-600 dark:text-gray-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-gray-300 dark:file:border-gray-600 file:text-sm file:font-medium file:bg-gray-50 dark:file:bg-gray-800 dark:file:text-indigo-400 hover:file:bg-gray-100 dark:hover:file:bg-gray-700 file:cursor-pointer"
         />
         {errors.csvFile && <p className="mt-1 text-xs text-red-600">{errors.csvFile}</p>}
         <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
-          Required columns: <span className="font-mono">sku, description, quantity, unit_cost</span>
+          Accepts common column names: SKU, Product Name, Quantity, Unit Cost, and more. Invoice Number and Date are auto-detected from the CSV when present.
         </p>
       </div>
 
