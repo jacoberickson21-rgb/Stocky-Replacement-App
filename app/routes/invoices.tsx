@@ -74,8 +74,38 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
+  // Fetch INVOICE_RECEIVED audit log entries for the current page of invoices
+  const invoiceNumbers = invoices.map((inv) => inv.invoiceNumber);
+  const receivedLogs = invoiceNumbers.length > 0
+    ? await db.auditLog.findMany({
+        where: {
+          action: "INVOICE_RECEIVED",
+          OR: invoiceNumbers.map((num) => ({ details: { startsWith: `Invoice #${num} ` } })),
+        },
+        select: { details: true, timestamp: true },
+        orderBy: { timestamp: "desc" },
+      })
+    : [];
+
+  const receivedAtMap = new Map<string, string>();
+  for (const log of receivedLogs) {
+    const match = log.details?.match(/^Invoice #(\S+) /);
+    if (match) {
+      const num = match[1];
+      if (!receivedAtMap.has(num)) {
+        receivedAtMap.set(num, log.timestamp.toISOString());
+      }
+    }
+  }
+
   return {
-    invoices: invoices.map((inv) => ({ ...inv, total: Number(inv.total) })),
+    invoices: invoices.map((inv) => ({
+      ...inv,
+      total: Number(inv.total),
+      invoiceDate: inv.invoiceDate?.toISOString() ?? null,
+      dueDate: inv.dueDate?.toISOString() ?? null,
+      receivedAt: receivedAtMap.get(inv.invoiceNumber) ?? null,
+    })),
     vendors,
     suppliers,
     vendorParam,
@@ -84,6 +114,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     searchParam,
     pagination: { page, totalPages, totalCount },
   };
+}
+
+function fmtDate(val: Date | string | null | undefined): string {
+  if (!val) return "—";
+  const d = new Date(val);
+  return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")}/${d.getUTCFullYear()}`;
 }
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
@@ -169,7 +205,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
   const hasAnySupplier = invoices.some((inv) => (inv as typeof inv & { supplier: { name: string } | null }).supplier);
 
   return (
-    <main className="p-8 max-w-5xl mx-auto">
+    <main className="p-8 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Purchase Orders</h2>
         <button
@@ -253,7 +289,9 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
                 {hasAnySupplier && <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Supplier</th>}
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">PO Date</th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Due Date</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Date Received</th>
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Total</th>
                 <th className="text-center px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Paid?</th>
               </tr>
@@ -285,11 +323,9 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                       {STATUS_LABELS[invoice.status]}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
-                    {invoice.dueDate
-                      ? new Date(invoice.dueDate).toLocaleDateString()
-                      : "—"}
-                  </td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{fmtDate(invoice.invoiceDate)}</td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{fmtDate(invoice.dueDate)}</td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{fmtDate(invoice.receivedAt)}</td>
                   <td className="px-6 py-4 text-right text-gray-800 dark:text-gray-100 font-medium">
                     ${Number(invoice.total).toFixed(2)}
                   </td>
