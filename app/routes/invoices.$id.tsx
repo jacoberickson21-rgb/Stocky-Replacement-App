@@ -4,7 +4,15 @@ import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
-import { updateInventoryItemSku, updateVariantBarcode, createDraftProduct } from "../services/shopify.server";
+import {
+  updateInventoryItemSku,
+  updateInventoryLevel,
+  updateInventoryItemCost,
+  getLocationId,
+  updateVariantBarcode,
+  createDraftProduct,
+  getProductIdFromVariant,
+} from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
 
@@ -124,14 +132,22 @@ export async function action({ request, params }: Route.ActionArgs) {
         where: { variantId: lineItem.shopifyVariantId },
         select: { productId: true },
       });
-      try {
-        await updateVariantBarcode(cached?.productId ?? "", lineItem.shopifyVariantId, barcode);
-      } catch (err) {
-        await logFailure(
-          "shopify:set-barcode",
-          lineItem.sku || `lineItem:${lineItemId}`,
-          `Barcode sync failed for variant ${lineItem.shopifyVariantId}: ${err instanceof Error ? err.message : String(err)}`
-        );
+      let productId = cached?.productId ?? null;
+      if (!productId) {
+        try {
+          productId = await getProductIdFromVariant(lineItem.shopifyVariantId);
+        } catch { /* ignore */ }
+      }
+      if (productId) {
+        try {
+          await updateVariantBarcode(productId, lineItem.shopifyVariantId, barcode);
+        } catch (err) {
+          await logFailure(
+            "shopify:set-barcode",
+            lineItem.sku || `lineItem:${lineItemId}`,
+            `Barcode sync failed for variant ${lineItem.shopifyVariantId}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
     }
 
@@ -187,6 +203,130 @@ export async function action({ request, params }: Route.ActionArgs) {
       );
       return { ok: false, intent: "createSkeletonProduct" as const, lineItemId, error: "Product creation failed — check the failure log" };
     }
+  }
+
+  if (intent === "markSynced") {
+    const lineItemId = Number(formData.get("lineItemId"));
+    await getDb().invoiceLineItem.update({
+      where: { id: lineItemId },
+      data: { inventorySynced: true },
+    });
+    return { ok: true, intent: "markSynced" as const, lineItemId };
+  }
+
+  if (intent === "retryShopifySync") {
+    const db = getDb();
+    const invoice = await db.invoice.findUnique({
+      where: { id },
+      include: { lineItems: true },
+    });
+    if (!invoice || invoice.status !== "RECEIVED") {
+      return { ok: false, intent: "retryShopifySync" as const, error: "Invoice is not in RECEIVED state" };
+    }
+
+    let barcodeCount = 0;
+    let costCount = 0;
+    let inventoryCount = 0;
+
+    for (const item of invoice.lineItems) {
+      if (item.shopifyVariantId && item.barcode) {
+        const cached = await db.productCache.findUnique({
+          where: { variantId: item.shopifyVariantId },
+          select: { productId: true },
+        });
+        let productId = cached?.productId ?? null;
+        if (!productId) {
+          try {
+            productId = await getProductIdFromVariant(item.shopifyVariantId);
+          } catch { /* ignore */ }
+        }
+        if (productId) {
+          try {
+            await updateVariantBarcode(productId, item.shopifyVariantId, item.barcode);
+            barcodeCount++;
+          } catch (err) {
+            await logFailure("BARCODE_SYNC", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+
+      if (item.shopifyInventoryItemId && Number(item.unitCost) > 0) {
+        try {
+          await updateInventoryItemCost(item.shopifyInventoryItemId, Number(item.unitCost));
+          costCount++;
+        } catch (err) {
+          await logFailure("shopify:set-cost", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+
+    // Sync inventory for unsynced items only
+    try {
+      const locationId = await getLocationId();
+      for (const item of invoice.lineItems) {
+        if (item.shopifyInventoryItemId && item.quantityReceived > 0 && !item.inventorySynced) {
+          try {
+            await updateInventoryLevel({
+              inventoryItemId: item.shopifyInventoryItemId,
+              locationId,
+              quantity: item.quantityReceived,
+            });
+            await db.invoiceLineItem.update({
+              where: { id: item.id },
+              data: { inventorySynced: true },
+            });
+            inventoryCount++;
+          } catch (err) {
+            await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+    } catch (err) {
+      await logFailure("INVENTORY_UPDATE", `Invoice #${invoice.invoiceNumber}`, `Could not fetch location: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return { ok: true, intent: "retryShopifySync" as const, barcodeCount, costCount, inventoryCount };
+  }
+
+  if (intent === "reverseInventory") {
+    const db = getDb();
+    const invoice = await db.invoice.findUnique({
+      where: { id },
+      include: { lineItems: true },
+    });
+    if (!invoice) throw new Response("Not Found", { status: 404 });
+
+    let locationId: string;
+    try {
+      locationId = await getLocationId();
+    } catch (err) {
+      return { ok: false, intent: "reverseInventory" as const, error: "Could not fetch Shopify location ID" };
+    }
+
+    let reversedCount = 0;
+    const errors: string[] = [];
+
+    for (const item of invoice.lineItems) {
+      if (!item.shopifyInventoryItemId) continue;
+      const qtyStr = formData.get(`reverseQty_${item.id}`);
+      const qty = qtyStr ? Number(qtyStr) : 0;
+      if (!qty || qty <= 0) continue;
+      try {
+        await updateInventoryLevel({
+          inventoryItemId: item.shopifyInventoryItemId,
+          locationId,
+          quantity: -qty,
+          keySuffix: "-rev",
+        });
+        reversedCount++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(item.sku ?? item.description ?? String(item.id));
+        await logFailure("INVENTORY_REVERSE", item.sku ?? item.description, msg);
+      }
+    }
+
+    return { ok: true, intent: "reverseInventory" as const, reversedCount, errors };
   }
 
   return redirect(`/invoices/${id}`);
@@ -268,6 +408,48 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     fd.append("barcode", barcodeDraft);
     barcodeFetcher.submit(fd, { method: "post" });
   }
+
+  // ── Retry Shopify sync ───────────────────────────────────────────────────
+  const retrySyncFetcher = useFetcher<{ ok: boolean; intent: "retryShopifySync"; barcodeCount?: number; costCount?: number; inventoryCount?: number; error?: string }>();
+  const isRetrying = retrySyncFetcher.state !== "idle";
+  const retrySyncResult =
+    retrySyncFetcher.state === "idle" && retrySyncFetcher.data?.intent === "retryShopifySync"
+      ? retrySyncFetcher.data
+      : null;
+
+  // ── Reverse inventory panel ───────────────────────────────────────────────
+  const reverseFetcher = useFetcher<{ ok: boolean; intent: "reverseInventory"; reversedCount?: number; errors?: string[]; error?: string }>();
+  const isReversing = reverseFetcher.state !== "idle";
+  const reverseResult =
+    reverseFetcher.state === "idle" && reverseFetcher.data?.intent === "reverseInventory"
+      ? reverseFetcher.data
+      : null;
+  const [showReversePanel, setShowReversePanel] = useState(false);
+  const linkedItems = lineItems.filter((item) => item.shopifyInventoryItemId);
+  const [reverseQtys, setReverseQtys] = useState<Record<number, string>>(() =>
+    Object.fromEntries(
+      linkedItems.map((item) => [item.id, String(item.quantityReceived ?? item.quantityOrdered)])
+    )
+  );
+
+  function handleApplyReversals() {
+    const fd = new FormData();
+    fd.append("intent", "reverseInventory");
+    for (const [itemId, qty] of Object.entries(reverseQtys)) {
+      fd.append(`reverseQty_${itemId}`, qty);
+    }
+    reverseFetcher.submit(fd, { method: "post" });
+  }
+
+  // ── Mark as synced ────────────────────────────────────────────────────────
+  const markSyncedFetcher = useFetcher<{ ok: boolean; intent: "markSynced"; lineItemId: number }>();
+  const [localSynced, setLocalSynced] = useState<Set<number>>(new Set());
+
+  useEffect(() => {
+    if (markSyncedFetcher.state === "idle" && markSyncedFetcher.data?.ok && markSyncedFetcher.data.intent === "markSynced") {
+      setLocalSynced((prev) => new Set(prev).add(markSyncedFetcher.data!.lineItemId));
+    }
+  }, [markSyncedFetcher.state, markSyncedFetcher.data]);
 
   // ── Unlinked items management ─────────────────────────────────────────────
   const skipFetcher = useFetcher<{ ok: boolean; intent: "skipItem"; lineItemId: number }>();
@@ -450,6 +632,38 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             Receiving Summary
           </a>
         )}
+        {invoice.status === "RECEIVED" && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const fd = new FormData();
+                fd.append("intent", "retryShopifySync");
+                retrySyncFetcher.submit(fd, { method: "post" });
+              }}
+              disabled={isRetrying}
+              className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+            >
+              {isRetrying ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Syncing…
+                </>
+              ) : "Retry Shopify Sync"}
+            </button>
+            {retrySyncResult?.ok && (
+              <span className="text-xs text-green-600 dark:text-green-400">
+                {retrySyncResult.inventoryCount} inventory, {retrySyncResult.barcodeCount} barcodes, {retrySyncResult.costCount} costs synced
+              </span>
+            )}
+            {retrySyncResult?.ok === false && (
+              <span className="text-xs text-red-500 dark:text-red-400">{retrySyncResult.error}</span>
+            )}
+          </div>
+        )}
         <Form
           method="post"
           className="ml-auto"
@@ -479,6 +693,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Qty Ordered</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Unit Cost</th>
               <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Inv Sync</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Line Total</th>
             </tr>
           </thead>
@@ -620,6 +835,45 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
+                  <td className="px-4 py-4 text-center">
+                    {(() => {
+                      const isSynced = localSynced.has(item.id) || item.inventorySynced;
+                      const isReceived = item.quantityReceived > 0;
+                      const isLinked = !!item.shopifyInventoryItemId;
+                      const isMarkingThis =
+                        markSyncedFetcher.state !== "idle" &&
+                        Number(markSyncedFetcher.formData?.get("lineItemId")) === item.id;
+
+                      if (!isLinked) {
+                        return <span className="text-gray-300 dark:text-gray-600 text-sm">—</span>;
+                      }
+                      if (isSynced) {
+                        return <span className="text-green-500 text-base" title="Inventory synced to Shopify">✓</span>;
+                      }
+                      if (!isReceived) {
+                        return <span className="text-gray-400 dark:text-gray-500 text-sm" title="Not yet received">—</span>;
+                      }
+                      return (
+                        <div className="flex flex-col items-center gap-0.5">
+                          <span className="text-red-500 text-base" title="Inventory not synced">✗</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const fd = new FormData();
+                              fd.append("intent", "markSynced");
+                              fd.append("lineItemId", String(item.id));
+                              markSyncedFetcher.submit(fd, { method: "post" });
+                            }}
+                            disabled={isMarkingThis}
+                            className="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline underline-offset-1 disabled:opacity-50 leading-tight"
+                            title="Mark as synced — inventory was updated manually in Shopify"
+                          >
+                            {isMarkingThis ? "…" : "Mark"}
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td className="px-6 py-4 text-right font-medium text-gray-800 dark:text-gray-100">
                     ${lineTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
@@ -638,25 +892,25 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   {showBreakdown && (
                     <>
                       <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                        <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
+                        <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
                         <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">${subtotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       </tr>
                       {shipping !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
+                          <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
                           <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">+${shipping.toFixed(2)}</td>
                         </tr>
                       )}
                       {adj !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={5} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
+                          <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
                           <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}${adj.toFixed(2)}</td>
                         </tr>
                       )}
                     </>
                   )}
                   <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                    <td colSpan={5} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
+                    <td colSpan={6} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
                       Total
                     </td>
                     <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
@@ -827,6 +1081,98 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               );
             })}
           </div>
+        </div>
+      )}
+      {/* Reverse Inventory Adjustment */}
+      {invoice.status === "RECEIVED" && linkedItems.length > 0 && (
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={() => setShowReversePanel((v) => !v)}
+            className="flex items-center gap-2 text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+              <path fillRule="evenodd" d="M8.22 5.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L11.94 10 8.22 6.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+            </svg>
+            {showReversePanel ? "Hide" : "Reverse Inventory Adjustment"}
+          </button>
+
+          {showReversePanel && (
+            <div className="mt-3 rounded-2xl border border-red-200 dark:border-red-800 bg-white dark:bg-gray-900 overflow-hidden shadow-sm">
+              <div className="px-6 py-4 border-b border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-950/20">
+                <p className="text-sm font-semibold text-red-800 dark:text-red-200 mb-1">Reverse Inventory Adjustment</p>
+                <p className="text-xs text-red-700 dark:text-red-300">
+                  Subtracts the specified quantity from Shopify inventory for each item. Set quantity to 0 to skip an item.
+                  Each reversal is idempotent — re-applying the same quantities will not double-subtract.
+                </p>
+              </div>
+
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                    <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
+                    <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
+                    <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Qty Received</th>
+                    <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">Qty to Reverse</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linkedItems.map((item, i) => (
+                    <tr key={item.id} className={i < linkedItems.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                      <td className="px-6 py-3 font-mono text-gray-700 dark:text-gray-200">{item.sku || <span className="italic text-gray-400">—</span>}</td>
+                      <td className="px-6 py-3 text-gray-600 dark:text-gray-300">{item.description}</td>
+                      <td className="px-6 py-3 text-right text-gray-700 dark:text-gray-200 tabular-nums">
+                        {item.quantityReceived ?? item.quantityOrdered}
+                      </td>
+                      <td className="px-6 py-3 text-right">
+                        <input
+                          type="number"
+                          min="0"
+                          value={reverseQtys[item.id] ?? "0"}
+                          onChange={(e) =>
+                            setReverseQtys((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          }
+                          className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={handleApplyReversals}
+                  disabled={isReversing}
+                  className="flex items-center gap-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+                >
+                  {isReversing ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Applying…
+                    </>
+                  ) : "Apply Reversals"}
+                </button>
+                {reverseResult?.ok && (
+                  <span className="text-sm text-green-600 dark:text-green-400 font-medium">
+                    {reverseResult.reversedCount} item{reverseResult.reversedCount !== 1 ? "s" : ""} reversed
+                    {reverseResult.errors && reverseResult.errors.length > 0 && (
+                      <span className="text-red-500 dark:text-red-400 ml-2">
+                        ({reverseResult.errors.length} failed: {reverseResult.errors.join(", ")})
+                      </span>
+                    )}
+                  </span>
+                )}
+                {reverseResult?.ok === false && (
+                  <span className="text-sm text-red-500 dark:text-red-400">{reverseResult.error}</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </main>

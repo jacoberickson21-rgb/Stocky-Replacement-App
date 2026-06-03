@@ -18,6 +18,7 @@ import {
   updateInventoryLevel,
   getVariantPrice,
   updateVariantBarcode,
+  getProductIdFromVariant,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -195,11 +196,16 @@ export async function action({ request, params }: Route.ActionArgs) {
     for (const item of invoice.lineItems) {
       const received = Number(formData.get(`qty_${item.id}`));
       if (item.shopifyInventoryItemId) {
+        if (item.inventorySynced) continue;
         try {
           await updateInventoryLevel({
             inventoryItemId: item.shopifyInventoryItemId,
             locationId,
             quantity: received,
+          });
+          await db.invoiceLineItem.update({
+            where: { id: item.id },
+            data: { inventorySynced: true },
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -240,15 +246,21 @@ export async function action({ request, params }: Route.ActionArgs) {
         where: { variantId: item.shopifyVariantId },
         select: { productId: true },
       });
-      try {
-        await updateVariantBarcode(
-          cached?.productId ?? "",
-          item.shopifyVariantId,
-          item.barcode
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await logFailure("BARCODE_SYNC", item.sku ?? item.description, msg);
+      let productId = cached?.productId ?? null;
+      if (!productId) {
+        try {
+          productId = await getProductIdFromVariant(item.shopifyVariantId);
+        } catch { /* ignore */ }
+      }
+      if (productId) {
+        try {
+          await updateVariantBarcode(productId, item.shopifyVariantId, item.barcode);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await logFailure("BARCODE_SYNC", item.sku ?? item.description, msg);
+        }
+      } else {
+        await logFailure("BARCODE_SYNC", item.sku ?? item.description, `Could not resolve productId for variant ${item.shopifyVariantId}`);
       }
     }
   }

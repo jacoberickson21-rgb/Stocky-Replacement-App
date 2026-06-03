@@ -64,6 +64,7 @@ export type UpdateInventoryInput = {
   inventoryItemId: string;
   locationId: string;
   quantity: number;
+  keySuffix?: string;
 };
 
 export type ProductSearchResult = {
@@ -494,10 +495,7 @@ export async function updateInventoryLevel(
       (q) => q.name === "available"
     )?.quantity ?? 0;
 
-  // Build idempotency key from the numeric tail of each GID (e.g. "adjust-12345-67890")
-  const itemId = opts.inventoryItemId.split("/").pop() ?? opts.inventoryItemId;
-  const locId = opts.locationId.split("/").pop() ?? opts.locationId;
-  const idempotencyKey = `adjust-${itemId}-${locId}`;
+  const idempotencyKey = [opts.inventoryItemId, opts.locationId].filter(Boolean).join('-') + (opts.keySuffix ?? '');
 
   const data = await shopifyGraphQL<{
     inventoryAdjustQuantities: { userErrors: UserError[] };
@@ -1374,6 +1372,20 @@ export async function getVariantPricesBulk(variantIds: string[]): Promise<Map<st
   } catch {
     return new Map();
   }
+}
+
+export async function getProductIdFromVariant(variantId: string): Promise<string | null> {
+  const data = await shopifyGraphQL<{
+    productVariant: { product: { id: string } } | null;
+  }>(
+    `query GetProductIdFromVariant($variantId: ID!) {
+      productVariant(id: $variantId) {
+        product { id }
+      }
+    }`,
+    { variantId }
+  );
+  return data.productVariant?.product.id ?? null;
 }
 
 export async function getVariantPrice(variantId: string): Promise<string | null> {

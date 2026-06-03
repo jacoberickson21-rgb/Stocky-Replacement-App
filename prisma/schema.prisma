@@ -103,6 +103,7 @@ model InvoiceLineItem {
   shopifyVariantId       String?
   shopifyInventoryItemId String?
   skipped                Boolean          @default(false)
+  inventorySynced        Boolean          @default(false)
   discrepancyLogs        DiscrepancyLog[]
 }
 
