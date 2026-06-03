@@ -55,6 +55,7 @@ export async function action({ request }: Route.ActionArgs) {
   // ── CSV path ──────────────────────────────────────────────────────────────
   if (intent === "uploadCsv") {
     const vendorId = String(form.get("vendorId") ?? "").trim();
+    const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const csvFile = form.get("csvFile");
@@ -119,9 +120,10 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+    const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
     const invoice = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: Number(vendorId), status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: { invoiceNumber, vendorId: Number(vendorId), supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
       });
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
@@ -807,14 +809,17 @@ function PaymentTermsFields({
 
 function CsvUploadForm({
   vendors,
+  suppliers,
   errors,
 }: {
   vendors: Vendor[];
+  suppliers: Supplier[];
   errors: Record<string, string>;
 }) {
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [ptfKey, setPtfKey] = useState(0);
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
 
   function handleCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -831,6 +836,7 @@ function CsvUploadForm({
       const firstRow = parsed.data[0] ?? {};
       const csvNum = findCsvColumn(firstRow, ["Invoice Number", "invoice_number", "Invoice #", "Invoice No"]);
       const csvDate = findCsvColumn(firstRow, ["Invoice Date", "invoice_date", "Date"]);
+      const csvSupplier = findCsvColumn(firstRow, ["Supplier", "supplier"]);
       if (csvNum) setInvoiceNumber((prev) => prev || csvNum);
       if (csvDate) {
         const formatted = parseDateToInputFormat(csvDate);
@@ -842,13 +848,42 @@ function CsvUploadForm({
           });
         }
       }
+      if (csvSupplier) {
+        const match = suppliers.find((s) => s.name.toLowerCase().trim() === csvSupplier.toLowerCase().trim());
+        if (match) setSelectedSupplierId((prev) => prev || String(match.id));
+      }
     };
     reader.readAsText(file);
   }
 
+  const filteredVendors = selectedSupplierId
+    ? vendors.filter((v) => v.supplierId === Number(selectedSupplierId))
+    : vendors;
+
   return (
     <form method="post" encType="multipart/form-data" className="space-y-5">
       <input type="hidden" name="intent" value="uploadCsv" />
+      <input type="hidden" name="supplierId" value={selectedSupplierId} />
+
+      {suppliers.length > 0 && (
+        <div>
+          <label htmlFor="csv-supplierId" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Supplier
+          </label>
+          <select
+            id="csv-supplierId"
+            value={selectedSupplierId}
+            onChange={(e) => setSelectedSupplierId(e.target.value)}
+            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+          >
+            <option value="">— None —</option>
+            {suppliers.map((s) => (
+              <option key={s.id} value={String(s.id)}>{s.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <div>
         <label htmlFor="vendorId" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
           Vendor <span className="text-red-500">*</span>
@@ -860,7 +895,7 @@ function CsvUploadForm({
           defaultValue=""
         >
           <option value="" disabled>Select a vendor…</option>
-          {vendors.map((v) => (
+          {filteredVendors.map((v) => (
             <option key={v.id} value={String(v.id)}>{v.name}</option>
           ))}
         </select>
@@ -3450,7 +3485,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
         )}
 
         {/* ── CSV form ── */}
-        {uploadMode === "csv" && <CsvUploadForm vendors={vendors} errors={errors} />}
+        {uploadMode === "csv" && <CsvUploadForm vendors={vendors} suppliers={suppliers} errors={errors} />}
 
         {/* ── PDF form ── */}
         {uploadMode === "pdf" && (
