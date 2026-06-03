@@ -61,7 +61,7 @@ export async function action({ request }: Route.ActionArgs) {
     const csvFile = form.get("csvFile");
 
     const errors: Record<string, string> = {};
-    if (!vendorId) errors.vendorId = "Vendor is required.";
+    if (!vendorId && !supplierIdRaw) errors.vendorId = "Please select either a Vendor or Supplier.";
 
     // Parse CSV before validation so we can extract invoice metadata as fallbacks
     type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null };
@@ -121,14 +121,15 @@ export async function action({ request }: Route.ActionArgs) {
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
+    const resolvedVendorId = vendorId ? Number(vendorId) : null;
     const invoice = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: Number(vendorId), supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
       });
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
-          vendorId: Number(vendorId),
+          vendorId: resolvedVendorId,
           sku: item.sku,
           description: item.description,
           quantityOrdered: item.quantity,
@@ -252,6 +253,7 @@ export async function action({ request }: Route.ActionArgs) {
   // ── PDF confirm path ──────────────────────────────────────────────────────
   if (intent === "confirmPdf") {
     const vendorId = String(form.get("vendorId") ?? "").trim();
+    const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
@@ -259,7 +261,7 @@ export async function action({ request }: Route.ActionArgs) {
     const itemCount = parseInt(String(form.get("itemCount") ?? "0"), 10);
 
     const errors: Record<string, string> = {};
-    if (!vendorId) errors.vendorId = "Vendor is required.";
+    if (!vendorId && !supplierIdRaw) errors.vendorId = "Please select either a Vendor or Supplier.";
     if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
 
     type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null };
@@ -301,15 +303,17 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+    const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
+    const resolvedVendorId = vendorId ? Number(vendorId) : null;
 
     const invoice = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: Number(vendorId), status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
       });
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
           invoiceId: created.id,
-          vendorId: Number(vendorId),
+          vendorId: resolvedVendorId,
           sku: item.sku,
           description: item.description,
           quantityOrdered: item.quantity,
@@ -413,7 +417,7 @@ export async function action({ request }: Route.ActionArgs) {
     const lineItemsRaw = String(form.get("lineItems") ?? "[]");
 
     const errors: Record<string, string> = {};
-    if (!vendorId) errors.vendorId = "Vendor is required.";
+    if (!vendorId && !supplierIdRaw) errors.vendorId = "Please select either a Vendor or Supplier.";
     if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
 
     type ManualLineItem = {
@@ -476,7 +480,7 @@ export async function action({ request }: Route.ActionArgs) {
     }
     const primaryVendorId = itemVendorCounts.size > 0
       ? [...itemVendorCounts.entries()].sort((a, b) => b[1] - a[1])[0][0]
-      : Number(vendorId);
+      : (vendorId ? Number(vendorId) : null);
 
     const { created: invoice, savedLineItems } = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
@@ -886,7 +890,7 @@ function CsvUploadForm({
 
       <div>
         <label htmlFor="vendorId" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Vendor <span className="text-red-500">*</span>
+          Vendor {!selectedSupplierId && <span className="text-red-500">*</span>}
         </label>
         <select
           id="vendorId"
@@ -894,7 +898,7 @@ function CsvUploadForm({
           className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
           defaultValue=""
         >
-          <option value="" disabled>Select a vendor…</option>
+          <option value="">{selectedSupplierId ? "— None —" : "Select a vendor…"}</option>
           {filteredVendors.map((v) => (
             <option key={v.id} value={String(v.id)}>{v.name}</option>
           ))}
@@ -1658,7 +1662,7 @@ function ManualEntryForm({
           {inSupplierMode ? (
             <div className={supplierVendors.length > 4 ? "sm:col-span-2" : ""}>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Vendors <span className="text-red-500">*</span>
+                Vendors
               </label>
               {supplierVendors.length === 0 ? (
                 <p className="text-xs text-gray-400 dark:text-gray-500 italic">No vendors linked to this supplier.</p>
@@ -3080,10 +3084,12 @@ function ReviewScreen({
   extraction,
   vendors: initialVendors,
   matchedVendorId: initialMatchedVendorId,
+  suppliers,
 }: {
   extraction: ExtendedExtractionResult;
   vendors: Vendor[];
   matchedVendorId: number | null;
+  suppliers: Supplier[];
 }) {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -3093,6 +3099,7 @@ function ReviewScreen({
   const [selectedVendorId, setSelectedVendorId] = useState<string>(
     initialMatchedVendorId !== null ? String(initialMatchedVendorId) : ""
   );
+  const [selectedSupplierId, setSelectedSupplierId] = useState("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newVendorName, setNewVendorName] = useState(
     initialMatchedVendorId === null ? extraction.vendorName.value : ""
@@ -3238,6 +3245,7 @@ function ReviewScreen({
       <Form method="post">
         <input type="hidden" name="intent" value="confirmPdf" />
         <input type="hidden" name="itemCount" value={String(activeLineItems.length + addedItems.length)} />
+        <input type="hidden" name="supplierId" value={selectedSupplierId} />
 
         {/* Hidden column mapping inputs — saved as vendor profile on submit */}
         {showMapping && (
@@ -3252,9 +3260,25 @@ function ReviewScreen({
         {/* Header fields */}
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            {suppliers.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Supplier</label>
+                <select
+                  value={selectedSupplierId}
+                  onChange={(e) => setSelectedSupplierId(e.target.value)}
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                >
+                  <option value="">— None —</option>
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={String(s.id)}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                Vendor <span className="text-red-500">*</span>
+                Vendor {!selectedSupplierId && <span className="text-red-500">*</span>}
                 {extraction.vendorName.flagged && <FlagIcon />}
                 {!extraction.vendorName.flagged && <ConfidencePct value={extraction.vendorName.confidence} />}
               </label>
@@ -3406,6 +3430,7 @@ export default function InvoiceUploadPage({ loaderData, actionData }: Route.Comp
           extraction={actionData.extraction as ExtendedExtractionResult}
           vendors={(actionData.vendors ?? vendors) as Vendor[]}
           matchedVendorId={actionData.matchedVendorId as number | null}
+          suppliers={suppliers}
         />
       </main>
     );

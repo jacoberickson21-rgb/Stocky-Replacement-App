@@ -55,7 +55,8 @@ export async function action({ request, params }: Route.ActionArgs) {
   const intent = String(form.get("intent") ?? "");
 
   if (intent === "updateInvoice") {
-    const vendorId = Number(String(form.get("vendorId") ?? "").trim());
+    const vendorIdStr = String(form.get("vendorId") ?? "").trim();
+    const vendorId = vendorIdStr ? Number(vendorIdStr) : null;
     const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
@@ -91,8 +92,8 @@ export async function action({ request, params }: Route.ActionArgs) {
       return data({ error: "Invalid line items." }, { status: 400 });
     }
 
-    if (!invoiceNumber || !vendorId || lineItems.length === 0) {
-      return data({ error: "Vendor, invoice number, and at least one line item are required." }, { status: 400 });
+    if (!invoiceNumber || (!vendorId && !supplierIdRaw) || lineItems.length === 0) {
+      return data({ error: "Invoice number and at least one line item are required. Select a Vendor or Supplier." }, { status: 400 });
     }
 
     const shippingCostVal = parseFloat(shippingCostRaw) || 0;
@@ -218,7 +219,7 @@ export async function action({ request, params }: Route.ActionArgs) {
     // Create skeleton Shopify products for new unlinked items
     const newUnlinked = lineItems.filter((i) => i.dbId === null && !i.variantId);
     if (newUnlinked.length > 0) {
-      const vendorRecord = await db.vendor.findUnique({ where: { id: vendorId }, select: { name: true } });
+      const vendorRecord = vendorId ? await db.vendor.findUnique({ where: { id: vendorId }, select: { name: true } }) : null;
       const vendorName = vendorRecord?.name ?? "";
 
       const groups = new Map<string, EditLineItem[]>();
@@ -494,7 +495,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
     }))
   );
 
-  const [selectedVendorId, setSelectedVendorId] = useState(String(invoice.vendorId));
+  const [selectedVendorId, setSelectedVendorId] = useState(String(invoice.vendorId ?? ""));
   const [selectedSupplierId, setSelectedSupplierId] = useState(invoice.supplierId ? String(invoice.supplierId) : "");
   const [invoiceNumber, setInvoiceNumber] = useState(invoice.invoiceNumber);
   const [invoiceDate, setInvoiceDate] = useState(invoice.invoiceDate ?? "");

@@ -61,8 +61,8 @@ model VendorProfile {
 model Invoice {
   id              Int               @id @default(autoincrement())
   invoiceNumber   String
-  vendor          Vendor            @relation(fields: [vendorId], references: [id])
-  vendorId        Int
+  vendor          Vendor?           @relation(fields: [vendorId], references: [id])
+  vendorId        Int?
   supplier        Supplier?         @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   supplierId      Int?
   status          InvoiceStatus     @default(ORDERED)
@@ -144,8 +144,8 @@ model DiscrepancyLog {
   invoiceLineItem   InvoiceLineItem @relation(fields: [invoiceLineItemId], references: [id], onDelete: Cascade)
   invoiceId         Int
   invoice           Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  vendorId          Int
-  vendor            Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorId          Int?
+  vendor            Vendor?         @relation(fields: [vendorId], references: [id], onDelete: SetNull)
   sku               String?
   expectedQty       Int
   actualQty         Int

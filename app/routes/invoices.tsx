@@ -310,7 +310,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                       {invoice.invoiceNumber}
                     </Link>
                   </td>
-                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{invoice.vendor.name}</td>
+                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">{invoice.vendor?.name ?? "—"}</td>
                   {hasAnySupplier && (
                     <td className="px-6 py-4 text-gray-500 dark:text-gray-400">
                       {(invoice as typeof invoice & { supplier: { name: string } | null }).supplier?.name ?? "—"}

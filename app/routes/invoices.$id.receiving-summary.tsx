@@ -73,7 +73,7 @@ export async function loader({ request, params }: { request: Request; params: { 
       receivedAt: receiveLog?.timestamp.toISOString() ?? invoice.updatedAt.toISOString(),
       receivedBy: receiveLog?.user?.name ?? "—",
     },
-    vendor: { name: invoice.vendor.name },
+    vendor: { name: invoice.vendor?.name ?? "—" },
     lineItems,
     summary: { totalOrdered, totalReceived, totalDiscrepancies, invoiceTotal },
     generatedAt: new Date().toISOString(),

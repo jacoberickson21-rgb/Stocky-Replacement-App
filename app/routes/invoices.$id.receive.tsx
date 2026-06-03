@@ -132,7 +132,7 @@ export async function action({ request, params }: Route.ActionArgs) {
               data: {
                 invoiceLineItemId: item.id,
                 invoiceId: id,
-                vendorId: invoice.vendorId,
+                vendorId: invoice.vendorId ?? item.vendorId ?? null,
                 sku: item.sku,
                 expectedQty: item.quantityOrdered,
                 actualQty: received,
@@ -148,7 +148,7 @@ export async function action({ request, params }: Route.ActionArgs) {
             quantityReceived: received,
             hasDiscrepancy,
             receivingNote: note || null,
-            vendorId: invoice.vendorId,
+            vendorId: invoice.vendorId ?? item.vendorId ?? null,
           },
         });
       }),
