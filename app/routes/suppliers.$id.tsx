@@ -5,12 +5,33 @@ import type { Route } from "./+types/suppliers.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 
+type VendorFinancialRow = {
+  vendorId: number;
+  vendorName: string;
+  invoiceCount: number;
+  totalOrdered: number;
+  totalReceived: number;
+  totalPaid: number;
+  outstanding: number;
+  itemsReceived: number;
+};
+
+type DirectFinancialRow = {
+  invoiceCount: number;
+  totalOrdered: number;
+  totalReceived: number;
+  totalPaid: number;
+  outstanding: number;
+  itemsReceived: number;
+};
+
 export async function loader({ request, params }: Route.LoaderArgs) {
   await requireUserId(request);
   const id = Number(params.id);
+  const db = getDb();
 
-  const [supplier, unassignedVendors] = await Promise.all([
-    getDb().supplier.findUniqueOrThrow({
+  const [supplier, unassignedVendors, vendorStats, directRaw] = await Promise.all([
+    db.supplier.findUniqueOrThrow({
       where: { id },
       include: {
         vendors: {
@@ -22,44 +43,113 @@ export async function loader({ request, params }: Route.LoaderArgs) {
         },
       },
     }),
-    getDb().vendor.findMany({
+    db.vendor.findMany({
       where: { supplierId: null },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),
+    // Per-vendor financial aggregations via raw SQL to avoid loading all line items into memory
+    db.$queryRaw<VendorFinancialRow[]>`
+      WITH invoice_stats AS (
+        SELECT
+          "vendorId",
+          COUNT(*)::int                                                                            AS "invoiceCount",
+          SUM(total)::float                                                                        AS "totalOrdered",
+          SUM(CASE WHEN status IN ('RECEIVED','PAID') THEN total ELSE 0 END)::float               AS "totalReceived",
+          SUM(CASE WHEN status = 'PAID'              THEN total ELSE 0 END)::float                AS "totalPaid",
+          SUM(CASE WHEN status = 'RECEIVED'          THEN total ELSE 0 END)::float                AS "outstanding"
+        FROM "Invoice"
+        WHERE "vendorId" IN (SELECT id FROM "Vendor" WHERE "supplierId" = ${id})
+        GROUP BY "vendorId"
+      ),
+      line_item_stats AS (
+        SELECT
+          i."vendorId",
+          COALESCE(SUM(ili."quantityReceived"), 0)::int AS "itemsReceived"
+        FROM "InvoiceLineItem" ili
+        JOIN "Invoice" i ON i.id = ili."invoiceId"
+        WHERE i."vendorId" IN (SELECT id FROM "Vendor" WHERE "supplierId" = ${id})
+          AND i.status IN ('RECEIVED','PAID')
+        GROUP BY i."vendorId"
+      )
+      SELECT
+        v.id                            AS "vendorId",
+        v.name                          AS "vendorName",
+        COALESCE(s."invoiceCount", 0)   AS "invoiceCount",
+        COALESCE(s."totalOrdered",  0)  AS "totalOrdered",
+        COALESCE(s."totalReceived", 0)  AS "totalReceived",
+        COALESCE(s."totalPaid",     0)  AS "totalPaid",
+        COALESCE(s."outstanding",   0)  AS "outstanding",
+        COALESCE(l."itemsReceived", 0)  AS "itemsReceived"
+      FROM "Vendor" v
+      LEFT JOIN invoice_stats    s ON s."vendorId" = v.id
+      LEFT JOIN line_item_stats  l ON l."vendorId" = v.id
+      WHERE v."supplierId" = ${id}
+      ORDER BY v.name
+    `,
+    // Supplier-direct invoices (supplierId set, vendorId null)
+    db.$queryRaw<DirectFinancialRow[]>`
+      SELECT
+        COUNT(i.id)::int                                                                           AS "invoiceCount",
+        COALESCE(SUM(i.total), 0)::float                                                           AS "totalOrdered",
+        COALESCE(SUM(CASE WHEN i.status IN ('RECEIVED','PAID') THEN i.total ELSE 0 END), 0)::float AS "totalReceived",
+        COALESCE(SUM(CASE WHEN i.status = 'PAID'              THEN i.total ELSE 0 END), 0)::float  AS "totalPaid",
+        COALESCE(SUM(CASE WHEN i.status = 'RECEIVED'          THEN i.total ELSE 0 END), 0)::float  AS "outstanding",
+        COALESCE((
+          SELECT SUM(ili."quantityReceived")
+          FROM "InvoiceLineItem" ili
+          JOIN "Invoice" ii ON ii.id = ili."invoiceId"
+          WHERE ii."supplierId" = ${id} AND ii."vendorId" IS NULL
+            AND ii.status IN ('RECEIVED','PAID')
+        ), 0)::int AS "itemsReceived"
+      FROM "Invoice" i
+      WHERE i."supplierId" = ${id} AND i."vendorId" IS NULL
+    `,
   ]);
 
-  const vendors = supplier.vendors.map((v) => {
-    const totalInvoices = v.invoices.reduce((sum, inv) => sum + Number(inv.total), 0);
-    const totalCredits = v.credits.reduce((sum, c) => sum + Math.abs(Number(c.amount)), 0);
-    return {
-      id: v.id,
-      name: v.name,
-      contactName: v.contactName,
-      email: v.email,
-      phone: v.phone,
-      totalInvoices,
-      totalCredits,
-      netBalance: totalInvoices - totalCredits,
-      invoices: v.invoices.map((inv) => ({
-        id: inv.id,
-        invoiceNumber: inv.invoiceNumber,
-        status: inv.status,
-        total: Number(inv.total),
-        createdAt: inv.createdAt.toISOString(),
-      })),
-      credits: v.credits.map((c) => ({
-        id: c.id,
-        amount: Math.abs(Number(c.amount)),
-        invoiceNumber: c.invoiceNumber,
-        notes: c.notes,
-        date: c.date.toISOString(),
-      })),
-    };
-  });
+  const zero: DirectFinancialRow = { invoiceCount: 0, totalOrdered: 0, totalReceived: 0, totalPaid: 0, outstanding: 0, itemsReceived: 0 };
+  const direct: DirectFinancialRow = directRaw[0] ?? zero;
 
-  const totalInvoices = vendors.reduce((sum, v) => sum + v.totalInvoices, 0);
-  const totalCredits = vendors.reduce((sum, v) => sum + v.totalCredits, 0);
+  const totals = vendorStats.reduce(
+    (acc, v) => ({
+      invoiceCount:  acc.invoiceCount  + Number(v.invoiceCount),
+      totalOrdered:  acc.totalOrdered  + Number(v.totalOrdered),
+      totalReceived: acc.totalReceived + Number(v.totalReceived),
+      totalPaid:     acc.totalPaid     + Number(v.totalPaid),
+      outstanding:   acc.outstanding   + Number(v.outstanding),
+      itemsReceived: acc.itemsReceived + Number(v.itemsReceived),
+    }),
+    {
+      invoiceCount:  Number(direct.invoiceCount),
+      totalOrdered:  Number(direct.totalOrdered),
+      totalReceived: Number(direct.totalReceived),
+      totalPaid:     Number(direct.totalPaid),
+      outstanding:   Number(direct.outstanding),
+      itemsReceived: Number(direct.itemsReceived),
+    }
+  );
+
+  const vendors = supplier.vendors.map((v) => ({
+    id: v.id,
+    name: v.name,
+    contactName: v.contactName,
+    email: v.email,
+    phone: v.phone,
+    invoices: v.invoices.map((inv) => ({
+      id: inv.id,
+      invoiceNumber: inv.invoiceNumber,
+      status: inv.status,
+      total: Number(inv.total),
+      createdAt: inv.createdAt.toISOString(),
+    })),
+    credits: v.credits.map((c) => ({
+      id: c.id,
+      amount: Math.abs(Number(c.amount)),
+      invoiceNumber: c.invoiceNumber,
+      notes: c.notes,
+      date: c.date.toISOString(),
+    })),
+  }));
 
   return {
     supplier: {
@@ -70,9 +160,25 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       phone: supplier.phone,
     },
     vendors,
-    totalInvoices,
-    totalCredits,
-    netBalance: totalInvoices - totalCredits,
+    vendorStats: vendorStats.map((r) => ({
+      ...r,
+      invoiceCount:  Number(r.invoiceCount),
+      totalOrdered:  Number(r.totalOrdered),
+      totalReceived: Number(r.totalReceived),
+      totalPaid:     Number(r.totalPaid),
+      outstanding:   Number(r.outstanding),
+      itemsReceived: Number(r.itemsReceived),
+    })),
+    direct: {
+      ...direct,
+      invoiceCount:  Number(direct.invoiceCount),
+      totalOrdered:  Number(direct.totalOrdered),
+      totalReceived: Number(direct.totalReceived),
+      totalPaid:     Number(direct.totalPaid),
+      outstanding:   Number(direct.outstanding),
+      itemsReceived: Number(direct.itemsReceived),
+    },
+    totals,
     unassignedVendors,
   };
 }
@@ -154,8 +260,7 @@ const inputClass =
   "w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800";
 
 export default function SupplierDetailPage({ loaderData }: Route.ComponentProps) {
-  const { supplier, vendors, totalInvoices, totalCredits, netBalance, unassignedVendors } =
-    loaderData;
+  const { supplier, vendors, vendorStats, direct, totals, unassignedVendors } = loaderData;
   const actionData = useActionData() as { error?: string; success?: string } | undefined;
   const [showAddVendor, setShowAddVendor] = useState(false);
   const [showCreateVendor, setShowCreateVendor] = useState(false);
@@ -293,25 +398,73 @@ export default function SupplierDetailPage({ loaderData }: Route.ComponentProps)
         </div>
       )}
 
-      {/* Summary stats */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-            Total Invoices
-          </p>
-          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{formatDollars(totalInvoices)}</p>
+      {/* Financial summary table */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden mb-8">
+        <div className="px-6 py-3 bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+          <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Financial Summary</h3>
         </div>
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-            Total Credits
-          </p>
-          <p className="text-2xl font-bold text-green-600 dark:text-green-400">{formatDollars(totalCredits)}</p>
-        </div>
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-            Net Balance
-          </p>
-          <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{formatDollars(netBalance)}</p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Invoices</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Ordered</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Received</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Paid</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Outstanding</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Items Rec'd</th>
+              </tr>
+            </thead>
+            <tbody>
+              {vendorStats.map((row, i) => (
+                <tr key={row.vendorId} className={i < vendorStats.length - 1 || direct.invoiceCount > 0 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                  <td className="px-6 py-3">
+                    <Link to={`/vendors/${row.vendorId}`} className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium transition-colors">
+                      {row.vendorName}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{row.invoiceCount}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(row.totalOrdered)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(row.totalReceived)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(row.totalPaid)}</td>
+                  <td className={`px-4 py-3 text-right tabular-nums font-medium ${row.outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>
+                    {formatDollars(row.outstanding)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{row.itemsReceived.toLocaleString()}</td>
+                </tr>
+              ))}
+              {direct.invoiceCount > 0 && (
+                <tr className="border-b border-gray-100 dark:border-gray-700 italic">
+                  <td className="px-6 py-3 text-gray-500 dark:text-gray-400">Direct (no vendor)</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{direct.invoiceCount}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(direct.totalOrdered)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(direct.totalReceived)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{formatDollars(direct.totalPaid)}</td>
+                  <td className={`px-4 py-3 text-right tabular-nums font-medium ${direct.outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>
+                    {formatDollars(direct.outstanding)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-700 dark:text-gray-300">{direct.itemsReceived.toLocaleString()}</td>
+                </tr>
+              )}
+              {(vendorStats.length > 0 || direct.invoiceCount > 0) && (
+                <tr className="bg-gray-50 dark:bg-gray-800 font-semibold">
+                  <td className="px-6 py-3 text-gray-800 dark:text-gray-100">Total</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-800 dark:text-gray-100">{totals.invoiceCount}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-800 dark:text-gray-100">{formatDollars(totals.totalOrdered)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-800 dark:text-gray-100">{formatDollars(totals.totalReceived)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-800 dark:text-gray-100">{formatDollars(totals.totalPaid)}</td>
+                  <td className={`px-4 py-3 text-right tabular-nums ${totals.outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"}`}>
+                    {formatDollars(totals.outstanding)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-gray-800 dark:text-gray-100">{totals.itemsReceived.toLocaleString()}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {vendorStats.length === 0 && direct.invoiceCount === 0 && (
+            <p className="px-6 py-4 text-sm text-gray-400 dark:text-gray-500">No purchase orders recorded.</p>
+          )}
         </div>
       </div>
 
@@ -347,34 +500,6 @@ export default function SupplierDetailPage({ loaderData }: Route.ComponentProps)
                         .join(" · ")}
                     </span>
                   )}
-                </div>
-
-                {/* Vendor stats */}
-                <div className="grid grid-cols-3 divide-x divide-gray-100 dark:divide-gray-700 border-b border-gray-100 dark:border-gray-700">
-                  <div className="px-6 py-4">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-                      Invoices
-                    </p>
-                    <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
-                      {formatDollars(vendor.totalInvoices)}
-                    </p>
-                  </div>
-                  <div className="px-6 py-4">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-                      Credits
-                    </p>
-                    <p className="text-lg font-bold text-green-600 dark:text-green-400">
-                      {formatDollars(vendor.totalCredits)}
-                    </p>
-                  </div>
-                  <div className="px-6 py-4">
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
-                      Net Balance
-                    </p>
-                    <p className="text-lg font-bold text-gray-900 dark:text-gray-100">
-                      {formatDollars(vendor.netBalance)}
-                    </p>
-                  </div>
                 </div>
 
                 {/* Vendor invoices */}

@@ -163,7 +163,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       const product = await createDraftProduct({
         title: lineItem.description,
         sku: lineItem.sku || undefined,
-        vendor: inv?.vendor.name ?? "",
+        vendor: inv?.vendor?.name ?? "",
         costPrice: Number(lineItem.unitCost),
         retailPrice: lineItem.retailPrice ? Number(lineItem.retailPrice) : undefined,
       });
@@ -345,10 +345,12 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
       {/* Header card */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+          {vendor && (
           <div>
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Vendor</p>
             <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor.name}</p>
           </div>
+          )}
           {invoice.supplier && (
             <div>
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Supplier</p>

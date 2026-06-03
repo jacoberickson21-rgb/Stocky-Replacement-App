@@ -462,6 +462,7 @@ type LineItemRow = {
   productTitle: string | null;
   variantTitle: string | null;
   barcode: string;
+  vendor: string | null;
 };
 
 // ── Page component ────────────────────────────────────────────────────────────
@@ -492,6 +493,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
       productTitle: null,
       variantTitle: item.shopifyProductTitle,
       barcode: item.barcode ?? "",
+      vendor: invoice.vendor?.name ?? null,
     }))
   );
 
@@ -569,6 +571,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
         productTitle: null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
         barcode: result.barcode ?? "",
+        vendor: result.vendor || null,
       },
     ]);
     setSearchQuery("");
@@ -607,6 +610,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
         productTitle: null as string | null,
         variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
         barcode: result.barcode ?? "",
+        vendor: result.vendor || null,
       })),
     ]);
     setSelectedIds(new Set());
@@ -819,9 +823,14 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
                               className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
                             />
                             <div className="flex-1 min-w-0">
-                              <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{displayName}</span>
-                              {result.sku && (
-                                <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
+                              <div>
+                                <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{displayName}</span>
+                                {result.sku && (
+                                  <span className="ml-2 text-gray-400 dark:text-gray-500 font-mono text-xs">{result.sku}</span>
+                                )}
+                              </div>
+                              {result.vendor && (
+                                <div className="text-xs text-gray-400 dark:text-gray-500 truncate">{result.vendor}</div>
                               )}
                             </div>
                             <span className={`text-xs shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
@@ -856,6 +865,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
                 <thead>
                   <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
                     <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400">Product / SKU</th>
+                    <th className="text-left px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-36">Vendor</th>
                     <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
                     <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
                     <th className="text-right px-4 py-2.5 font-medium text-gray-600 dark:text-gray-400 w-32">Retail Price</th>
@@ -888,6 +898,9 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
                             Manual
                           </span>
                         )}
+                      </td>
+                      <td className="px-4 py-2.5 text-sm text-gray-500 dark:text-gray-400">
+                        {item.vendor ?? "—"}
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <input

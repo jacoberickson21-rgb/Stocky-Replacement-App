@@ -58,6 +58,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     lowStock,
     vendorRows,
     productTypes,
+    outstandingBySupplierRaw,
   ] = await Promise.all([
     // Awaiting payment vs overdue (both from RECEIVED invoices)
     db.$queryRaw<{ awaiting: number; overdue: number }[]>`
@@ -199,6 +200,20 @@ export async function loader({ request }: Route.LoaderArgs) {
 
     // Product types from Shopify for filter dropdown
     getProductTypes(),
+
+    // Outstanding balance by supplier (RECEIVED invoices, unresolved via supplier or vendor.supplierId)
+    db.$queryRaw<{ supplierId: number | null; supplierName: string; total: number }[]>`
+      SELECT
+        s.id                              AS "supplierId",
+        COALESCE(s.name, 'No Supplier')   AS "supplierName",
+        SUM(i.total)::float               AS total
+      FROM "Invoice" i
+      LEFT JOIN "Vendor"   v ON v.id   = i."vendorId"
+      LEFT JOIN "Supplier" s ON s.id   = COALESCE(i."supplierId", v."supplierId")
+      WHERE i.status = 'RECEIVED'
+      GROUP BY s.id, s.name
+      ORDER BY total DESC
+    `,
   ]);
 
   const marginFloor = parseFloat(marginSetting?.value ?? "40");
@@ -252,7 +267,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       overdueAndUpcoming: overdueAndUpcoming.map((inv) => ({
         id: inv.id,
         invoiceNumber: inv.invoiceNumber,
-        vendorName: inv.vendor.name,
+        vendorName: inv.vendor?.name ?? "—",
         status: inv.status,
         dueDate: inv.dueDate?.toISOString() ?? null,
         total: Number(inv.total),
@@ -268,6 +283,11 @@ export async function loader({ request }: Route.LoaderArgs) {
       lowStock: lowStockUrgent,
       lowStockNoVelocity,
     },
+    outstandingBySupplier: outstandingBySupplierRaw.map((r) => ({
+      supplierId: r.supplierId,
+      supplierName: r.supplierName,
+      total: Number(r.total),
+    })),
     marginAlerts: { items: belowMargin, marginFloor },
     lowStockFilters: {
       threshold: lowStockThreshold,
@@ -500,7 +520,7 @@ const PERIODS: { label: string; value: Period }[] = [
 ];
 
 export default function DashboardPage({ loaderData }: Route.ComponentProps) {
-  const { period, kpis, charts, tables, marginAlerts, lowStockFilters } = loaderData;
+  const { period, kpis, charts, tables, marginAlerts, lowStockFilters, outstandingBySupplier } = loaderData;
   const [searchParams, setSearchParams] = useSearchParams();
   const isDark = useIsDark();
 
@@ -597,6 +617,46 @@ export default function DashboardPage({ loaderData }: Route.ComponentProps) {
           />
         </div>
       </Section>
+
+      {/* Outstanding by Supplier */}
+      {outstandingBySupplier.length > 0 && (
+        <Section title="Outstanding Balance by Supplier">
+          <Card className="overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                  <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Supplier</th>
+                  <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Outstanding</th>
+                </tr>
+              </thead>
+              <tbody>
+                {outstandingBySupplier.map((row, i) => (
+                  <tr key={row.supplierId ?? "none"} className={i < outstandingBySupplier.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
+                    <td className="px-5 py-3 font-medium text-gray-800 dark:text-gray-100">
+                      {row.supplierId ? (
+                        <Link to={`/suppliers/${row.supplierId}`} className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors">
+                          {row.supplierName}
+                        </Link>
+                      ) : (
+                        <span className="text-gray-500 dark:text-gray-400">{row.supplierName}</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums font-semibold text-amber-600 dark:text-amber-400">
+                      {fmt$(row.total)}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
+                  <td className="px-5 py-3 font-semibold text-gray-700 dark:text-gray-300">Total</td>
+                  <td className="px-5 py-3 text-right tabular-nums font-bold text-gray-800 dark:text-gray-100">
+                    {fmt$(outstandingBySupplier.reduce((s, r) => s + r.total, 0))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </Card>
+        </Section>
+      )}
 
       {/* Charts */}
       <Section title="Analytics">

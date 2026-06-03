@@ -78,6 +78,7 @@ export type ProductSearchResult = {
   unitCost: number | null;
   price: number | null;
   barcode: string | null;
+  vendor: string;
 };
 
 export type Publication = {
@@ -109,6 +110,7 @@ type RawSearchVariantNode = {
 type RawSearchProductNode = {
   id: string;
   title: string;
+  vendor: string;
   options: { id: string; name: string; values: string[] }[];
   variants: { edges: { node: RawSearchVariantNode }[] };
 };
@@ -1421,6 +1423,7 @@ export async function searchProducts(
           node {
             id
             title
+            vendor
             options { id name values }
             variants(first: 50) {
               edges {
@@ -1477,6 +1480,7 @@ export async function searchProducts(
       results.push({
         productId: product.id,
         productTitle: product.title,
+        vendor: product.vendor,
         productOptions,
         variantTitle: variant.title,
         variantId: variant.id,

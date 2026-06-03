@@ -444,7 +444,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">
               Vendor
             </p>
-            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor.name}</p>
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">{vendor?.name ?? "—"}</p>
           </div>
           <div>
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">

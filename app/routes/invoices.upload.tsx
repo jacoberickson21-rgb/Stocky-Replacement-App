@@ -54,8 +54,10 @@ export async function action({ request }: Route.ActionArgs) {
 
   // ── CSV path ──────────────────────────────────────────────────────────────
   if (intent === "uploadCsv") {
-    const vendorId = String(form.get("vendorId") ?? "").trim();
+    const vendorIdRaw = String(form.get("vendorId") ?? "").trim();
+    const vendorId = vendorIdRaw === "0" || vendorIdRaw === "undefined" || vendorIdRaw === "null" ? "" : vendorIdRaw;
     const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
+    console.log("[uploadCsv] raw vendorId:", form.get("vendorId"), "→ resolved:", vendorId, "| raw supplierId:", form.get("supplierId"), "→ resolved:", supplierIdRaw);
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const csvFile = form.get("csvFile");
@@ -824,6 +826,11 @@ function CsvUploadForm({
   const [invoiceDate, setInvoiceDate] = useState("");
   const [ptfKey, setPtfKey] = useState(0);
   const [selectedSupplierId, setSelectedSupplierId] = useState("");
+  const [selectedVendorId, setSelectedVendorId] = useState("");
+
+  useEffect(() => {
+    setSelectedVendorId("");
+  }, [selectedSupplierId]);
 
   function handleCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -895,8 +902,9 @@ function CsvUploadForm({
         <select
           id="vendorId"
           name="vendorId"
+          value={selectedVendorId}
+          onChange={(e) => setSelectedVendorId(e.target.value)}
           className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
-          defaultValue=""
         >
           <option value="">{selectedSupplierId ? "— None —" : "Select a vendor…"}</option>
           {filteredVendors.map((v) => (
