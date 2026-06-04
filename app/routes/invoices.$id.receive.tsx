@@ -202,6 +202,7 @@ export async function action({ request, params }: Route.ActionArgs) {
             inventoryItemId: item.shopifyInventoryItemId,
             locationId,
             quantity: received,
+            lineItemId: item.id,
           });
           await db.invoiceLineItem.update({
             where: { id: item.id },

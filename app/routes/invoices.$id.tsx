@@ -270,6 +270,7 @@ export async function action({ request, params }: Route.ActionArgs) {
               inventoryItemId: item.shopifyInventoryItemId,
               locationId,
               quantity: item.quantityReceived,
+              lineItemId: item.id,
             });
             await db.invoiceLineItem.update({
               where: { id: item.id },
@@ -316,6 +317,7 @@ export async function action({ request, params }: Route.ActionArgs) {
           inventoryItemId: item.shopifyInventoryItemId,
           locationId,
           quantity: -qty,
+          lineItemId: item.id,
           keySuffix: "-rev",
         });
         reversedCount++;

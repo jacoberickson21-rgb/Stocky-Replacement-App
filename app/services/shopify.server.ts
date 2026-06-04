@@ -64,6 +64,7 @@ export type UpdateInventoryInput = {
   inventoryItemId: string;
   locationId: string;
   quantity: number;
+  lineItemId: number | string;
   keySuffix?: string;
 };
 
@@ -495,7 +496,7 @@ export async function updateInventoryLevel(
       (q) => q.name === "available"
     )?.quantity ?? 0;
 
-  const idempotencyKey = [opts.inventoryItemId, opts.locationId].filter(Boolean).join('-') + (opts.keySuffix ?? '');
+  const idempotencyKey = `adjust-${opts.lineItemId}-${opts.inventoryItemId}-${opts.locationId}${opts.keySuffix ?? ''}`;
 
   const data = await shopifyGraphQL<{
     inventoryAdjustQuantities: { userErrors: UserError[] };
