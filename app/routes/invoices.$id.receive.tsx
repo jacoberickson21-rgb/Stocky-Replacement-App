@@ -194,30 +194,70 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   if (locationId) {
     for (const item of invoice.lineItems) {
+      if (item.inventorySynced) continue;
+
       const received = Number(formData.get(`qty_${item.id}`));
-      if (item.shopifyInventoryItemId) {
-        if (item.inventorySynced) continue;
+
+      // Perform a fresh SKU lookup so we always use the correct inventoryItemId
+      // from Shopify at receive time. The stored DB value may point to the wrong
+      // variant if this invoice was linked before the lookupProduct() bug fix
+      // (which always returned variants[0] regardless of which SKU was searched).
+      // Fall back to the stored value only if the live lookup fails or finds nothing.
+      let inventoryItemId: string | null = item.shopifyInventoryItemId;
+      let freshVariantId: string | null = null;
+      let freshInventoryItemId: string | null = null;
+      let freshTitle: string | null = null;
+
+      if (item.sku) {
         try {
-          await updateInventoryLevel({
-            inventoryItemId: item.shopifyInventoryItemId,
-            locationId,
-            quantity: received,
-            lineItemId: item.id,
-          });
-          await db.invoiceLineItem.update({
-            where: { id: item.id },
-            data: { inventorySynced: true },
-          });
+          const freshResult = await lookupProduct({ sku: item.sku });
+          if (freshResult) {
+            const v = freshResult.product.variants[0];
+            freshVariantId = v.id;
+            freshInventoryItemId = v.inventoryItemId;
+            freshTitle = freshResult.product.title;
+            inventoryItemId = v.inventoryItemId;
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, msg);
+          await logFailure(
+            "INVENTORY_UPDATE",
+            item.sku,
+            `Fresh SKU lookup failed, falling back to stored inventoryItemId: ${msg}`
+          );
         }
-      } else {
+      }
+
+      if (!inventoryItemId) {
         await logFailure(
           "INVENTORY_UPDATE",
           item.sku ?? item.description,
           "No Shopify product linked — inventory update skipped"
         );
+        continue;
+      }
+
+      try {
+        await updateInventoryLevel({
+          inventoryItemId,
+          locationId,
+          quantity: received,
+          lineItemId: item.id,
+        });
+        await db.invoiceLineItem.update({
+          where: { id: item.id },
+          data: {
+            inventorySynced: true,
+            ...(freshInventoryItemId != null && {
+              shopifyInventoryItemId: freshInventoryItemId,
+              shopifyVariantId: freshVariantId,
+              ...(freshTitle && { shopifyProductTitle: freshTitle }),
+            }),
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, msg);
       }
     }
   }
