@@ -193,7 +193,7 @@ const CSS = `
   .close-btn:hover { background: #f3f4f6; }
 
   /* ── Page wrapper ─────────────────────────────────────────────────────────── */
-  .page { max-width: 1020px; margin: 0 auto; padding: 40px; }
+  .page { max-width: 720px; margin: 0 auto; padding: 40px; }
 
   /* ── Document header ──────────────────────────────────────────────────────── */
   .doc-header {
@@ -232,12 +232,14 @@ const CSS = `
   /* ── Info strip ───────────────────────────────────────────────────────────── */
   .info-strip {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     border-bottom: 1px solid #e2e8f0;
     margin-bottom: 30px;
   }
-  .info-cell { padding: 16px 20px; }
+  .info-cell { padding: 14px 16px; }
   .info-cell + .info-cell { border-left: 1px solid #e2e8f0; }
+  .info-cell:nth-child(n+4) { border-top: 1px solid #e2e8f0; }
+  .info-cell:nth-child(4) { border-left: none; }
   .info-cell-label {
     font-size: 9px;
     font-weight: 700;
@@ -411,7 +413,7 @@ const CSS = `
     .summary-wrap { margin-bottom: 20px; }
 
     @page {
-      size: letter landscape;
+      size: letter portrait;
       margin: 1.2cm 1.5cm;
     }
 
@@ -541,15 +543,14 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: "8%" }}>SKU</th>
-                  <th style={{ width: "22%" }}>Product</th>
-                  <th style={{ width: "13%" }}>Variant</th>
-                  <th style={{ width: "11%" }}>Barcode</th>
-                  <th className="r" style={{ width: "6%" }}>Ord.</th>
-                  <th className="r" style={{ width: "6%" }}>Rec.</th>
-                  <th className="r" style={{ width: "9%" }}>Unit Cost</th>
-                  <th className="r" style={{ width: "10%" }}>Line Total</th>
-                  <th className="c" style={{ width: "15%" }}>Discrepancy</th>
+                  <th style={{ width: "10%" }}>SKU</th>
+                  <th style={{ width: "28%" }}>Product</th>
+                  <th style={{ width: "16%" }}>Variant</th>
+                  <th className="r" style={{ width: "7%" }}>Ordered</th>
+                  <th className="r" style={{ width: "7%" }}>Received</th>
+                  <th className="r" style={{ width: "11%" }}>Cost</th>
+                  <th className="r" style={{ width: "11%" }}>Total</th>
+                  <th className="c" style={{ width: "10%" }}>Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -563,9 +564,6 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
                       <td className="prod-cell">{li.product}</td>
                       <td className="var-cell">
                         {li.variant || <span className="dim">—</span>}
-                      </td>
-                      <td className="mono bar-cell">
-                        {li.barcode || <span className="dim">—</span>}
                       </td>
                       <td className="r">{li.qtyOrdered}</td>
                       <td className={`r${isDisc ? " qty-disc" : ""}`}>{li.qtyReceived}</td>

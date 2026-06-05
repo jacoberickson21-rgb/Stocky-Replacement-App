@@ -19,6 +19,7 @@ import {
   getVariantPrice,
   updateVariantBarcode,
   getProductIdFromVariant,
+  getInventoryQuantitiesByVariant,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -77,6 +78,20 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     }
   }
 
+  // Fetch current Shopify inventory for all linked variants (best-effort)
+  const linkedVariantIds = invoice.lineItems
+    .map((item) => item.shopifyVariantId)
+    .filter((id): id is string => id !== null);
+  let currentInventory: Record<string, number | null> = {};
+  if (linkedVariantIds.length > 0) {
+    try {
+      const qtyMap = await getInventoryQuantitiesByVariant(linkedVariantIds);
+      currentInventory = Object.fromEntries(qtyMap);
+    } catch {
+      // Non-fatal — page still works, column shows "—"
+    }
+  }
+
   return {
     invoice: {
       ...invoice,
@@ -86,6 +101,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
         unitCost: Number(item.unitCost),
       })),
     },
+    currentInventory,
   };
 }
 
@@ -458,7 +474,7 @@ const STATUS_BADGE: Record<InvoiceStatus, string> = {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
-  const { invoice } = loaderData;
+  const { invoice, currentInventory } = loaderData;
   const { vendor, lineItems } = invoice;
   const navigation = useNavigation();
   const actionData = useActionData() as { error?: string } | undefined;
@@ -535,6 +551,9 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Expected
                 </th>
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  Current Qty
+                </th>
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">
                   Received
                 </th>
@@ -571,6 +590,15 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                     </td>
                     <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-300 tabular-nums align-top">
                       {item.quantityOrdered}
+                    </td>
+                    <td className="px-6 py-4 text-right tabular-nums align-top">
+                      {item.shopifyVariantId && item.shopifyVariantId in currentInventory ? (
+                        <span className="text-gray-400 dark:text-gray-500">
+                          {currentInventory[item.shopifyVariantId] ?? "—"}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300 dark:text-gray-600">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-right align-top">
                       <input
