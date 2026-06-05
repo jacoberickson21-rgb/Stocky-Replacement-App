@@ -486,13 +486,13 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     }
   }, [linkFetcher.state, linkFetcher.data, linkingItemId]);
 
-  function handleSelectVariant(itemId: number, variant: ProductSearchResult["variants"][0], productTitle: string) {
+  function handleSelectVariant(itemId: number, result: ProductSearchResult) {
     setLinkingItemId(itemId);
     const fd = new FormData();
-    fd.append("variantId", variant.id);
-    fd.append("productTitle", productTitle);
-    fd.append("inventoryItemId", variant.inventoryItemId);
-    if (variant.barcode) fd.append("barcode", variant.barcode);
+    fd.append("variantId", result.variantId);
+    fd.append("productTitle", result.productTitle);
+    fd.append("inventoryItemId", result.inventoryItemId);
+    if (result.barcode) fd.append("barcode", result.barcode);
     linkFetcher.submit(fd, { method: "post", action: `/api/line-items/${itemId}/link` });
   }
 
@@ -1055,24 +1055,31 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                             <p className="px-3 py-2 text-xs text-gray-400">No results found</p>
                           ) : (
                             <div className="max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-                              {searchFetcher.data.flatMap((product) =>
-                                product.variants.map((variant) => (
-                                  <button
-                                    key={variant.id}
-                                    type="button"
-                                    onClick={() => handleSelectVariant(item.id, variant, product.title)}
-                                    className="w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors"
-                                  >
-                                    <span className="font-medium text-gray-800 dark:text-gray-100">{product.title}</span>
-                                    {variant.title !== "Default Title" && (
-                                      <span className="text-gray-500 dark:text-gray-400 ml-1">— {variant.title}</span>
+                              {searchFetcher.data.map((result) => (
+                                <button
+                                  key={result.variantId}
+                                  type="button"
+                                  onClick={() => handleSelectVariant(item.id, result)}
+                                  className="w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <span className="font-medium text-gray-800 dark:text-gray-100">{result.productTitle}</span>
+                                      {result.variantTitle && result.variantTitle !== "Default Title" && (
+                                        <span className="text-gray-500 dark:text-gray-400 ml-1">— {result.variantTitle}</span>
+                                      )}
+                                      {result.sku && (
+                                        <span className="font-mono text-gray-400 dark:text-gray-500 ml-1.5">({result.sku})</span>
+                                      )}
+                                    </div>
+                                    {result.inventoryQty !== null && (
+                                      <span className={`shrink-0 tabular-nums ${result.inventoryQty === 0 ? "text-red-500" : "text-gray-400 dark:text-gray-500"}`}>
+                                        {result.inventoryQty} in stock
+                                      </span>
                                     )}
-                                    {variant.sku && (
-                                      <span className="font-mono text-gray-400 dark:text-gray-500 ml-1.5">({variant.sku})</span>
-                                    )}
-                                  </button>
-                                ))
-                              )}
+                                  </div>
+                                </button>
+                              ))}
                             </div>
                           )}
                         </div>
