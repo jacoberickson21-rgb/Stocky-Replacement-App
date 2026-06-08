@@ -1476,14 +1476,14 @@ export async function searchProducts(
     products: { edges: { node: RawSearchProductNode }[] };
   }>(
     `query SearchProducts($query: String!) {
-      products(first: 15, query: $query) {
+      products(first: 20, query: $query) {
         edges {
           node {
             id
             title
             vendor
             options { id name values }
-            variants(first: 50) {
+            variants(first: 100) {
               edges {
                 node {
                   id

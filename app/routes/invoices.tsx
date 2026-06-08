@@ -43,7 +43,36 @@ export async function loader({ request }: Route.LoaderArgs) {
   const supplierParam = url.searchParams.get("supplier");
   const statusParam = url.searchParams.get("status") as InvoiceStatus | null;
   const searchParam = url.searchParams.get("search");
+  const poDateFrom = url.searchParams.get("poDateFrom");
+  const poDateTo = url.searchParams.get("poDateTo");
+  const dueDateFrom = url.searchParams.get("dueDateFrom");
+  const dueDateTo = url.searchParams.get("dueDateTo");
+  const receivedFrom = url.searchParams.get("receivedFrom");
+  const receivedTo = url.searchParams.get("receivedTo");
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
+
+  const db = getDb();
+
+  // For receivedAt filter: resolve matching invoice numbers from audit log first
+  let receivedInvoiceNumbers: string[] | null = null;
+  if (receivedFrom || receivedTo) {
+    const tsWhere: Record<string, unknown> = {};
+    if (receivedFrom) tsWhere.gte = new Date(receivedFrom);
+    if (receivedTo) {
+      const end = new Date(receivedTo);
+      end.setUTCHours(23, 59, 59, 999);
+      tsWhere.lte = end;
+    }
+    const logs = await db.auditLog.findMany({
+      where: { action: "INVOICE_RECEIVED", timestamp: tsWhere },
+      select: { details: true },
+    });
+    receivedInvoiceNumbers = [];
+    for (const log of logs) {
+      const match = log.details?.match(/^Invoice #(\S+) /);
+      if (match) receivedInvoiceNumbers.push(match[1]);
+    }
+  }
 
   const where: Record<string, unknown> = {};
   if (vendorParam) where.vendorId = Number(vendorParam);
@@ -57,8 +86,30 @@ export async function loader({ request }: Route.LoaderArgs) {
       { vendor: { name: { contains: searchParam } } },
     ];
   }
+  if (poDateFrom || poDateTo) {
+    const range: Record<string, unknown> = {};
+    if (poDateFrom) range.gte = new Date(poDateFrom);
+    if (poDateTo) {
+      const end = new Date(poDateTo);
+      end.setUTCHours(23, 59, 59, 999);
+      range.lte = end;
+    }
+    where.invoiceDate = range;
+  }
+  if (dueDateFrom || dueDateTo) {
+    const range: Record<string, unknown> = {};
+    if (dueDateFrom) range.gte = new Date(dueDateFrom);
+    if (dueDateTo) {
+      const end = new Date(dueDateTo);
+      end.setUTCHours(23, 59, 59, 999);
+      range.lte = end;
+    }
+    where.dueDate = range;
+  }
+  if (receivedInvoiceNumbers !== null) {
+    where.invoiceNumber = { in: receivedInvoiceNumbers };
+  }
 
-  const db = getDb();
   const [totalCount, invoices, vendors, suppliers] = await Promise.all([
     db.invoice.count({ where }),
     db.invoice.findMany({
@@ -112,6 +163,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     supplierParam,
     statusParam,
     searchParam,
+    poDateFrom,
+    poDateTo,
+    dueDateFrom,
+    dueDateTo,
+    receivedFrom,
+    receivedTo,
     pagination: { page, totalPages, totalCount },
   };
 }
@@ -139,50 +196,61 @@ function buildInvoicePageUrl(
   vendorParam: string | null,
   supplierParam: string | null,
   statusParam: string | null,
-  searchParam: string | null
+  searchParam: string | null,
+  poDateFrom: string | null,
+  poDateTo: string | null,
+  dueDateFrom: string | null,
+  dueDateTo: string | null,
+  receivedFrom: string | null,
+  receivedTo: string | null,
 ) {
   const params = new URLSearchParams();
   if (vendorParam) params.set("vendor", vendorParam);
   if (supplierParam) params.set("supplier", supplierParam);
   if (statusParam) params.set("status", statusParam);
   if (searchParam) params.set("search", searchParam);
+  if (poDateFrom) params.set("poDateFrom", poDateFrom);
+  if (poDateTo) params.set("poDateTo", poDateTo);
+  if (dueDateFrom) params.set("dueDateFrom", dueDateFrom);
+  if (dueDateTo) params.set("dueDateTo", dueDateTo);
+  if (receivedFrom) params.set("receivedFrom", receivedFrom);
+  if (receivedTo) params.set("receivedTo", receivedTo);
   params.set("page", String(page));
   return `/invoices?${params.toString()}`;
 }
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
-  const { invoices, vendors, suppliers, vendorParam, supplierParam, statusParam, searchParam, pagination } = loaderData;
+  const {
+    invoices, vendors, suppliers,
+    vendorParam, supplierParam, statusParam, searchParam,
+    poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+    pagination,
+  } = loaderData;
   const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState(searchParam ?? "");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function handleVendorChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const params = new URLSearchParams(window.location.search);
-    if (e.target.value) {
-      params.set("vendor", e.target.value);
-    } else {
-      params.delete("vendor");
-    }
+    if (e.target.value) params.set("vendor", e.target.value);
+    else params.delete("vendor");
+    params.delete("page");
     navigate(`/invoices?${params.toString()}`);
   }
 
   function handleSupplierChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const params = new URLSearchParams(window.location.search);
-    if (e.target.value) {
-      params.set("supplier", e.target.value);
-    } else {
-      params.delete("supplier");
-    }
+    if (e.target.value) params.set("supplier", e.target.value);
+    else params.delete("supplier");
+    params.delete("page");
     navigate(`/invoices?${params.toString()}`);
   }
 
   function handleStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const params = new URLSearchParams(window.location.search);
-    if (e.target.value) {
-      params.set("status", e.target.value);
-    } else {
-      params.delete("status");
-    }
+    if (e.target.value) params.set("status", e.target.value);
+    else params.delete("status");
+    params.delete("page");
     navigate(`/invoices?${params.toString()}`);
   }
 
@@ -192,17 +260,21 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
-      if (value) {
-        params.set("search", value);
-      } else {
-        params.delete("search");
-      }
+      if (value) params.set("search", value);
+      else params.delete("search");
+      params.delete("page");
       navigate(`/invoices?${params.toString()}`);
     }, 300);
   }
 
-  const hasFilters = vendorParam || supplierParam || statusParam || searchParam;
+  const hasFilters = !!(
+    vendorParam || supplierParam || statusParam || searchParam ||
+    poDateFrom || poDateTo || dueDateFrom || dueDateTo || receivedFrom || receivedTo
+  );
   const hasAnySupplier = invoices.some((inv) => (inv as typeof inv & { supplier: { name: string } | null }).supplier);
+
+  const inputCls = "text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500";
+  const labelCls = "text-xs text-gray-500 dark:text-gray-400 font-medium";
 
   return (
     <main className="p-8 max-w-7xl mx-auto">
@@ -217,18 +289,17 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
         </button>
       </div>
 
-      <div className="flex items-center gap-3 mb-6 flex-wrap">
+      {/* Auto-submit filters: vendor, supplier, status, search */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         {suppliers.length > 0 && (
           <select
             value={supplierParam ?? ""}
             onChange={handleSupplierChange}
-            className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className={inputCls}
           >
             <option value="">All Suppliers</option>
             {suppliers.map((s) => (
-              <option key={s.id} value={String(s.id)}>
-                {s.name}
-              </option>
+              <option key={s.id} value={String(s.id)}>{s.name}</option>
             ))}
           </select>
         )}
@@ -236,20 +307,18 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
         <select
           value={vendorParam ?? ""}
           onChange={handleVendorChange}
-          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className={inputCls}
         >
           <option value="">All Vendors</option>
           {vendors.map((v) => (
-            <option key={v.id} value={String(v.id)}>
-              {v.name}
-            </option>
+            <option key={v.id} value={String(v.id)}>{v.name}</option>
           ))}
         </select>
 
         <select
           value={statusParam ?? ""}
           onChange={handleStatusChange}
-          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className={inputCls}
         >
           <option value="">All Statuses</option>
           <option value="ORDERED">Ordered</option>
@@ -262,19 +331,62 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           placeholder="Search invoice # or vendor..."
           value={searchValue}
           onChange={handleSearchChange}
-          className="text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64"
+          className={`${inputCls} w-64`}
         />
+      </div>
+
+      {/* Date range filters with Apply button */}
+      <Form method="get" className="flex items-end gap-4 mb-6 flex-wrap p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700">
+        {/* Preserve the auto-submit filter values in hidden fields */}
+        {vendorParam && <input type="hidden" name="vendor" value={vendorParam} />}
+        {supplierParam && <input type="hidden" name="supplier" value={supplierParam} />}
+        {statusParam && <input type="hidden" name="status" value={statusParam} />}
+        {searchParam && <input type="hidden" name="search" value={searchParam} />}
+
+        <div className="flex flex-col gap-1">
+          <span className={labelCls}>PO Date</span>
+          <div className="flex items-center gap-2">
+            <input type="date" name="poDateFrom" defaultValue={poDateFrom ?? ""} className={inputCls} />
+            <span className="text-xs text-gray-400">to</span>
+            <input type="date" name="poDateTo" defaultValue={poDateTo ?? ""} className={inputCls} />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <span className={labelCls}>Due Date</span>
+          <div className="flex items-center gap-2">
+            <input type="date" name="dueDateFrom" defaultValue={dueDateFrom ?? ""} className={inputCls} />
+            <span className="text-xs text-gray-400">to</span>
+            <input type="date" name="dueDateTo" defaultValue={dueDateTo ?? ""} className={inputCls} />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <span className={labelCls}>Date Received</span>
+          <div className="flex items-center gap-2">
+            <input type="date" name="receivedFrom" defaultValue={receivedFrom ?? ""} className={inputCls} />
+            <span className="text-xs text-gray-400">to</span>
+            <input type="date" name="receivedTo" defaultValue={receivedTo ?? ""} className={inputCls} />
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors self-end"
+        >
+          Apply Filters
+        </button>
 
         {hasFilters && (
           <Link
             to="/invoices"
             onClick={() => setSearchValue("")}
-            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors"
+            className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition-colors self-end pb-2"
           >
-            Clear
+            Clear Filters
           </Link>
         )}
-      </div>
+      </Form>
 
       {invoices.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-24 text-center">
@@ -366,7 +478,11 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <div>
             {pagination.page > 1 && (
               <Link
-                to={buildInvoicePageUrl(pagination.page - 1, vendorParam, supplierParam, statusParam, searchParam)}
+                to={buildInvoicePageUrl(
+                  pagination.page - 1,
+                  vendorParam, supplierParam, statusParam, searchParam,
+                  poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+                )}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >
                 ← Previous
@@ -379,7 +495,11 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <div>
             {pagination.page < pagination.totalPages && (
               <Link
-                to={buildInvoicePageUrl(pagination.page + 1, vendorParam, supplierParam, statusParam, searchParam)}
+                to={buildInvoicePageUrl(
+                  pagination.page + 1,
+                  vendorParam, supplierParam, statusParam, searchParam,
+                  poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+                )}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >
                 Next →
