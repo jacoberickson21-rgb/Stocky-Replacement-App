@@ -77,7 +77,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const where: Record<string, unknown> = {};
   if (vendorParam) where.vendorId = Number(vendorParam);
   if (supplierParam) where.supplierId = Number(supplierParam);
-  if (statusParam && ["ORDERED", "RECEIVED", "PAID"].includes(statusParam)) {
+  if (statusParam && ["ORDERED", "DRAFT_RECEIVING", "RECEIVED", "PAID"].includes(statusParam)) {
     where.status = statusParam;
   }
   if (searchParam) {
@@ -181,12 +181,14 @@ function fmtDate(val: Date | string | null | undefined): string {
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
   ORDERED: "Ordered",
+  DRAFT_RECEIVING: "Receiving Draft",
   RECEIVED: "Received",
   PAID: "Paid",
 };
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
   ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  DRAFT_RECEIVING: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
   RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
   PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
@@ -322,6 +324,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
         >
           <option value="">All Statuses</option>
           <option value="ORDERED">Ordered</option>
+          <option value="DRAFT_RECEIVING">Receiving Draft</option>
           <option value="RECEIVED">Received</option>
           <option value="PAID">Paid</option>
         </select>

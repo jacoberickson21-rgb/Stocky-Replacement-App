@@ -80,6 +80,7 @@ model Invoice {
 
 enum InvoiceStatus {
   ORDERED
+  DRAFT_RECEIVING
   RECEIVED
   PAID
 }

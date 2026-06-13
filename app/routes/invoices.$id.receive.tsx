@@ -33,7 +33,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     include: { vendor: true, lineItems: true },
   });
   if (!invoice) throw new Response("Not Found", { status: 404 });
-  if (invoice.status !== "ORDERED") return redirect(`/invoices/${id}`);
+  if (!["ORDERED", "DRAFT_RECEIVING"].includes(invoice.status)) return redirect(`/invoices/${id}`);
 
   // Auto-match unlinked items against Shopify by SKU (with barcode fallback)
   const unlinked = invoice.lineItems.filter((item) => !item.shopifyVariantId);
@@ -114,12 +114,50 @@ export async function action({ request, params }: Route.ActionArgs) {
     where: { id },
     include: { lineItems: true },
   });
-  if (!invoice || invoice.status !== "ORDERED") {
+  if (!invoice || !["ORDERED", "DRAFT_RECEIVING"].includes(invoice.status)) {
     throw new Response("Conflict", { status: 409 });
   }
 
   const formData = await request.formData();
+  const intent = formData.get("intent") as string | null;
 
+  // ── Save as Draft ──────────────────────────────────────────────────────────
+  if (intent === "saveDraft") {
+    try {
+      await db.$transaction([
+        ...invoice.lineItems.map((item) => {
+          const val = formData.get(`qty_${item.id}`);
+          const received =
+            val !== null && val !== "" && !isNaN(Number(val)) ? Number(val) : 0;
+          const note = (formData.get(`note_${item.id}`) as string | null) ?? "";
+          const hasDiscrepancy =
+            val !== null && val !== "" && !isNaN(Number(val)) && received !== item.quantityOrdered;
+          return db.invoiceLineItem.update({
+            where: { id: item.id },
+            data: { quantityReceived: received, receivingNote: note || null, hasDiscrepancy },
+          });
+        }),
+        db.invoice.update({ where: { id }, data: { status: "DRAFT_RECEIVING" } }),
+        db.auditLog.create({
+          data: {
+            userId,
+            action: "INVOICE_RECEIVING_DRAFT",
+            details: `Invoice #${invoice.invoiceNumber} receiving saved as draft`,
+          },
+        }),
+      ]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      await logFailure("INVOICE_RECEIVE_DRAFT", `Invoice #${invoice.invoiceNumber}`, msg);
+      return data(
+        { error: "Failed to save draft. The error has been logged." },
+        { status: 500 }
+      );
+    }
+    return redirect(`/invoices/${id}`);
+  }
+
+  // ── Complete Receiving — require all fields filled ─────────────────────────
   for (const item of invoice.lineItems) {
     const val = formData.get(`qty_${item.id}`);
     if (val === null || val === "" || isNaN(Number(val))) {
@@ -332,6 +370,8 @@ type LineItem = {
   sku: string | null;
   description: string;
   quantityOrdered: number;
+  quantityReceived: number;
+  receivingNote: string | null;
   unitCost: number;
   shopifyProductTitle: string | null;
   shopifyVariantId: string | null;
@@ -467,8 +507,16 @@ function ProductCell({ item }: { item: LineItem }) {
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
   ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  DRAFT_RECEIVING: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
   RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
   PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
+};
+
+const STATUS_LABEL: Record<InvoiceStatus, string> = {
+  ORDERED: "Ordered",
+  DRAFT_RECEIVING: "Receiving Draft",
+  RECEIVED: "Received",
+  PAID: "Paid",
 };
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -482,7 +530,12 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
 
   const [quantities, setQuantities] = useState<Record<number, string>>(() =>
     Object.fromEntries(
-      lineItems.map((item) => [item.id, String(item.quantityOrdered)])
+      lineItems.map((item) => [
+        item.id,
+        invoice.status === "DRAFT_RECEIVING"
+          ? String(item.quantityReceived)
+          : String(item.quantityOrdered),
+      ])
     )
   );
 
@@ -530,7 +583,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
             <span
               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_BADGE[invoice.status]}`}
             >
-              Ordered
+              {STATUS_LABEL[invoice.status]}
             </span>
           </div>
         </div>
@@ -657,6 +710,7 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                         type="text"
                         name={`note_${item.id}`}
                         placeholder="Optional note"
+                        defaultValue={item.receivingNote ?? ""}
                         className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 transition-colors bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500"
                       />
                     </td>
@@ -682,16 +736,33 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
             {actionData?.error
               ? actionData.error
               : !allFilled
-              ? "All quantity fields are required."
+              ? "All quantity fields are required to complete receiving."
               : ""}
           </p>
-          <button
-            type="submit"
-            disabled={!allFilled || isSubmitting}
-            className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
-          >
-            {isSubmitting ? "Saving…" : "Complete Receiving"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              name="intent"
+              value="saveDraft"
+              disabled={isSubmitting}
+              className="border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+            >
+              {isSubmitting && navigation.formData?.get("intent") === "saveDraft"
+                ? "Saving…"
+                : "Save as Draft"}
+            </button>
+            <button
+              type="submit"
+              name="intent"
+              value="complete"
+              disabled={!allFilled || isSubmitting}
+              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+            >
+              {isSubmitting && navigation.formData?.get("intent") === "complete"
+                ? "Completing…"
+                : "Complete Receiving"}
+            </button>
+          </div>
         </div>
       </Form>
     </main>

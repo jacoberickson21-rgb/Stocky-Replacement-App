@@ -344,12 +344,14 @@ const PAYMENT_TERMS_LABELS: Record<string, string> = {
 
 const STATUS_LABELS: Record<InvoiceStatus, string> = {
   ORDERED: "Ordered",
+  DRAFT_RECEIVING: "Receiving Draft",
   RECEIVED: "Received",
   PAID: "Paid",
 };
 
 const STATUS_BADGE: Record<InvoiceStatus, string> = {
   ORDERED: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300",
+  DRAFT_RECEIVING: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
   RECEIVED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
   PAID: "bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300",
 };
@@ -600,6 +602,14 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
           >
             Begin Receiving
+          </Link>
+        )}
+        {invoice.status === "DRAFT_RECEIVING" && (
+          <Link
+            to={`/invoices/${invoice.id}/receive`}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-4 py-2 transition-colors"
+          >
+            Resume Receiving
           </Link>
         )}
         {invoice.status === "ORDERED" && (
