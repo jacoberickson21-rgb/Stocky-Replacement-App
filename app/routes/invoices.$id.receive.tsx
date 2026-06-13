@@ -557,6 +557,9 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">
                   Received
                 </th>
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">
+                  Line Total
+                </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Note
                 </th>
@@ -601,26 +604,53 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right align-top">
-                      <input
-                        type="number"
-                        name={`qty_${item.id}`}
-                        min="0"
-                        required
-                        value={rawQty}
-                        onChange={(e) =>
-                          setQuantities((prev) => ({
-                            ...prev,
-                            [item.id]: e.target.value,
-                          }))
-                        }
-                        className={[
-                          "w-24 text-right border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 transition-colors dark:text-gray-100",
-                          hasDiscrepancy
-                            ? "border-amber-400 dark:border-amber-600 focus:ring-amber-300 bg-white dark:bg-gray-800"
-                            : "border-gray-300 dark:border-gray-600 focus:ring-indigo-300 bg-white dark:bg-gray-800",
-                        ].join(" ")}
-                        placeholder="0"
-                      />
+                      <div>
+                        <input
+                          type="number"
+                          name={`qty_${item.id}`}
+                          required
+                          value={rawQty}
+                          onChange={(e) =>
+                            setQuantities((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value,
+                            }))
+                          }
+                          className={[
+                            "w-24 text-right border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 transition-colors dark:text-gray-100",
+                            hasDiscrepancy
+                              ? "border-amber-400 dark:border-amber-600 focus:ring-amber-300 bg-white dark:bg-gray-800"
+                              : parsedQty !== null && parsedQty < 0
+                              ? "border-red-300 dark:border-red-700 focus:ring-red-300 bg-white dark:bg-gray-800 text-red-600 dark:text-red-400"
+                              : "border-gray-300 dark:border-gray-600 focus:ring-indigo-300 bg-white dark:bg-gray-800",
+                          ].join(" ")}
+                          placeholder="0"
+                        />
+                        {parsedQty !== null && parsedQty < 0 && (
+                          <div className="text-xs text-red-600 dark:text-red-400 mt-1 font-medium text-right">
+                            (return)
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right tabular-nums align-top">
+                      {parsedQty !== null ? (
+                        <span
+                          className={
+                            parsedQty < 0
+                              ? "text-red-600 dark:text-red-400 font-medium"
+                              : "text-gray-700 dark:text-gray-300"
+                          }
+                        >
+                          {(parsedQty * item.unitCost).toLocaleString("en-US", {
+                            style: "currency",
+                            currency: "USD",
+                            minimumFractionDigits: 2,
+                          })}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-500">—</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 align-top">
                       <input

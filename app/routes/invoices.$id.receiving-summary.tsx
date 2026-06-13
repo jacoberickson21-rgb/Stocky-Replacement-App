@@ -313,6 +313,18 @@ const CSS = `
     font-weight: 700;
     font-size: 14px;
   }
+  .return-badge {
+    display: inline-block;
+    background: #fee2e2;
+    color: #991b1b;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 99px;
+    border: 1px solid #fca5a5;
+    white-space: nowrap;
+  }
+  .neg { color: #dc2626; font-weight: 600; }
   .disc-badge {
     display: inline-block;
     background: #fef3c7;
@@ -556,6 +568,7 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
               <tbody>
                 {lineItems.map((li, i) => {
                   const isDisc = li.discrepancy !== null;
+                  const isReturn = li.qtyReceived < 0;
                   const rowClass = isDisc ? "disc" : i % 2 === 0 ? "even" : "odd";
                   const diff = isDisc ? li.discrepancy!.diff : 0;
                   return (
@@ -565,10 +578,10 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
                       <td className="var-cell">
                         {li.variant || <span className="dim">—</span>}
                       </td>
-                      <td className="r">{li.qtyOrdered}</td>
-                      <td className={`r${isDisc ? " qty-disc" : ""}`}>{li.qtyReceived}</td>
+                      <td className={`r${isReturn ? " neg" : ""}`}>{li.qtyOrdered}</td>
+                      <td className={`r${isDisc ? " qty-disc" : isReturn ? " neg" : ""}`}>{li.qtyReceived}</td>
                       <td className="r">{fmt$(li.unitCost)}</td>
-                      <td className="r fw6">{fmt$(li.lineTotal)}</td>
+                      <td className={`r fw6${li.lineTotal < 0 ? " neg" : ""}`}>{fmt$(li.lineTotal)}</td>
                       <td className="c">
                         {isDisc ? (
                           <div>
@@ -579,6 +592,8 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
                               <div className="disc-note-inline">{li.discrepancy!.note}</div>
                             )}
                           </div>
+                        ) : isReturn ? (
+                          <span className="return-badge">↩ Return</span>
                         ) : (
                           <span className="ok-badge">✓</span>
                         )}
