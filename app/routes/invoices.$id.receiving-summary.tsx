@@ -60,7 +60,12 @@ export async function loader({ request, params }: { request: Request; params: { 
   const totalOrdered = lineItems.reduce((s, li) => s + li.qtyOrdered, 0);
   const totalReceived = lineItems.reduce((s, li) => s + li.qtyReceived, 0);
   const totalDiscrepancies = lineItems.filter((li) => li.discrepancy !== null).length;
-  const invoiceTotal = Number(invoice.total);
+  const lineSubtotal = lineItems.reduce((s, li) => s + li.lineTotal, 0);
+  const invoiceTotal = parseFloat(String(invoice.total ?? 0)) || 0;
+  const shippingCost = parseFloat(String(invoice.shippingCost ?? 0)) || 0;
+  const adjustments = parseFloat(String(invoice.adjustments ?? 0)) || 0;
+
+  console.log(`[receiving-summary] invoice #${invoice.invoiceNumber} — raw shippingCost:`, invoice.shippingCost, "→", shippingCost, "| raw adjustments:", invoice.adjustments, "→", adjustments);
 
   return {
     invoice: {
@@ -75,7 +80,7 @@ export async function loader({ request, params }: { request: Request; params: { 
     },
     vendor: { name: invoice.vendor?.name ?? "—" },
     lineItems,
-    summary: { totalOrdered, totalReceived, totalDiscrepancies, invoiceTotal },
+    summary: { totalOrdered, totalReceived, totalDiscrepancies, lineSubtotal, invoiceTotal, shippingCost, adjustments },
     generatedAt: new Date().toISOString(),
   };
 }
@@ -628,7 +633,34 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
               </div>
               <div className="stat stat-total">
                 <div className="stat-label">Invoice Total</div>
-                <div className="stat-value stat-value-total">{fmt$(summary.invoiceTotal)}</div>
+                <div className="stat-value stat-value-total">
+                  {(summary.shippingCost !== 0 || summary.adjustments !== 0) ? (
+                    <table style={{ fontSize: "0.78em", width: "100%", borderCollapse: "collapse", marginTop: "2px" }}>
+                      <tbody>
+                        <tr>
+                          <td style={{ textAlign: "left", fontWeight: "normal", paddingBottom: "2px" }}>Subtotal</td>
+                          <td style={{ textAlign: "right", fontWeight: "normal", paddingBottom: "2px" }}>{fmt$(summary.lineSubtotal)}</td>
+                        </tr>
+                        {summary.shippingCost !== 0 && (
+                          <tr>
+                            <td style={{ textAlign: "left", fontWeight: "normal", paddingBottom: "2px" }}>Shipping</td>
+                            <td style={{ textAlign: "right", fontWeight: "normal", paddingBottom: "2px" }}>{fmt$(summary.shippingCost)}</td>
+                          </tr>
+                        )}
+                        {summary.adjustments !== 0 && (
+                          <tr>
+                            <td style={{ textAlign: "left", fontWeight: "normal", paddingBottom: "2px" }}>Adjustments</td>
+                            <td style={{ textAlign: "right", fontWeight: "normal", paddingBottom: "2px" }}>{fmt$(summary.adjustments)}</td>
+                          </tr>
+                        )}
+                        <tr style={{ borderTop: "1px solid currentColor" }}>
+                          <td style={{ textAlign: "left", paddingTop: "3px" }}>Total</td>
+                          <td style={{ textAlign: "right", paddingTop: "3px" }}>{fmt$(summary.invoiceTotal)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  ) : fmt$(summary.invoiceTotal)}
+                </div>
               </div>
             </div>
 

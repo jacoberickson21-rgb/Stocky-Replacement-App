@@ -66,6 +66,7 @@ export type UpdateInventoryInput = {
   quantity: number;
   lineItemId: number | string;
   keySuffix?: string;
+  reason?: string;
 };
 
 export type ProductSearchResult = {
@@ -529,7 +530,7 @@ export async function updateInventoryLevel(
     {
       input: {
         name: "available",
-        reason: "received",
+        reason: opts.reason ?? "received",
         changes: [
           {
             inventoryItemId: opts.inventoryItemId,

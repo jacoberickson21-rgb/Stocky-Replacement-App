@@ -28,6 +28,7 @@ model Supplier {
   createdAt   DateTime  @default(now())
   vendors     Vendor[]
   invoices    Invoice[]
+  credits     Credit[]
 }
 
 model Vendor {
@@ -109,13 +110,35 @@ model InvoiceLineItem {
 }
 
 model Credit {
-  id            Int      @id @default(autoincrement())
-  vendor        Vendor   @relation(fields: [vendorId], references: [id])
+  id            Int              @id @default(autoincrement())
+  vendor        Vendor           @relation(fields: [vendorId], references: [id])
   vendorId      Int
-  amount        Decimal  @db.Decimal(10, 2)
+  supplier      Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierId    Int?
+  amount        Decimal          @db.Decimal(10, 2)
+  sku           String?
+  description   String?
+  quantity      Int?
   invoiceNumber String?
   notes         String?
-  date          DateTime @default(now())
+  date          DateTime         @default(now())
+  lineItems     CreditLineItem[]
+}
+
+model CreditLineItem {
+  id                     Int     @id @default(autoincrement())
+  credit                 Credit  @relation(fields: [creditId], references: [id], onDelete: Cascade)
+  creditId               Int
+  sku                    String?
+  description            String
+  quantity               Int
+  unitCost               Decimal @db.Decimal(10, 2)
+  lineTotal              Decimal @db.Decimal(10, 2)
+  shopifyVariantId       String?
+  shopifyInventoryItemId String?
+  shopifyProductTitle    String?
+  barcode                String?
+  inventorySynced        Boolean @default(false)
 }
 
 model AuditLog {

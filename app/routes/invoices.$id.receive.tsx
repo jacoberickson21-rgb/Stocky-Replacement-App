@@ -297,6 +297,7 @@ export async function action({ request, params }: Route.ActionArgs) {
           locationId,
           quantity: received,
           lineItemId: item.id,
+          reason: received < 0 ? "correction" : "received",
         });
         await db.invoiceLineItem.update({
           where: { id: item.id },
