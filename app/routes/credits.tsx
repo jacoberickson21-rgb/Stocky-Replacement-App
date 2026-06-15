@@ -1,4 +1,4 @@
-import { Link, useNavigate, useActionData, useFetcher } from "react-router";
+import { Link, useNavigate, useActionData, useFetcher, Form } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import { data, redirect } from "react-router";
 import type { Route } from "./+types/credits";
@@ -407,6 +407,33 @@ export async function action({ request }: Route.ActionArgs) {
     });
 
     return data({ error: null, importResult: { imported, vendorsCreated, errors } });
+  }
+
+  // ── Delete credit ──────────────────────────────────────────────────────────
+  if (intent === "deleteCredit") {
+    const creditId = Number(formData.get("creditId"));
+    if (!creditId) {
+      return data({ error: "Missing credit ID.", importResult: null }, { status: 400 });
+    }
+    const credit = await db.credit.findUnique({
+      where: { id: creditId },
+      select: { id: true, vendorId: true, invoiceNumber: true },
+    });
+    if (!credit) {
+      return data({ error: "Credit not found.", importResult: null }, { status: 404 });
+    }
+    await db.$transaction([
+      db.credit.delete({ where: { id: creditId } }),
+      db.auditLog.create({
+        data: {
+          userId,
+          action: "CREDIT_DELETED",
+          details: `Credit #${credit.id}${credit.invoiceNumber ? ` (ref: ${credit.invoiceNumber})` : ""} deleted`,
+          vendorId: credit.vendorId,
+        },
+      }),
+    ]);
+    return redirect("/credits");
   }
 
   return data({ error: "Unknown intent.", importResult: null }, { status: 400 });
@@ -964,13 +991,19 @@ export default function CreditsPage({ loaderData }: Route.ComponentProps) {
                 <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Lines</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Amount</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Notes / Ref</th>
+                <th className="w-10" />
               </tr>
             </thead>
             <tbody>
               {credits.map((credit, i) => (
                 <tr key={credit.id} className={i < credits.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                    {new Date(credit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <Link
+                      to={`/credits/${credit.id}`}
+                      className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors text-sm"
+                    >
+                      {new Date(credit.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                    </Link>
                   </td>
                   <td className="px-4 py-3 text-gray-800 dark:text-gray-100">
                     <Link to={`/vendors/${credit.vendorId}`} className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors">
@@ -999,6 +1032,25 @@ export default function CreditsPage({ loaderData }: Route.ComponentProps) {
                   </td>
                   <td className="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate">
                     {credit.notes ?? credit.invoiceNumber ?? "—"}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <Form
+                      method="post"
+                      onSubmit={(e) => {
+                        if (!window.confirm("Delete this credit permanently?")) e.preventDefault();
+                      }}
+                    >
+                      <input type="hidden" name="intent" value="deleteCredit" />
+                      <input type="hidden" name="creditId" value={String(credit.id)} />
+                      <button
+                        type="submit"
+                        className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors text-lg leading-none"
+                        aria-label="Delete credit"
+                        title="Delete credit"
+                      >
+                        ×
+                      </button>
+                    </Form>
                   </td>
                 </tr>
               ))}

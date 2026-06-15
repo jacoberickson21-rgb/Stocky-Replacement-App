@@ -27,6 +27,7 @@ export default [
     route("vendors/new", "routes/vendors.new.tsx"),
     route("vendors/:id", "routes/vendors.$id.tsx"),
     route("credits", "routes/credits.tsx"),
+    route("credits/:id", "routes/credits.$id.tsx"),
     route("users", "routes/users.tsx"),
     route("failures", "routes/failures.tsx"),
     route("audit", "routes/audit.tsx"),
