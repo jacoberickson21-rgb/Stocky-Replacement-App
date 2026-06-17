@@ -175,6 +175,7 @@ export async function action({ request }: Route.ActionArgs) {
                 shopifyVariantId: variant.id,
                 shopifyInventoryItemId: variant.inventoryItemId,
                 ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+                ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
             matchCount++;
@@ -197,6 +198,7 @@ export async function action({ request }: Route.ActionArgs) {
                 shopifyProductTitle: product.title,
                 shopifyVariantId: variant.id,
                 shopifyInventoryItemId: variant.inventoryItemId,
+                ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
             matchCount++;
@@ -266,7 +268,7 @@ export async function action({ request }: Route.ActionArgs) {
     if (!vendorId && !supplierIdRaw) errors.vendorId = "Please select either a Vendor or Supplier.";
     if (!invoiceNumber) errors.invoiceNumber = "Invoice number is required.";
 
-    type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null };
+    type LineItem = { sku: string; description: string; quantity: number; unitCost: number; barcode: string | null; retailPrice: number | null };
     const lineItems: LineItem[] = [];
     for (let i = 0; i < itemCount; i++) {
       const sku = String(form.get(`sku_${i}`) ?? "").trim();
@@ -274,8 +276,10 @@ export async function action({ request }: Route.ActionArgs) {
       const quantity = parseInt(String(form.get(`quantity_${i}`) ?? ""), 10);
       const unitCost = parseFloat(String(form.get(`unitCost_${i}`) ?? ""));
       const barcode = String(form.get(`barcode_${i}`) ?? "").trim() || null;
+      const retailPriceRaw = parseFloat(String(form.get(`retailPrice_${i}`) ?? ""));
+      const retailPrice = !isNaN(retailPriceRaw) && retailPriceRaw > 0 ? retailPriceRaw : null;
       if (!sku || !description || isNaN(quantity) || isNaN(unitCost) || quantity <= 0 || unitCost < 0) continue;
-      lineItems.push({ sku, description, quantity, unitCost, barcode });
+      lineItems.push({ sku, description, quantity, unitCost, barcode, retailPrice });
     }
 
     if (lineItems.length === 0) errors.general = "At least one valid line item is required.";
@@ -321,6 +325,7 @@ export async function action({ request }: Route.ActionArgs) {
           quantityOrdered: item.quantity,
           unitCost: item.unitCost,
           barcode: item.barcode,
+          ...(item.retailPrice !== null ? { retailPrice: item.retailPrice } : {}),
         })),
       });
       return created;
@@ -329,7 +334,7 @@ export async function action({ request }: Route.ActionArgs) {
     // Auto-match line items against Shopify using multiple SKU strategies + barcode
     const savedItems = await getDb().invoiceLineItem.findMany({
       where: { invoiceId: invoice.id, sku: { not: null } },
-      select: { id: true, sku: true, barcode: true },
+      select: { id: true, sku: true, barcode: true, retailPrice: true },
     });
     if (savedItems.length > 0) {
       let matchCount = 0;
@@ -360,6 +365,7 @@ export async function action({ request }: Route.ActionArgs) {
                   shopifyVariantId: variant.id,
                   shopifyInventoryItemId: variant.inventoryItemId,
                   ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+                  ...(variant.price && !item.retailPrice ? { retailPrice: parseFloat(variant.price) } : {}),
                 },
               });
               matchCount++;
@@ -382,6 +388,7 @@ export async function action({ request }: Route.ActionArgs) {
                   shopifyProductTitle: product.title,
                   shopifyVariantId: variant.id,
                   shopifyInventoryItemId: variant.inventoryItemId,
+                  ...(variant.price && !item.retailPrice ? { retailPrice: parseFloat(variant.price) } : {}),
                 },
               });
               matchCount++;
@@ -700,6 +707,7 @@ type ReviewAddedItem = {
   description: string;
   quantity: number;
   unitCost: number;
+  retailPrice: number;
   barcode: string;
   variantId: string | null;
   inventoryItemId: string | null;
@@ -2474,13 +2482,14 @@ function LineItemsTable({
     description: ExtractionField<string>;
     quantity: ExtractionField<number>;
     unitCost: ExtractionField<number>;
+    retailPrice?: ExtractionField<number>;
   }>;
   addedItems?: ReviewAddedItem[];
   onRemoveAdded?: (key: string) => void;
-  onUpdateAdded?: (key: string, field: "quantity" | "unitCost" | "barcode", value: string | number) => void;
+  onUpdateAdded?: (key: string, field: "quantity" | "unitCost" | "barcode" | "retailPrice", value: string | number) => void;
 }) {
   const [values, setValues] = useState(() =>
-    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value, barcode: "" }))
+    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value, barcode: "", retailPrice: item.retailPrice?.value ?? 0 }))
   );
 
   const extractedTotal = values.reduce(
@@ -2504,6 +2513,8 @@ function LineItemsTable({
           <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
           <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
           <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Retail Price</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Margin</th>
           <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-44">Barcode</th>
           <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Total</th>
         </tr>
@@ -2571,6 +2582,31 @@ function LineItemsTable({
                 </div>
               </td>
               <td className="px-4 py-3">
+                <input
+                  name={`retailPrice_${i}`}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={values[i]?.retailPrice || ""}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setValues((prev) => prev.map((v, j) => (j === i ? { ...v, retailPrice: n } : v)));
+                  }}
+                  className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:text-gray-100 dark:bg-gray-800"
+                  placeholder="0.00"
+                />
+              </td>
+              <td className="px-4 py-3 text-right">
+                {(() => {
+                  const rp = Number(values[i]?.retailPrice ?? 0);
+                  const uc = Number(values[i]?.unitCost ?? item.unitCost.value);
+                  if (!rp || !uc) return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+                  const pct = ((rp - uc) / rp) * 100;
+                  const color = pct >= 40 ? "text-green-600 dark:text-green-400" : pct >= 20 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400";
+                  return <span className={`text-sm font-medium tabular-nums ${color}`}>{pct.toFixed(1)}%</span>;
+                })()}
+              </td>
+              <td className="px-4 py-3">
                 <BarcodeInput
                   name={`barcode_${i}`}
                   value={barcode}
@@ -2630,6 +2666,28 @@ function LineItemsTable({
                 />
               </td>
               <td className="px-4 py-3">
+                <input
+                  name={`retailPrice_${idx}`}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={item.retailPrice || ""}
+                  onChange={(e) => onUpdateAdded?.(item.key, "retailPrice", Number(e.target.value))}
+                  className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                  placeholder="0.00"
+                />
+              </td>
+              <td className="px-4 py-3 text-right">
+                {(() => {
+                  const rp = Number(item.retailPrice);
+                  const uc = Number(item.unitCost);
+                  if (!rp || !uc) return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+                  const pct = ((rp - uc) / rp) * 100;
+                  const color = pct >= 40 ? "text-green-600 dark:text-green-400" : pct >= 20 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400";
+                  return <span className={`text-sm font-medium tabular-nums ${color}`}>{pct.toFixed(1)}%</span>;
+                })()}
+              </td>
+              <td className="px-4 py-3">
                 <BarcodeInput
                   name={`barcode_${idx}`}
                   value={item.barcode}
@@ -2659,7 +2717,7 @@ function LineItemsTable({
         <tr className="bg-gray-100 dark:bg-gray-800 border-t-2 border-gray-300 dark:border-gray-600 text-sm font-semibold">
           <td className="px-4 py-3 text-gray-500 dark:text-gray-400" colSpan={2}>Totals</td>
           <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums">{totalQty}</td>
-          <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums" colSpan={2}></td>
+          <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums" colSpan={4}></td>
           <td className="px-4 py-3 text-right text-gray-900 dark:text-gray-100 tabular-nums">${totalAmount.toFixed(2)}</td>
         </tr>
       </tfoot>
@@ -2764,6 +2822,7 @@ function AddItemSection({
       description: variantLabel ? `${aiTarget.productTitle} — ${variantLabel}` : aiTarget.productTitle,
       quantity: 1,
       unitCost: variant.unitCost ?? (aiCost ? parseFloat(aiCost) : 0),
+      retailPrice: aiPrice ? parseFloat(aiPrice) : 0,
       barcode: variant.barcode ?? "",
       variantId: variant.id,
       inventoryItemId: variant.inventoryItemId,
@@ -2816,6 +2875,7 @@ function AddItemSection({
       description: result.productTitle,
       quantity: 1,
       unitCost: result.unitCost ?? 0,
+      retailPrice: result.price ?? 0,
       barcode: result.barcode ?? "",
       variantId: result.variantId,
       inventoryItemId: result.inventoryItemId,
@@ -2834,6 +2894,7 @@ function AddItemSection({
       description: manualDesc.trim(),
       quantity: qty,
       unitCost: cost,
+      retailPrice: 0,
       barcode: manualBarcode.trim(),
       variantId: null,
       inventoryItemId: null,
@@ -3166,7 +3227,7 @@ function ReviewScreen({
     setAddedItems((prev) => prev.filter((i) => i.key !== key));
   }
 
-  function handleUpdateAdded(key: string, field: "quantity" | "unitCost" | "barcode", value: string | number) {
+  function handleUpdateAdded(key: string, field: "quantity" | "unitCost" | "barcode" | "retailPrice", value: string | number) {
     setAddedItems((prev) =>
       prev.map((i) => (i.key === key ? { ...i, [field]: value } : i))
     );

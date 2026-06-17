@@ -154,6 +154,17 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { success: true, intent: "updateBarcode" as const, lineItemId, barcode };
   }
 
+  if (intent === "updateRetailPrice") {
+    const lineItemId = Number(formData.get("lineItemId"));
+    const rpRaw = formData.get("retailPrice");
+    const retailPrice = rpRaw ? parseFloat(String(rpRaw)) : null;
+    await getDb().invoiceLineItem.update({
+      where: { id: lineItemId },
+      data: { retailPrice: retailPrice && !isNaN(retailPrice) && retailPrice > 0 ? retailPrice : null },
+    });
+    return { success: true, intent: "updateRetailPrice" as const, lineItemId, retailPrice: retailPrice && !isNaN(retailPrice) && retailPrice > 0 ? retailPrice : null };
+  }
+
   if (intent === "skipItem") {
     const lineItemId = Number(formData.get("lineItemId"));
     await getDb().invoiceLineItem.update({ where: { id: lineItemId }, data: { skipped: true } });
@@ -411,6 +422,32 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     fd.append("lineItemId", String(lineItemId));
     fd.append("barcode", barcodeDraft);
     barcodeFetcher.submit(fd, { method: "post" });
+  }
+
+  // Retail price inline edit
+  const retailPriceFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; retailPrice: number | null }>();
+  const [editingRpId, setEditingRpId] = useState<number | null>(null);
+  const [rpDraft, setRpDraft] = useState("");
+  const [savedRpId, setSavedRpId] = useState<number | null>(null);
+  const [rpOverrides, setRpOverrides] = useState<Map<number, number | null>>(new Map());
+
+  useEffect(() => {
+    if (retailPriceFetcher.state === "idle" && retailPriceFetcher.data?.success && retailPriceFetcher.data.intent === "updateRetailPrice") {
+      const { lineItemId, retailPrice } = retailPriceFetcher.data;
+      setRpOverrides((prev) => new Map(prev).set(lineItemId, retailPrice));
+      setEditingRpId(null);
+      setSavedRpId(lineItemId);
+      const timer = setTimeout(() => setSavedRpId(null), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [retailPriceFetcher.state, retailPriceFetcher.data]);
+
+  function handleSaveRetailPrice(lineItemId: number) {
+    const fd = new FormData();
+    fd.append("intent", "updateRetailPrice");
+    fd.append("lineItemId", String(lineItemId));
+    fd.append("retailPrice", rpDraft);
+    retailPriceFetcher.submit(fd, { method: "post" });
   }
 
   // ── Retry Shopify sync ───────────────────────────────────────────────────
@@ -705,6 +742,8 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Qty Ordered</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Unit Cost</th>
               <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Retail Price</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Margin</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Inv Sync</th>
               <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Line Total</th>
             </tr>
@@ -712,6 +751,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           <tbody>
             {lineItems.map((item, i) => {
               const lineTotal = item.quantityOrdered * Number(item.unitCost);
+              const currentRp = rpOverrides.has(item.id) ? rpOverrides.get(item.id) ?? null : item.retailPrice;
               return (
                 <tr
                   key={item.id}
@@ -847,6 +887,72 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
+                  <td className="px-6 py-4 min-w-[140px]">
+                    {editingRpId === item.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          autoFocus
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={rpDraft}
+                          onChange={(e) => setRpDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveRetailPrice(item.id);
+                            if (e.key === "Escape") setEditingRpId(null);
+                          }}
+                          className="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 w-24 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-right"
+                          placeholder="0.00"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveRetailPrice(item.id)}
+                          disabled={retailPriceFetcher.state !== "idle"}
+                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:text-gray-400"
+                        >
+                          {retailPriceFetcher.state !== "idle" ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingRpId(null)}
+                          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        {savedRpId === item.id ? (
+                          <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
+                        ) : null}
+                        <span className={`text-sm ${currentRp ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
+                          {currentRp ? `$${currentRp.toFixed(2)}` : "— no price"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingRpId(item.id);
+                            setRpDraft(currentRp ? String(currentRp) : "");
+                          }}
+                          className={`text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors ${currentRp ? "opacity-0 group-hover:opacity-100" : ""}`}
+                          title="Edit retail price"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                            <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.68 1.865a.25.25 0 0 0 .32.32l1.865-.68c.341-.125.65-.318.892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.475ZM3.75 12.5a.25.25 0 0 0-.25.25v.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.25.25 0 0 0-.25-.25h-8.5Z" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-4 text-right">
+                    {(() => {
+                      const uc = Number(item.unitCost);
+                      if (!currentRp || !uc) return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
+                      const pct = ((currentRp - uc) / currentRp) * 100;
+                      const color = pct >= 40 ? "text-green-600 dark:text-green-400" : pct >= 20 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400";
+                      return <span className={`text-sm font-medium tabular-nums ${color}`}>{pct.toFixed(1)}%</span>;
+                    })()}
+                  </td>
                   <td className="px-4 py-4 text-center">
                     {(() => {
                       const isSynced = localSynced.has(item.id) || item.inventorySynced;
@@ -904,25 +1010,25 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   {showBreakdown && (
                     <>
                       <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                        <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
+                        <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
                         <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">${subtotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       </tr>
                       {shipping !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
+                          <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
                           <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">+${shipping.toFixed(2)}</td>
                         </tr>
                       )}
                       {adj !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={6} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
+                          <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
                           <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}${adj.toFixed(2)}</td>
                         </tr>
                       )}
                     </>
                   )}
                   <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                    <td colSpan={6} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
+                    <td colSpan={8} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
                       Total
                     </td>
                     <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">

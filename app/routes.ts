@@ -11,6 +11,7 @@ export default [
   route("api/sync/debug", "routes/api.sync.debug.tsx"),
   route("api/sync/reset", "routes/api.sync.reset.tsx"),
   route("invoices/:id/receiving-summary", "routes/invoices.$id.receiving-summary.tsx"),
+  route("credits/:id/summary", "routes/credits.$id.summary.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),
     route("products", "routes/products.tsx"),

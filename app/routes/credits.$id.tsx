@@ -163,6 +163,18 @@ export default function CreditDetailPage({ loaderData }: Route.ComponentProps) {
         </div>
       </div>
 
+      {/* Actions */}
+      <div className="flex items-center gap-3 mb-6">
+        <a
+          href={`/credits/${credit.id}/summary`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 px-4 py-2 rounded-lg transition-colors font-medium"
+        >
+          Credit Summary ↗
+        </a>
+      </div>
+
       {/* Delete action */}
       <div className="flex items-center gap-3 mb-6">
         {confirming ? (
