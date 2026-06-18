@@ -734,18 +734,19 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
 
       {/* Line items table */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[860px]">
           <thead>
             <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
-              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Qty Ordered</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Unit Cost</th>
-              <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Retail Price</th>
-              <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Margin</th>
-              <th className="text-center px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Inv Sync</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Line Total</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
+              <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400">Qty</th>
+              <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400">Unit Cost</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
+              <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400">Retail</th>
+              <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-16">Margin</th>
+              <th className="text-center px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-16">Sync</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Total</th>
             </tr>
           </thead>
           <tbody>
@@ -757,7 +758,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   key={item.id}
                   className={`group ${i < lineItems.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}`}
                 >
-                  <td className="px-6 py-4 min-w-[140px]">
+                  <td className="px-4 py-3 min-w-[110px]">
                     {editingId === item.id ? (
                       <div className="flex items-center gap-1.5">
                         <input
@@ -813,17 +814,17 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-gray-600 dark:text-gray-300">
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300">
                     <div>{item.description}</div>
                     {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
                       <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.shopifyProductTitle}</div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>
-                  <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-200">
+                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>
+                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200">
                     ${Number(item.unitCost).toFixed(2)}
                   </td>
-                  <td className="px-6 py-4 min-w-[160px]">
+                  <td className="px-4 py-3 min-w-[130px]">
                     {editingBarcodeId === item.id ? (
                       <div className="flex items-center gap-1.5">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" aria-hidden="true">
@@ -887,7 +888,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 min-w-[140px]">
+                  <td className="px-3 py-3 min-w-[100px]">
                     {editingRpId === item.id ? (
                       <div className="flex items-center gap-1.5">
                         <input
@@ -944,7 +945,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-4 text-right">
+                  <td className="px-3 py-3 text-right">
                     {(() => {
                       const uc = Number(item.unitCost);
                       if (!currentRp || !uc) return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
@@ -953,7 +954,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       return <span className={`text-sm font-medium tabular-nums ${color}`}>{pct.toFixed(1)}%</span>;
                     })()}
                   </td>
-                  <td className="px-4 py-4 text-center">
+                  <td className="px-3 py-3 text-center">
                     {(() => {
                       const isSynced = localSynced.has(item.id) || item.inventorySynced;
                       const isReceived = item.quantityReceived > 0;
@@ -992,7 +993,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       );
                     })()}
                   </td>
-                  <td className="px-6 py-4 text-right font-medium text-gray-800 dark:text-gray-100">
+                  <td className="px-4 py-3 text-right font-medium text-gray-800 dark:text-gray-100">
                     ${lineTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
                 </tr>
@@ -1010,28 +1011,28 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   {showBreakdown && (
                     <>
                       <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                        <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
-                        <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">${subtotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td colSpan={8} className="px-4 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Subtotal</td>
+                        <td className="px-4 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">${subtotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       </tr>
                       {shipping !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
-                          <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">+${shipping.toFixed(2)}</td>
+                          <td colSpan={8} className="px-4 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Shipping</td>
+                          <td className="px-4 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">+${shipping.toFixed(2)}</td>
                         </tr>
                       )}
                       {adj !== 0 && (
                         <tr className="bg-gray-50 dark:bg-gray-800">
-                          <td colSpan={8} className="px-6 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
-                          <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}${adj.toFixed(2)}</td>
+                          <td colSpan={8} className="px-4 py-2 text-sm text-gray-500 dark:text-gray-400 text-right">Adjustments</td>
+                          <td className="px-4 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}${adj.toFixed(2)}</td>
                         </tr>
                       )}
                     </>
                   )}
                   <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                    <td colSpan={8} className="px-6 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
+                    <td colSpan={8} className="px-4 py-3 text-sm font-medium text-gray-600 dark:text-gray-400 text-right">
                       Total
                     </td>
-                    <td className="px-6 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
+                    <td className="px-4 py-3 text-right font-semibold text-gray-800 dark:text-gray-100">
                       ${Number(invoice.total).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                   </tr>
@@ -1040,6 +1041,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             })()}
           </tfoot>
         </table>
+        </div>
       </div>
 
       {/* Unlinked Items - Action Required */}

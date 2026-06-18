@@ -2506,17 +2506,18 @@ function LineItemsTable({
   const totalAmount = extractedTotal + addedTotal;
 
   return (
-    <table className="w-full text-sm">
+    <div className="overflow-x-auto">
+    <table className="w-full text-sm min-w-[820px]">
       <thead>
         <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
           <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
           <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Description</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Qty</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Unit Cost</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Retail Price</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">Margin</th>
-          <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-44">Barcode</th>
-          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-32">Total</th>
+          <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-24">Qty</th>
+          <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Unit Cost</th>
+          <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-24">Retail</th>
+          <th className="text-right px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-16">Margin</th>
+          <th className="text-left px-3 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">Barcode</th>
+          <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">Total</th>
         </tr>
       </thead>
       <tbody>
@@ -2722,6 +2723,7 @@ function LineItemsTable({
         </tr>
       </tfoot>
     </table>
+    </div>
   );
 }
 
