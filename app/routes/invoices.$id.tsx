@@ -12,6 +12,7 @@ import {
   updateVariantBarcode,
   createDraftProduct,
   getProductIdFromVariant,
+  updateVariantPrice,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -158,11 +159,48 @@ export async function action({ request, params }: Route.ActionArgs) {
     const lineItemId = Number(formData.get("lineItemId"));
     const rpRaw = formData.get("retailPrice");
     const retailPrice = rpRaw ? parseFloat(String(rpRaw)) : null;
-    await getDb().invoiceLineItem.update({
+    const validPrice = retailPrice && !isNaN(retailPrice) && retailPrice > 0 ? retailPrice : null;
+
+    const lineItem = await getDb().invoiceLineItem.update({
       where: { id: lineItemId },
-      data: { retailPrice: retailPrice && !isNaN(retailPrice) && retailPrice > 0 ? retailPrice : null },
+      data: { retailPrice: validPrice },
+      select: { shopifyVariantId: true, sku: true },
     });
-    return { success: true, intent: "updateRetailPrice" as const, lineItemId, retailPrice: retailPrice && !isNaN(retailPrice) && retailPrice > 0 ? retailPrice : null };
+
+    const updateShopify = formData.get("updateShopify") === "true";
+    let shopifyUpdated = false;
+    let shopifyError: string | null = null;
+
+    if (updateShopify && validPrice && lineItem.shopifyVariantId) {
+      const db = getDb();
+      const cached = await db.productCache.findUnique({
+        where: { variantId: lineItem.shopifyVariantId },
+        select: { productId: true },
+      });
+      let productId = cached?.productId ?? null;
+      if (!productId) {
+        try {
+          productId = await getProductIdFromVariant(lineItem.shopifyVariantId);
+        } catch { /* ignore */ }
+      }
+      if (productId) {
+        try {
+          await updateVariantPrice(productId, lineItem.shopifyVariantId, validPrice.toFixed(2), null);
+          shopifyUpdated = true;
+        } catch (err) {
+          shopifyError = err instanceof Error ? err.message : String(err);
+          await logFailure(
+            "shopify:set-price",
+            lineItem.sku || `lineItem:${lineItemId}`,
+            `Price sync failed for variant ${lineItem.shopifyVariantId}: ${shopifyError}`
+          );
+        }
+      } else {
+        shopifyError = "Could not find Shopify product ID";
+      }
+    }
+
+    return { success: true, intent: "updateRetailPrice" as const, lineItemId, retailPrice: validPrice, shopifyUpdated, shopifyError };
   }
 
   if (intent === "skipItem") {
@@ -425,19 +463,27 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   }
 
   // Retail price inline edit
-  const retailPriceFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; retailPrice: number | null }>();
+  const retailPriceFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; retailPrice: number | null; shopifyUpdated?: boolean; shopifyError?: string | null }>();
   const [editingRpId, setEditingRpId] = useState<number | null>(null);
   const [rpDraft, setRpDraft] = useState("");
   const [savedRpId, setSavedRpId] = useState<number | null>(null);
   const [rpOverrides, setRpOverrides] = useState<Map<number, number | null>>(new Map());
+  const [updateShopifyChecked, setUpdateShopifyChecked] = useState<Record<number, boolean>>({});
+  const [savedRpShopify, setSavedRpShopify] = useState<{ id: number; updated: boolean; error: string | null } | null>(null);
 
   useEffect(() => {
     if (retailPriceFetcher.state === "idle" && retailPriceFetcher.data?.success && retailPriceFetcher.data.intent === "updateRetailPrice") {
-      const { lineItemId, retailPrice } = retailPriceFetcher.data;
+      const { lineItemId, retailPrice, shopifyUpdated, shopifyError } = retailPriceFetcher.data;
       setRpOverrides((prev) => new Map(prev).set(lineItemId, retailPrice));
       setEditingRpId(null);
       setSavedRpId(lineItemId);
-      const timer = setTimeout(() => setSavedRpId(null), 2000);
+      if (shopifyUpdated || shopifyError != null) {
+        setSavedRpShopify({ id: lineItemId, updated: shopifyUpdated ?? false, error: shopifyError ?? null });
+      }
+      const timer = setTimeout(() => {
+        setSavedRpId(null);
+        setSavedRpShopify(null);
+      }, 3000);
       return () => clearTimeout(timer);
     }
   }, [retailPriceFetcher.state, retailPriceFetcher.data]);
@@ -447,6 +493,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     fd.append("intent", "updateRetailPrice");
     fd.append("lineItemId", String(lineItemId));
     fd.append("retailPrice", rpDraft);
+    fd.append("updateShopify", String(!!updateShopifyChecked[lineItemId]));
     retailPriceFetcher.submit(fd, { method: "post" });
   }
 
@@ -890,58 +937,80 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   </td>
                   <td className="px-3 py-3 min-w-[100px]">
                     {editingRpId === item.id ? (
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          autoFocus
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={rpDraft}
-                          onChange={(e) => setRpDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") handleSaveRetailPrice(item.id);
-                            if (e.key === "Escape") setEditingRpId(null);
-                          }}
-                          className="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 w-24 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-right"
-                          placeholder="0.00"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleSaveRetailPrice(item.id)}
-                          disabled={retailPriceFetcher.state !== "idle"}
-                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:text-gray-400"
-                        >
-                          {retailPriceFetcher.state !== "idle" ? "Saving…" : "Save"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingRpId(null)}
-                          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-                        >
-                          Cancel
-                        </button>
+                      <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            autoFocus
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={rpDraft}
+                            onChange={(e) => setRpDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveRetailPrice(item.id);
+                              if (e.key === "Escape") setEditingRpId(null);
+                            }}
+                            className="text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-0.5 w-24 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-right"
+                            placeholder="0.00"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRetailPrice(item.id)}
+                            disabled={retailPriceFetcher.state !== "idle"}
+                            className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:text-gray-400"
+                          >
+                            {retailPriceFetcher.state !== "idle" ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingRpId(null)}
+                            className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        {item.shopifyVariantId && (
+                          <label className="flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!updateShopifyChecked[item.id]}
+                              onChange={(e) => setUpdateShopifyChecked((prev) => ({ ...prev, [item.id]: e.target.checked }))}
+                              className="rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0"
+                            />
+                            <span className="text-xs text-gray-500 dark:text-gray-400">Also update in Shopify</span>
+                          </label>
+                        )}
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1.5">
-                        {savedRpId === item.id ? (
-                          <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
-                        ) : null}
-                        <span className={`text-sm ${currentRp ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
-                          {currentRp ? `$${currentRp.toFixed(2)}` : "— no price"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingRpId(item.id);
-                            setRpDraft(currentRp ? String(currentRp) : "");
-                          }}
-                          className={`text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors ${currentRp ? "opacity-0 group-hover:opacity-100" : ""}`}
-                          title="Edit retail price"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
-                            <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.68 1.865a.25.25 0 0 0 .32.32l1.865-.68c.341-.125.65-.318.892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.475ZM3.75 12.5a.25.25 0 0 0-.25.25v.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.25.25 0 0 0-.25-.25h-8.5Z" />
-                          </svg>
-                        </button>
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-1.5">
+                          {savedRpId === item.id ? (
+                            <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
+                          ) : null}
+                          <span className={`text-sm ${currentRp ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
+                            {currentRp ? `$${currentRp.toFixed(2)}` : "— no price"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingRpId(item.id);
+                              setRpDraft(currentRp ? String(currentRp) : "");
+                            }}
+                            className={`text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors ${currentRp ? "opacity-0 group-hover:opacity-100" : ""}`}
+                            title="Edit retail price"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                              <path d="M13.488 2.513a1.75 1.75 0 0 0-2.475 0L6.75 6.774a2.75 2.75 0 0 0-.596.892l-.68 1.865a.25.25 0 0 0 .32.32l1.865-.68c.341-.125.65-.318.892-.596l4.261-4.263a1.75 1.75 0 0 0 0-2.475ZM3.75 12.5a.25.25 0 0 0-.25.25v.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25v-.5a.25.25 0 0 0-.25-.25h-8.5Z" />
+                            </svg>
+                          </button>
+                        </div>
+                        {savedRpShopify?.id === item.id && (
+                          savedRpShopify.error ? (
+                            <span className="text-xs text-red-500 dark:text-red-400">Shopify update failed</span>
+                          ) : savedRpShopify.updated ? (
+                            <span className="text-xs text-green-600 dark:text-green-400">Updated in Shopify</span>
+                          ) : null
+                        )}
                       </div>
                     )}
                   </td>
