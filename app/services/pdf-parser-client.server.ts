@@ -14,6 +14,7 @@ type PythonParseResponse = {
     description: PythonField<string>;
     quantity: PythonField<number>;
     unitCost: PythonField<number>;
+    barcode?: PythonField<string>;
   }[];
   overallConfidence: number;
   requiresManualReview: boolean;

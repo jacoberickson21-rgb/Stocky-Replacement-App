@@ -387,8 +387,12 @@ def auto_map_line_items(rows: list[dict]) -> list[dict]:
         return None
 
     sku_col = pick([
-        r"sku", r"item\s*#", r"item\s*no", r"part\s*#", r"code",
+        r"sku", r"item\s*#", r"item\s*no", r"part\s*#",
         r"product\s*#", r"^product$",
+        # "code" is intentionally lower-priority: some invoices have a "Style Code"
+        # column that only contains the base style number (e.g. "14334"), while the
+        # full SKU including color/size ("14334-359-34R") lives in the SKU column.
+        r"code",
     ])
     # "Description" from the PDF → "description" field (product title in our schema).
     desc_col = pick([
@@ -404,6 +408,9 @@ def auto_map_line_items(rows: list[dict]) -> list[dict]:
     cost_col = pick([
         r"unit\s*cost", r"unit\s*price", r"net\s*price",
         r"price\s*each", r"^each$", r"cost\s*each",
+    ])
+    barcode_col = pick([
+        r"barcode", r"bar\s*code", r"upc", r"ean", r"gtin",
     ])
 
     if not desc_col:
@@ -428,11 +435,13 @@ def auto_map_line_items(rows: list[dict]) -> list[dict]:
         except ValueError:
             cost = 0.0
 
+        raw_barcode = (row.get(barcode_col, "") if barcode_col else "").strip()
         items.append({
             "sku": row.get(sku_col, "") if sku_col else "",
             "description": desc,
             "quantity": qty,
             "unitCost": cost,
+            "barcode": raw_barcode,
         })
 
     return items

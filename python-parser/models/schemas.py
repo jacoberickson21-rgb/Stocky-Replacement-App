@@ -14,6 +14,7 @@ class ExtractedLineItem(BaseModel):
     description: ExtractedField
     quantity: ExtractedField
     unitCost: ExtractedField
+    barcode: Optional[ExtractedField] = None
 
 
 class ParseResponse(BaseModel):

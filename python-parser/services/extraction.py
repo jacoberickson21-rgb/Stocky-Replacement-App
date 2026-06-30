@@ -51,12 +51,16 @@ def _build_response(extracted: dict, profile: dict | None = None) -> dict:
         desc_c = score_description(item.get("description"), method)
         qty_c = score_quantity(item.get("quantity"), method)
         cost_c = score_unit_cost(item.get("unitCost"), method)
-        scored_items.append({
+        barcode_val = item.get("barcode", "") or ""
+        scored_item: dict = {
             "sku": make_field(item.get("sku", ""), sku_c),
             "description": make_field(item.get("description", ""), desc_c),
             "quantity": make_field(item.get("quantity", 0), qty_c),
             "unitCost": make_field(item.get("unitCost", 0.0), cost_c),
-        })
+        }
+        if barcode_val:
+            scored_item["barcode"] = make_field(barcode_val, 0.8)
+        scored_items.append(scored_item)
         item_scores.extend([sku_c, desc_c, qty_c, cost_c])
 
     header_scores = [vendor_conf, inv_conf]

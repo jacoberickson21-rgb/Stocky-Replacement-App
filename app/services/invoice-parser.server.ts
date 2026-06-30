@@ -18,6 +18,7 @@ export type ExtractedLineItem = {
   description: ExtractedField<string>;
   quantity: ExtractedField<number>;
   unitCost: ExtractedField<number>;
+  barcode?: ExtractedField<string>;
 };
 
 export type ExtractionResult = {

@@ -9,7 +9,7 @@ import { callPdfParser } from "../services/pdf-parser-client.server";
 import type { ExtendedExtractionResult } from "../services/pdf-parser-client.server";
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
-import type { ProductSearchResult } from "../services/shopify.server";
+import type { ProductSearchResult, ShopifyProduct } from "../services/shopify.server";
 import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
@@ -352,65 +352,78 @@ export async function action({ request }: Route.ActionArgs) {
       let loggedPdfMatches = 0;
       for (const item of savedItems) {
         const raw = item.sku!;
-        const stripped = parseInt(raw, 10);
-        const skuVariants = [...new Set([
-          raw,
-          raw.toUpperCase(),
-          raw.toLowerCase(),
-          isNaN(stripped) ? null : String(stripped),
-        ].filter(Boolean) as string[])];
+
+        // Exact-only variants — no truncation applied here
+        const exactSkuVariants = [...new Set([raw, raw.toUpperCase(), raw.toLowerCase()])];
+
+        // Stripped numeric is a last-resort fallback: parseInt("14334-359-34R") = 14334,
+        // which could match an unrelated BETTS product that happens to have SKU "14334".
+        // Only try it after barcode, and reject it if the raw PDF SKU starts with the
+        // matched SKU (indicating a prefix/truncation false-positive).
+        const strippedInt = parseInt(raw, 10);
+        const strippedVariant = !isNaN(strippedInt) && String(strippedInt) !== raw ? String(strippedInt) : null;
+
+        const saveMatch = async (product: ShopifyProduct, matchedBy: "sku" | "barcode") => {
+          const variant = product.variants[0];
+          await getDb().invoiceLineItem.update({
+            where: { id: item.id },
+            data: {
+              shopifyProductTitle: product.title,
+              shopifyVariantId: variant.id,
+              shopifyInventoryItemId: variant.inventoryItemId,
+              ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+              ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
+            },
+          });
+          if (loggedPdfMatches < 5) {
+            console.log(`[PDF match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}, via: ${matchedBy}`);
+            loggedPdfMatches++;
+          }
+          matchCount++;
+          if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
+        };
 
         let matched = false;
-        for (const sku of skuVariants) {
+
+        // 1. Try exact SKU variants (no truncation)
+        for (const sku of exactSkuVariants) {
           if (matched) break;
           try {
             const result = await lookupProduct({ sku });
             if (result?.product.variants[0]) {
-              const { product, matchedBy } = result;
-              const variant = product.variants[0];
-              await getDb().invoiceLineItem.update({
-                where: { id: item.id },
-                data: {
-                  shopifyProductTitle: product.title,
-                  shopifyVariantId: variant.id,
-                  shopifyInventoryItemId: variant.inventoryItemId,
-                  ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
-                  ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
-                },
-              });
-              if (loggedPdfMatches < 5) {
-                console.log(`[PDF match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
-                loggedPdfMatches++;
-              }
-              matchCount++;
-              if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
+              await saveMatch(result.product, result.matchedBy);
               matched = true;
             }
           } catch { /* ignore */ }
         }
 
-        // Fallback: try item's barcode directly if SKU strategies all missed
+        // 2. Try barcode before stripped-numeric — barcode is globally unique and reliable
         if (!matched && item.barcode) {
           try {
             const result = await lookupProduct({ barcode: item.barcode });
             if (result?.product.variants[0]) {
-              const { product } = result;
-              const variant = product.variants[0];
-              await getDb().invoiceLineItem.update({
-                where: { id: item.id },
-                data: {
-                  shopifyProductTitle: product.title,
-                  shopifyVariantId: variant.id,
-                  shopifyInventoryItemId: variant.inventoryItemId,
-                  ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
-                },
-              });
-              if (loggedPdfMatches < 5) {
-                console.log(`[PDF match] SKU: ${item.sku} (barcode fallback), variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
-                loggedPdfMatches++;
+              await saveMatch(result.product, "barcode");
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
+        // 3. Stripped-numeric last resort — reject if the raw PDF SKU starts with the
+        //    matched variant's SKU (e.g. raw="14334-359-34R", matched="14334" → reject)
+        if (!matched && strippedVariant) {
+          try {
+            const result = await lookupProduct({ sku: strippedVariant });
+            if (result?.product.variants[0]) {
+              const matchedSku = result.product.variants[0].sku ?? "";
+              const isPrefixFalsePositive =
+                raw.toLowerCase() !== matchedSku.toLowerCase() &&
+                raw.toLowerCase().startsWith(matchedSku.toLowerCase());
+              if (!isPrefixFalsePositive) {
+                await saveMatch(result.product, result.matchedBy);
+                matched = true;
+              } else {
+                console.log(`[PDF match] rejected stripped-SKU match: raw="${raw}" starts with matched="${matchedSku}" — likely truncation`);
               }
-              matchCount++;
-              barcodeMatchCount++;
             }
           } catch { /* ignore */ }
         }
@@ -2469,6 +2482,9 @@ function applyMapping(
   qtyCol: string,
   costCol: string
 ) {
+  const barcodeKeywords = ["barcode", "bar code", "upc", "ean", "gtin"];
+  const cols = rows[0] ? Object.keys(rows[0]) : [];
+  const barcodeCol = cols.find((c) => barcodeKeywords.some((kw) => c.toLowerCase().includes(kw))) ?? "";
   return rows
     .filter((row) => descCol && row[descCol]?.trim())
     .map((row) => {
@@ -2476,11 +2492,13 @@ function applyMapping(
       const rawCost = costCol ? row[costCol] ?? "0" : "0";
       const qty = parseInt(rawQty.replace(/[^\d]/g, "") || "1", 10) || 1;
       const cost = parseFloat(rawCost.replace(/[^\d.]/g, "") || "0") || 0;
+      const barcodeVal = barcodeCol ? (row[barcodeCol] ?? "").trim() : "";
       return {
         sku: { value: skuCol ? (row[skuCol] ?? "") : "", confidence: 0.95, flagged: false },
         description: { value: row[descCol] ?? "", confidence: 0.95, flagged: false },
         quantity: { value: qty, confidence: 0.95, flagged: false },
         unitCost: { value: cost, confidence: 0.95, flagged: false },
+        ...(barcodeVal ? { barcode: { value: barcodeVal, confidence: 0.8, flagged: false } } : {}),
       };
     });
 }
@@ -2501,13 +2519,14 @@ function LineItemsTable({
     quantity: ExtractionField<number>;
     unitCost: ExtractionField<number>;
     retailPrice?: ExtractionField<number>;
+    barcode?: ExtractionField<string>;
   }>;
   addedItems?: ReviewAddedItem[];
   onRemoveAdded?: (key: string) => void;
   onUpdateAdded?: (key: string, field: "quantity" | "unitCost" | "barcode" | "retailPrice", value: string | number) => void;
 }) {
   const [values, setValues] = useState(() =>
-    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value, barcode: "", retailPrice: item.retailPrice?.value ?? 0 }))
+    items.map((item) => ({ qty: item.quantity.value, unitCost: item.unitCost.value, barcode: item.barcode?.value ?? "", retailPrice: item.retailPrice?.value ?? 0 }))
   );
 
   const extractedTotal = values.reduce(
