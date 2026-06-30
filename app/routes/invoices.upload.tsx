@@ -150,6 +150,7 @@ export async function action({ request }: Route.ActionArgs) {
     let matchCount = 0;
     let skuMatchCount = 0;
     let barcodeMatchCount = 0;
+    let loggedCsvMatches = 0;
     for (const item of savedItems) {
       const raw = item.sku!;
       const stripped = parseInt(raw, 10);
@@ -178,6 +179,10 @@ export async function action({ request }: Route.ActionArgs) {
                 ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
+            if (loggedCsvMatches < 5) {
+              console.log(`[CSV match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
+              loggedCsvMatches++;
+            }
             matchCount++;
             if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
             matched = true;
@@ -201,6 +206,10 @@ export async function action({ request }: Route.ActionArgs) {
                 ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
+            if (loggedCsvMatches < 5) {
+              console.log(`[CSV match] SKU: ${item.sku} (barcode fallback), variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
+              loggedCsvMatches++;
+            }
             matchCount++;
             barcodeMatchCount++;
           }
@@ -340,6 +349,7 @@ export async function action({ request }: Route.ActionArgs) {
       let matchCount = 0;
       let skuMatchCount = 0;
       let barcodeMatchCount = 0;
+      let loggedPdfMatches = 0;
       for (const item of savedItems) {
         const raw = item.sku!;
         const stripped = parseInt(raw, 10);
@@ -365,9 +375,13 @@ export async function action({ request }: Route.ActionArgs) {
                   shopifyVariantId: variant.id,
                   shopifyInventoryItemId: variant.inventoryItemId,
                   ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
-                  ...(variant.price && !item.retailPrice ? { retailPrice: parseFloat(variant.price) } : {}),
+                  ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
                 },
               });
+              if (loggedPdfMatches < 5) {
+                console.log(`[PDF match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
+                loggedPdfMatches++;
+              }
               matchCount++;
               if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
               matched = true;
@@ -388,9 +402,13 @@ export async function action({ request }: Route.ActionArgs) {
                   shopifyProductTitle: product.title,
                   shopifyVariantId: variant.id,
                   shopifyInventoryItemId: variant.inventoryItemId,
-                  ...(variant.price && !item.retailPrice ? { retailPrice: parseFloat(variant.price) } : {}),
+                  ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
                 },
               });
+              if (loggedPdfMatches < 5) {
+                console.log(`[PDF match] SKU: ${item.sku} (barcode fallback), variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
+                loggedPdfMatches++;
+              }
               matchCount++;
               barcodeMatchCount++;
             }

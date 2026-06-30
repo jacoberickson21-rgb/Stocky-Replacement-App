@@ -65,6 +65,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
               shopifyVariantId: variant.id,
               shopifyInventoryItemId: variant.inventoryItemId,
               ...barcodeUpdate,
+              ...(variant.price && !unlinked[i].retailPrice ? { retailPrice: parseFloat(variant.price) } : {}),
             },
           });
           Object.assign(unlinked[i], {
@@ -261,6 +262,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       let freshVariantId: string | null = null;
       let freshInventoryItemId: string | null = null;
       let freshTitle: string | null = null;
+      let freshPrice: string | null = null;
 
       if (item.sku) {
         try {
@@ -270,6 +272,7 @@ export async function action({ request, params }: Route.ActionArgs) {
             freshVariantId = v.id;
             freshInventoryItemId = v.inventoryItemId;
             freshTitle = freshResult.product.title;
+            freshPrice = v.price;
             inventoryItemId = v.inventoryItemId;
           }
         } catch (err) {
@@ -308,6 +311,7 @@ export async function action({ request, params }: Route.ActionArgs) {
               shopifyVariantId: freshVariantId,
               ...(freshTitle && { shopifyProductTitle: freshTitle }),
             }),
+            ...(freshPrice && !item.retailPrice ? { retailPrice: parseFloat(freshPrice) } : {}),
           },
         });
       } catch (err) {

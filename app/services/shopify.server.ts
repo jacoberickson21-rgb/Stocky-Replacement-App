@@ -322,7 +322,8 @@ export async function lookupProduct(opts: {
       // The products query returns the whole product with all variants. Find the
       // specific variant whose SKU matches exactly — otherwise every variant of a
       // multi-variant product would map to the same inventoryItemId (variants[0]).
-      const exactVariant = bySku.variants.find((v) => v.sku === opts.sku);
+      const searchSku = opts.sku!.toLowerCase();
+      const exactVariant = bySku.variants.find((v) => v.sku != null && v.sku.toLowerCase() === searchSku);
       if (exactVariant) {
         return { product: { ...bySku, variants: [exactVariant] }, matchedBy: "sku" };
       }
@@ -330,7 +331,8 @@ export async function lookupProduct(opts: {
     // SKU value might be stored as a barcode in Shopify
     const byBarcode = await runQuery(`barcode:${opts.sku}`);
     if (byBarcode) {
-      const exactVariant = byBarcode.variants.find((v) => v.barcode === opts.sku);
+      const searchSku = opts.sku!.toLowerCase();
+      const exactVariant = byBarcode.variants.find((v) => v.barcode != null && v.barcode.toLowerCase() === searchSku);
       if (exactVariant) {
         return { product: { ...byBarcode, variants: [exactVariant] }, matchedBy: "barcode" };
       }
