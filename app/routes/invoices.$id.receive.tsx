@@ -750,8 +750,14 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
               name="intent"
               value="saveDraft"
               disabled={isSubmitting}
-              className="border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+              className="inline-flex items-center gap-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
             >
+              {isSubmitting && navigation.formData?.get("intent") === "saveDraft" && (
+                <svg className="animate-spin h-4 w-4 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 22 12h-4a8 8 0 01-8-8z" />
+                </svg>
+              )}
               {isSubmitting && navigation.formData?.get("intent") === "saveDraft"
                 ? "Saving…"
                 : "Save as Draft"}
@@ -761,10 +767,16 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
               name="intent"
               value="complete"
               disabled={!allFilled || isSubmitting}
-              className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
             >
+              {isSubmitting && navigation.formData?.get("intent") === "complete" && (
+                <svg className="animate-spin h-4 w-4 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 22 12h-4a8 8 0 01-8-8z" />
+                </svg>
+              )}
               {isSubmitting && navigation.formData?.get("intent") === "complete"
-                ? "Completing…"
+                ? "Processing…"
                 : "Complete Receiving"}
             </button>
           </div>

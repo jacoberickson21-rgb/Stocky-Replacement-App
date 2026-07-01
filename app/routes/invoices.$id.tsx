@@ -579,6 +579,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     fd.append("productTitle", result.productTitle);
     fd.append("inventoryItemId", result.inventoryItemId);
     if (result.barcode) fd.append("barcode", result.barcode);
+    if (result.price != null) fd.append("price", String(result.price));
     linkFetcher.submit(fd, { method: "post", action: `/api/line-items/${itemId}/link` });
   }
 

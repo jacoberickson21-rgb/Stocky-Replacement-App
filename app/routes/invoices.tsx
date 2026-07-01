@@ -36,6 +36,9 @@ export async function action({ request }: Route.ActionArgs) {
 
 const PAGE_SIZE = 50;
 
+const SORTABLE_COLUMNS = ["invoiceNumber", "invoiceDate", "dueDate", "total", "status", "receivedAt"] as const;
+type SortColumn = typeof SORTABLE_COLUMNS[number];
+
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const url = new URL(request.url);
@@ -50,6 +53,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   const receivedFrom = url.searchParams.get("receivedFrom");
   const receivedTo = url.searchParams.get("receivedTo");
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
+  const sortByRaw = url.searchParams.get("sortBy") ?? "invoiceDate";
+  const sortBy: SortColumn = (SORTABLE_COLUMNS as readonly string[]).includes(sortByRaw) ? sortByRaw as SortColumn : "invoiceDate";
+  const sortDir = url.searchParams.get("sortDir") === "asc" ? "asc" : "desc";
 
   const db = getDb();
 
@@ -110,12 +116,16 @@ export async function loader({ request }: Route.LoaderArgs) {
     where.invoiceNumber = { in: receivedInvoiceNumbers };
   }
 
+  const dbOrderBy = sortBy === "receivedAt"
+    ? { createdAt: "desc" as const }
+    : { [sortBy]: sortDir } as Record<string, "asc" | "desc">;
+
   const [totalCount, invoices, vendors, suppliers] = await Promise.all([
     db.invoice.count({ where }),
     db.invoice.findMany({
       where,
       include: { vendor: true, supplier: true },
-      orderBy: { createdAt: "desc" },
+      orderBy: dbOrderBy,
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
@@ -149,14 +159,27 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
+  let mappedInvoices = invoices.map((inv) => ({
+    ...inv,
+    total: Number(inv.total),
+    invoiceDate: inv.invoiceDate?.toISOString() ?? null,
+    dueDate: inv.dueDate?.toISOString() ?? null,
+    receivedAt: receivedAtMap.get(inv.invoiceNumber) ?? null,
+  }));
+
+  if (sortBy === "receivedAt") {
+    mappedInvoices = mappedInvoices.sort((a, b) => {
+      const aVal = a.receivedAt ?? "";
+      const bVal = b.receivedAt ?? "";
+      if (aVal === bVal) return 0;
+      if (!aVal) return sortDir === "asc" ? -1 : 1;
+      if (!bVal) return sortDir === "asc" ? 1 : -1;
+      return sortDir === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+    });
+  }
+
   return {
-    invoices: invoices.map((inv) => ({
-      ...inv,
-      total: Number(inv.total),
-      invoiceDate: inv.invoiceDate?.toISOString() ?? null,
-      dueDate: inv.dueDate?.toISOString() ?? null,
-      receivedAt: receivedAtMap.get(inv.invoiceNumber) ?? null,
-    })),
+    invoices: mappedInvoices,
     vendors,
     suppliers,
     vendorParam,
@@ -169,6 +192,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     dueDateTo,
     receivedFrom,
     receivedTo,
+    sortBy,
+    sortDir,
     pagination: { page, totalPages, totalCount },
   };
 }
@@ -205,6 +230,8 @@ function buildInvoicePageUrl(
   dueDateTo: string | null,
   receivedFrom: string | null,
   receivedTo: string | null,
+  sortBy?: string | null,
+  sortDir?: string | null,
 ) {
   const params = new URLSearchParams();
   if (vendorParam) params.set("vendor", vendorParam);
@@ -217,8 +244,40 @@ function buildInvoicePageUrl(
   if (dueDateTo) params.set("dueDateTo", dueDateTo);
   if (receivedFrom) params.set("receivedFrom", receivedFrom);
   if (receivedTo) params.set("receivedTo", receivedTo);
+  if (sortBy) params.set("sortBy", sortBy);
+  if (sortDir) params.set("sortDir", sortDir);
   params.set("page", String(page));
   return `/invoices?${params.toString()}`;
+}
+
+function SortableHeader({
+  column,
+  label,
+  activeSortBy,
+  activeSortDir,
+  buildUrl,
+  className = "",
+}: {
+  column: string;
+  label: string;
+  activeSortBy: string;
+  activeSortDir: string;
+  buildUrl: (sortBy: string, sortDir: string) => string;
+  className?: string;
+}) {
+  const isActive = activeSortBy === column;
+  const nextDir = isActive && activeSortDir === "asc" ? "desc" : "asc";
+  return (
+    <Link
+      to={buildUrl(column, nextDir)}
+      className={`inline-flex items-center gap-1 hover:text-gray-900 dark:hover:text-gray-100 transition-colors ${isActive ? "text-gray-800 dark:text-gray-100" : ""} ${className}`}
+    >
+      {label}
+      <span className="text-xs">
+        {isActive ? (activeSortDir === "asc" ? "↑" : "↓") : <span className="opacity-30">↕</span>}
+      </span>
+    </Link>
+  );
 }
 
 export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
@@ -226,11 +285,21 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
     invoices, vendors, suppliers,
     vendorParam, supplierParam, statusParam, searchParam,
     poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+    sortBy, sortDir,
     pagination,
   } = loaderData;
   const navigate = useNavigate();
   const [searchValue, setSearchValue] = useState(searchParam ?? "");
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function buildSortUrl(col: string, dir: string) {
+    return buildInvoicePageUrl(
+      1,
+      vendorParam, supplierParam, statusParam, searchParam,
+      poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+      col, dir,
+    );
+  }
 
   function handleVendorChange(e: React.ChangeEvent<HTMLSelectElement>) {
     const params = new URLSearchParams(window.location.search);
@@ -345,6 +414,8 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
         {supplierParam && <input type="hidden" name="supplier" value={supplierParam} />}
         {statusParam && <input type="hidden" name="status" value={statusParam} />}
         {searchParam && <input type="hidden" name="search" value={searchParam} />}
+        {sortBy && <input type="hidden" name="sortBy" value={sortBy} />}
+        {sortDir && <input type="hidden" name="sortDir" value={sortDir} />}
 
         <div className="flex flex-col gap-1">
           <span className={labelCls}>PO Date</span>
@@ -400,14 +471,26 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Invoice #</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="invoiceNumber" label="Invoice #" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} />
+                </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Vendor</th>
                 {hasAnySupplier && <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Supplier</th>}
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Status</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">PO Date</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Due Date</th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Date Received</th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Total</th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="status" label="Status" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} />
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="invoiceDate" label="PO Date" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} />
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="dueDate" label="Due Date" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} />
+                </th>
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="receivedAt" label="Date Received" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} />
+                </th>
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                  <SortableHeader column="total" label="Total" activeSortBy={sortBy} activeSortDir={sortDir} buildUrl={buildSortUrl} className="justify-end" />
+                </th>
                 <th className="text-center px-6 py-3 font-medium text-gray-600 dark:text-gray-400">Paid?</th>
               </tr>
             </thead>
@@ -485,6 +568,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                   pagination.page - 1,
                   vendorParam, supplierParam, statusParam, searchParam,
                   poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+                  sortBy, sortDir,
                 )}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >
@@ -502,6 +586,7 @@ export default function InvoicesPage({ loaderData }: Route.ComponentProps) {
                   pagination.page + 1,
                   vendorParam, supplierParam, statusParam, searchParam,
                   poDateFrom, poDateTo, dueDateFrom, dueDateTo, receivedFrom, receivedTo,
+                  sortBy, sortDir,
                 )}
                 className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
               >

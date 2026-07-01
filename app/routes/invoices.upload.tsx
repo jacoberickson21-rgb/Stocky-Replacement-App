@@ -145,7 +145,7 @@ export async function action({ request }: Route.ActionArgs) {
     // Auto-match saved line items against Shopify using multiple SKU strategies + barcode
     const savedItems = await getDb().invoiceLineItem.findMany({
       where: { invoiceId: invoice.id, sku: { not: null } },
-      select: { id: true, sku: true, barcode: true },
+      select: { id: true, sku: true, barcode: true, unitCost: true },
     });
     let matchCount = 0;
     let skuMatchCount = 0;
@@ -179,6 +179,11 @@ export async function action({ request }: Route.ActionArgs) {
                 ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
+            try {
+              await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
+            } catch (err) {
+              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
             if (loggedCsvMatches < 5) {
               console.log(`[CSV match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
               loggedCsvMatches++;
@@ -206,6 +211,11 @@ export async function action({ request }: Route.ActionArgs) {
                 ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
               },
             });
+            try {
+              await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
+            } catch (err) {
+              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
             if (loggedCsvMatches < 5) {
               console.log(`[CSV match] SKU: ${item.sku} (barcode fallback), variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
               loggedCsvMatches++;
@@ -343,7 +353,7 @@ export async function action({ request }: Route.ActionArgs) {
     // Auto-match line items against Shopify using multiple SKU strategies + barcode
     const savedItems = await getDb().invoiceLineItem.findMany({
       where: { invoiceId: invoice.id, sku: { not: null } },
-      select: { id: true, sku: true, barcode: true, retailPrice: true },
+      select: { id: true, sku: true, barcode: true, retailPrice: true, unitCost: true },
     });
     if (savedItems.length > 0) {
       let matchCount = 0;
@@ -375,6 +385,11 @@ export async function action({ request }: Route.ActionArgs) {
               ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
             },
           });
+          try {
+            await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
+          } catch (err) {
+            await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+          }
           if (loggedPdfMatches < 5) {
             console.log(`[PDF match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}, via: ${matchedBy}`);
             loggedPdfMatches++;
@@ -861,6 +876,8 @@ function CsvUploadForm({
   suppliers: Supplier[];
   errors: Record<string, string>;
 }) {
+  const navigation = useNavigation();
+  const isImporting = navigation.state === "submitting" && navigation.formData?.get("intent") === "uploadCsv";
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [ptfKey, setPtfKey] = useState(0);
@@ -993,9 +1010,16 @@ function CsvUploadForm({
       <div className="flex gap-3 pt-2">
         <button
           type="submit"
-          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
+          disabled={isImporting}
+          className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2 transition-colors"
         >
-          Import CSV
+          {isImporting && (
+            <svg className="animate-spin h-4 w-4 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 22 12h-4a8 8 0 01-8-8z" />
+            </svg>
+          )}
+          {isImporting ? "Importing…" : "Import CSV"}
         </button>
         <Link
           to="/invoices"
