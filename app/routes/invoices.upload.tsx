@@ -225,6 +225,13 @@ export async function action({ request }: Route.ActionArgs) {
           }
         } catch { /* ignore */ }
       }
+
+      if (!matched) {
+        console.log(
+          `[CSV UNLINKED] SKU="${raw}" barcode="${item.barcode ?? "none"}"` +
+          ` | skuVariants tried: [${skuVariants.map((s) => `"${s}"`).join(", ")}]`
+        );
+      }
     }
     if (savedItems.length > 0) {
       console.log(`CSV import match: ${matchCount} / ${savedItems.length} items linked (${skuMatchCount} by SKU, ${barcodeMatchCount} by barcode)`);
@@ -441,6 +448,14 @@ export async function action({ request }: Route.ActionArgs) {
               }
             }
           } catch { /* ignore */ }
+        }
+
+        if (!matched) {
+          console.log(
+            `[PDF UNLINKED] SKU="${raw}" barcode="${item.barcode ?? "none"}"` +
+            ` | exactSkuVariants tried: [${exactSkuVariants.map((s) => `"${s}"`).join(", ")}]` +
+            ` | strippedVariant: ${strippedVariant ? `"${strippedVariant}"` : "none (not applicable)"}`
+          );
         }
       }
       console.log(`PDF import match: ${matchCount} / ${savedItems.length} items linked (${skuMatchCount} by SKU, ${barcodeMatchCount} by barcode)`);

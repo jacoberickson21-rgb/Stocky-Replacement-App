@@ -317,36 +317,56 @@ export async function lookupProduct(opts: {
   }
 
   if (opts.sku) {
-    const bySku = await runQuery(`sku:${opts.sku}`);
+    const skuQueryStr = `sku:${opts.sku}`;
+    console.log(`[lookupProduct] SKU query: "${skuQueryStr}"`);
+    const bySku = await runQuery(skuQueryStr);
     if (bySku) {
+      console.log(`[lookupProduct] SKU query returned product "${bySku.title}" with ${bySku.variants.length} variant(s): [${bySku.variants.map((v) => `"${v.sku}"`).join(", ")}]`);
       // The products query returns the whole product with all variants. Find the
       // specific variant whose SKU matches exactly — otherwise every variant of a
       // multi-variant product would map to the same inventoryItemId (variants[0]).
       const searchSku = opts.sku!.toLowerCase();
       const exactVariant = bySku.variants.find((v) => v.sku != null && v.sku.toLowerCase() === searchSku);
+      console.log(`[lookupProduct] exactVariant find (sku="${opts.sku}" vs variants): ${exactVariant ? `FOUND — variant SKU="${exactVariant.sku}"` : "NOT FOUND"}`);
       if (exactVariant) {
         return { product: { ...bySku, variants: [exactVariant] }, matchedBy: "sku" };
       }
+    } else {
+      console.log(`[lookupProduct] SKU query "${skuQueryStr}" returned no products`);
     }
     // SKU value might be stored as a barcode in Shopify
-    const byBarcode = await runQuery(`barcode:${opts.sku}`);
+    const barcodeQueryStr = `barcode:${opts.sku}`;
+    console.log(`[lookupProduct] Barcode-fallback query: "${barcodeQueryStr}"`);
+    const byBarcode = await runQuery(barcodeQueryStr);
     if (byBarcode) {
+      console.log(`[lookupProduct] Barcode-fallback query returned product "${byBarcode.title}" with ${byBarcode.variants.length} variant(s): [${byBarcode.variants.map((v) => `barcode="${v.barcode}"`).join(", ")}]`);
       const searchSku = opts.sku!.toLowerCase();
       const exactVariant = byBarcode.variants.find((v) => v.barcode != null && v.barcode.toLowerCase() === searchSku);
+      console.log(`[lookupProduct] exactVariant find (barcode="${opts.sku}"): ${exactVariant ? `FOUND — barcode="${exactVariant.barcode}"` : "NOT FOUND"}`);
       if (exactVariant) {
         return { product: { ...byBarcode, variants: [exactVariant] }, matchedBy: "barcode" };
       }
+    } else {
+      console.log(`[lookupProduct] Barcode-fallback query "${barcodeQueryStr}" returned no products`);
     }
+    console.log(`[lookupProduct] No match found for SKU="${opts.sku}" — returning null`);
     return null;
   }
 
-  const byBarcode = await runQuery(`barcode:${opts.barcode}`);
+  const barcodeQueryStr2 = `barcode:${opts.barcode}`;
+  console.log(`[lookupProduct] Barcode query: "${barcodeQueryStr2}"`);
+  const byBarcode = await runQuery(barcodeQueryStr2);
   if (byBarcode) {
+    console.log(`[lookupProduct] Barcode query returned product "${byBarcode.title}" with ${byBarcode.variants.length} variant(s): [${byBarcode.variants.map((v) => `barcode="${v.barcode}"`).join(", ")}]`);
     const exactVariant = byBarcode.variants.find((v) => v.barcode === opts.barcode);
+    console.log(`[lookupProduct] exactVariant find (barcode="${opts.barcode}"): ${exactVariant ? `FOUND` : "NOT FOUND"}`);
     if (exactVariant) {
       return { product: { ...byBarcode, variants: [exactVariant] }, matchedBy: "barcode" };
     }
+  } else {
+    console.log(`[lookupProduct] Barcode query "${barcodeQueryStr2}" returned no products`);
   }
+  console.log(`[lookupProduct] No match found for barcode="${opts.barcode}" — returning null`);
   return null;
 }
 
