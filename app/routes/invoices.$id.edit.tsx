@@ -25,7 +25,9 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   ]);
 
   if (!invoice) throw new Response("Not Found", { status: 404 });
-  if (invoice.status !== "ORDERED") return redirect(`/invoices/${id}`);
+  if (!["ORDERED", "RECEIVED", "PAID"].includes(invoice.status)) return redirect(`/invoices/${id}`);
+
+  const headerOnlyMode = invoice.status !== "ORDERED";
 
   return {
     invoice: {
@@ -43,6 +45,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     },
     vendors,
     suppliers,
+    headerOnlyMode,
   };
 }
 
@@ -55,12 +58,14 @@ export async function action({ request, params }: Route.ActionArgs) {
   const intent = String(form.get("intent") ?? "");
 
   if (intent === "updateInvoice") {
+    const headerOnlyMode = form.get("headerOnlyMode") === "true";
     const vendorIdStr = String(form.get("vendorId") ?? "").trim();
     const vendorId = vendorIdStr ? Number(vendorIdStr) : null;
     const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
+    const paymentTermsNotesRaw = String(form.get("paymentTermsNotes") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const shippingCostRaw = String(form.get("shippingCost") ?? "0");
     const adjustmentsRaw = String(form.get("adjustments") ?? "0");
@@ -92,20 +97,29 @@ export async function action({ request, params }: Route.ActionArgs) {
       return data({ error: "Invalid line items." }, { status: 400 });
     }
 
-    if (!invoiceNumber || (!vendorId && !supplierIdRaw) || lineItems.length === 0) {
+    if (!invoiceNumber || (!vendorId && !supplierIdRaw) || (!headerOnlyMode && lineItems.length === 0)) {
       return data({ error: "Invoice number and at least one line item are required. Select a Vendor or Supplier." }, { status: 400 });
     }
 
     const shippingCostVal = parseFloat(shippingCostRaw) || 0;
     const adjustmentsVal = parseFloat(adjustmentsRaw) || 0;
-    const subtotal = lineItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0);
-    const total = subtotal + shippingCostVal + adjustmentsVal;
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
+    const paymentTermsNotes = paymentTermsNotesRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
     const db = getDb();
+
+    let total: number;
+    if (headerOnlyMode) {
+      const existing = await db.invoice.findUnique({ where: { id }, select: { total: true, shippingCost: true, adjustments: true } });
+      const existingSubtotal = Number(existing?.total ?? 0) - Number(existing?.shippingCost ?? 0) - Number(existing?.adjustments ?? 0);
+      total = existingSubtotal + shippingCostVal + adjustmentsVal;
+    } else {
+      const subtotal = lineItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0);
+      total = subtotal + shippingCostVal + adjustmentsVal;
+    }
 
     // Determine which existing line item IDs to keep
     const keptDbIds = new Set(lineItems.filter((i) => i.dbId !== null).map((i) => i.dbId as number));
@@ -120,6 +134,7 @@ export async function action({ request, params }: Route.ActionArgs) {
           invoiceNumber,
           invoiceDate,
           paymentTerms,
+          paymentTermsNotes,
           dueDate,
           total,
           shippingCost: shippingCostVal || null,
@@ -127,42 +142,44 @@ export async function action({ request, params }: Route.ActionArgs) {
         },
       });
 
-      // Delete removed line items
-      const existingItems = await tx.invoiceLineItem.findMany({ where: { invoiceId: id }, select: { id: true } });
-      const toDelete = existingItems.filter((e) => !keptDbIds.has(e.id)).map((e) => e.id);
-      if (toDelete.length > 0) {
-        await tx.invoiceLineItem.deleteMany({ where: { id: { in: toDelete } } });
-      }
+      if (!headerOnlyMode) {
+        // Delete removed line items
+        const existingItems = await tx.invoiceLineItem.findMany({ where: { invoiceId: id }, select: { id: true } });
+        const toDelete = existingItems.filter((e) => !keptDbIds.has(e.id)).map((e) => e.id);
+        if (toDelete.length > 0) {
+          await tx.invoiceLineItem.deleteMany({ where: { id: { in: toDelete } } });
+        }
 
-      // Update existing, create new
-      for (const item of lineItems) {
-        if (item.dbId !== null) {
-          await tx.invoiceLineItem.update({
-            where: { id: item.dbId },
-            data: {
-              quantityOrdered: item.quantity,
-              unitCost: item.unitCost,
-              retailPrice: item.retailPrice ?? null,
-              sku: item.sku || null,
-              barcode: item.barcode || null,
-            },
-          });
-        } else {
-          await tx.invoiceLineItem.create({
-            data: {
-              invoiceId: id,
-              vendorId,
-              sku: item.sku || null,
-              description: item.description,
-              quantityOrdered: item.quantity,
-              unitCost: item.unitCost,
-              retailPrice: item.retailPrice ?? null,
-              barcode: item.barcode || null,
-              shopifyProductTitle: item.variantTitle || (item.variantId ? item.description : null),
-              shopifyVariantId: item.variantId ?? null,
-              shopifyInventoryItemId: item.inventoryItemId ?? null,
-            },
-          });
+        // Update existing, create new
+        for (const item of lineItems) {
+          if (item.dbId !== null) {
+            await tx.invoiceLineItem.update({
+              where: { id: item.dbId },
+              data: {
+                quantityOrdered: item.quantity,
+                unitCost: item.unitCost,
+                retailPrice: item.retailPrice ?? null,
+                sku: item.sku || null,
+                barcode: item.barcode || null,
+              },
+            });
+          } else {
+            await tx.invoiceLineItem.create({
+              data: {
+                invoiceId: id,
+                vendorId,
+                sku: item.sku || null,
+                description: item.description,
+                quantityOrdered: item.quantity,
+                unitCost: item.unitCost,
+                retailPrice: item.retailPrice ?? null,
+                barcode: item.barcode || null,
+                shopifyProductTitle: item.variantTitle || (item.variantId ? item.description : null),
+                shopifyVariantId: item.variantId ?? null,
+                shopifyInventoryItemId: item.inventoryItemId ?? null,
+              },
+            });
+          }
         }
       }
 
@@ -171,6 +188,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
     });
 
+    if (!headerOnlyMode) {
     // Update Shopify costs for items that opted in
     for (const item of lineItems) {
       if (item.updateShopifyCost && item.inventoryItemId) {
@@ -298,6 +316,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         }
       }
     }
+    } // end if (!headerOnlyMode)
 
     return redirect(`/invoices/${id}`);
   }
@@ -468,7 +487,7 @@ type LineItemRow = {
 // ── Page component ────────────────────────────────────────────────────────────
 
 export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
-  const { invoice, vendors, suppliers } = loaderData as { invoice: typeof loaderData.invoice; vendors: Vendor[]; suppliers: Supplier[] };
+  const { invoice, vendors, suppliers, headerOnlyMode } = loaderData as { invoice: typeof loaderData.invoice; vendors: Vendor[]; suppliers: Supplier[]; headerOnlyMode: boolean };
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const keyCounter = useRef(invoice.lineItems.length);
@@ -505,6 +524,7 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
   const [dueDate, setDueDate] = useState(invoice.dueDate ?? "");
   const [shippingCost, setShippingCost] = useState(invoice.shippingCost != null ? String(invoice.shippingCost) : "0");
   const [adjustments, setAdjustments] = useState(invoice.adjustments != null ? String(invoice.adjustments) : "0");
+  const [paymentTermsNotes, setPaymentTermsNotes] = useState((invoice as { paymentTermsNotes?: string | null }).paymentTermsNotes ?? "");
   const [ptfKey] = useState(0);
 
   const filteredVendors = selectedSupplierId
@@ -660,11 +680,12 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
           ← {invoice.invoiceNumber}
         </Link>
         <span className="text-gray-300 dark:text-gray-600">/</span>
-        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Edit Invoice</h2>
+        <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100">{headerOnlyMode ? "Edit Invoice Details" : "Edit Invoice"}</h2>
       </div>
 
       <Form method="post" className="space-y-6">
         <input type="hidden" name="intent" value="updateInvoice" />
+        <input type="hidden" name="headerOnlyMode" value={headerOnlyMode ? "true" : "false"} />
         <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
         <input type="hidden" name="shippingCost" value={shippingCost} />
         <input type="hidden" name="adjustments" value={adjustments} />
@@ -758,9 +779,50 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
               <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">Can be negative (e.g. discounts)</p>
             </div>
           </div>
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Terms Notes</label>
+            <textarea
+              name="paymentTermsNotes"
+              rows={2}
+              value={paymentTermsNotes}
+              onChange={(e) => setPaymentTermsNotes(e.target.value)}
+              placeholder="e.g. 2% 10 net 30, consignment terms, special arrangement…"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+            />
+          </div>
         </div>
 
         {/* Line items */}
+        {headerOnlyMode ? (
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">Line Items</h3>
+            <p className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700 rounded px-3 py-2 mb-4">
+              Line items are locked for {invoice.status} invoices. Quantities cannot be changed after receiving.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700">
+                    <th className="py-2 pr-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400">SKU</th>
+                    <th className="py-2 pr-4 text-left text-xs font-medium text-gray-500 dark:text-gray-400">Description</th>
+                    <th className="py-2 pr-4 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Qty</th>
+                    <th className="py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400">Unit Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  {lineItems.map((item) => (
+                    <tr key={item.key}>
+                      <td className="py-2 pr-4 text-gray-500 dark:text-gray-400 font-mono text-xs">{item.sku || "—"}</td>
+                      <td className="py-2 pr-4 text-gray-800 dark:text-gray-200">{item.description}</td>
+                      <td className="py-2 pr-4 text-right text-gray-800 dark:text-gray-200">{item.quantity}</td>
+                      <td className="py-2 text-right text-gray-800 dark:text-gray-200">${item.unitCost.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">Line Items</h3>
 
@@ -984,13 +1046,14 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
             <p className="text-sm text-gray-400 dark:text-gray-500 italic">No line items. Use the search above to add products.</p>
           )}
         </div>
+        )} {/* end headerOnlyMode ternary */}
 
         {/* Submit */}
         <div className="flex items-start justify-between gap-4">
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={isSubmitting || lineItems.length === 0}
+              disabled={isSubmitting || (!headerOnlyMode && lineItems.length === 0)}
               className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-colors"
             >
               {isSubmitting ? "Saving…" : "Save Changes"}

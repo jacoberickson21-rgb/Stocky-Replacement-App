@@ -75,6 +75,7 @@ export async function loader({ request, params }: { request: Request; params: { 
       invoiceDate: invoice.invoiceDate?.toISOString() ?? null,
       dueDate: invoice.dueDate?.toISOString() ?? null,
       paymentTerms: invoice.paymentTerms ?? null,
+      paymentTermsNotes: invoice.paymentTermsNotes ?? null,
       receivedAt: receiveLog?.timestamp.toISOString() ?? invoice.updatedAt.toISOString(),
       receivedBy: receiveLog?.user?.name ?? "—",
     },
@@ -548,6 +549,12 @@ export default function ReceivingSummaryPage({ loaderData }: { loaderData: Loade
               <div className="info-cell-label">Payment Terms</div>
               <div className="info-cell-value">{fmtPaymentTerms(invoice.paymentTerms)}</div>
             </div>
+            {invoice.paymentTermsNotes && (
+              <div className="info-cell" style={{ gridColumn: "span 2" }}>
+                <div className="info-cell-label">Payment Terms Notes</div>
+                <div className="info-cell-value">{invoice.paymentTermsNotes}</div>
+              </div>
+            )}
             <div className="info-cell">
               <div className="info-cell-label">Invoice Total</div>
               <div className="info-cell-value info-cell-value-lg">{fmt$(summary.invoiceTotal)}</div>

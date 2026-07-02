@@ -68,8 +68,9 @@ model Invoice {
   supplierId      Int?
   status          InvoiceStatus     @default(ORDERED)
   invoiceDate     DateTime?
-  paymentTerms    String?
-  dueDate         DateTime?
+  paymentTerms      String?
+  paymentTermsNotes String?
+  dueDate           DateTime?
   total           Decimal           @db.Decimal(10, 2)
   shippingCost    Decimal?          @db.Decimal(10, 2)
   adjustments     Decimal?          @db.Decimal(10, 2)

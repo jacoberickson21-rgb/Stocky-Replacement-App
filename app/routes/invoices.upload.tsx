@@ -59,6 +59,7 @@ export async function action({ request }: Route.ActionArgs) {
     const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
     console.log("[uploadCsv] raw vendorId:", form.get("vendorId"), "→ resolved:", vendorId, "| raw supplierId:", form.get("supplierId"), "→ resolved:", supplierIdRaw);
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
+    const paymentTermsNotesRaw = String(form.get("paymentTermsNotes") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const csvFile = form.get("csvFile");
 
@@ -121,12 +122,13 @@ export async function action({ request }: Route.ActionArgs) {
     const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
+    const paymentTermsNotes = paymentTermsNotesRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
     const resolvedVendorId = vendorId ? Number(vendorId) : null;
     const invoice = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, paymentTermsNotes, dueDate, total },
       });
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
@@ -195,7 +197,34 @@ export async function action({ request }: Route.ActionArgs) {
         } catch { /* ignore individual lookup errors */ }
       }
 
-      // Fallback: try item's barcode directly if SKU strategies all missed
+      // 1b. ProductCache fallback for exact SKU (case-insensitive)
+      if (!matched) {
+        try {
+          const cacheHit = await getDb().productCache.findFirst({
+            where: { sku: { equals: raw, mode: "insensitive" } },
+          });
+          if (cacheHit) {
+            await getDb().invoiceLineItem.update({
+              where: { id: item.id },
+              data: {
+                shopifyProductTitle: cacheHit.title,
+                shopifyVariantId: cacheHit.variantId,
+                ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
+                ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
+              },
+            });
+            if (loggedCsvMatches < 5) {
+              console.log(`[CSV match via cache] SKU: "${item.sku}", variantId: ${cacheHit.variantId}`);
+              loggedCsvMatches++;
+            }
+            matchCount++;
+            skuMatchCount++;
+            matched = true;
+          }
+        } catch { /* ignore */ }
+      }
+
+      // 2. Fallback: try item's barcode directly if SKU strategies all missed
       if (!matched && item.barcode) {
         try {
           const result = await lookupProduct({ barcode: item.barcode });
@@ -222,6 +251,32 @@ export async function action({ request }: Route.ActionArgs) {
             }
             matchCount++;
             barcodeMatchCount++;
+          }
+        } catch { /* ignore */ }
+      }
+
+      // 2b. ProductCache barcode fallback
+      if (!matched && item.barcode) {
+        try {
+          const cacheHit = await getDb().productCache.findFirst({
+            where: { barcode: item.barcode },
+          });
+          if (cacheHit) {
+            await getDb().invoiceLineItem.update({
+              where: { id: item.id },
+              data: {
+                shopifyProductTitle: cacheHit.title,
+                shopifyVariantId: cacheHit.variantId,
+                ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
+              },
+            });
+            if (loggedCsvMatches < 5) {
+              console.log(`[CSV match via cache] SKU: "${item.sku}" (barcode cache), variantId: ${cacheHit.variantId}`);
+              loggedCsvMatches++;
+            }
+            matchCount++;
+            barcodeMatchCount++;
+            matched = true;
           }
         } catch { /* ignore */ }
       }
@@ -287,6 +342,7 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
+    const paymentTermsNotesRaw = String(form.get("paymentTermsNotes") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const itemCount = parseInt(String(form.get("itemCount") ?? "0"), 10);
 
@@ -334,13 +390,14 @@ export async function action({ request }: Route.ActionArgs) {
     const total = lineItems.reduce((sum, item) => sum + item.quantity * item.unitCost, 0);
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
+    const paymentTermsNotes = paymentTermsNotesRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
     const resolvedVendorId = vendorId ? Number(vendorId) : null;
 
     const invoice = await getDb().$transaction(async (tx) => {
       const created = await tx.invoice.create({
-        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, dueDate, total },
+        data: { invoiceNumber, vendorId: resolvedVendorId, supplierId, status: "ORDERED", invoiceDate, paymentTerms, paymentTermsNotes, dueDate, total },
       });
       await tx.invoiceLineItem.createMany({
         data: lineItems.map((item) => ({
@@ -419,12 +476,66 @@ export async function action({ request }: Route.ActionArgs) {
           } catch { /* ignore */ }
         }
 
+        // 1b. ProductCache fallback for exact SKU
+        if (!matched) {
+          try {
+            const cacheHit = await getDb().productCache.findFirst({
+              where: { sku: { equals: raw, mode: "insensitive" } },
+            });
+            if (cacheHit) {
+              await getDb().invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: cacheHit.title,
+                  shopifyVariantId: cacheHit.variantId,
+                  ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
+                  ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
+                },
+              });
+              if (loggedPdfMatches < 5) {
+                console.log(`[PDF match via cache] SKU: "${item.sku}", variantId: ${cacheHit.variantId}`);
+                loggedPdfMatches++;
+              }
+              matchCount++;
+              skuMatchCount++;
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
         // 2. Try barcode before stripped-numeric — barcode is globally unique and reliable
         if (!matched && item.barcode) {
           try {
             const result = await lookupProduct({ barcode: item.barcode });
             if (result?.product.variants[0]) {
               await saveMatch(result.product, "barcode");
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
+        // 2b. ProductCache barcode fallback
+        if (!matched && item.barcode) {
+          try {
+            const cacheHit = await getDb().productCache.findFirst({
+              where: { barcode: item.barcode },
+            });
+            if (cacheHit) {
+              await getDb().invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: cacheHit.title,
+                  shopifyVariantId: cacheHit.variantId,
+                  ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
+                  ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
+                },
+              });
+              if (loggedPdfMatches < 5) {
+                console.log(`[PDF match via cache] SKU: "${item.sku}" (barcode cache), variantId: ${cacheHit.variantId}`);
+                loggedPdfMatches++;
+              }
+              matchCount++;
+              barcodeMatchCount++;
               matched = true;
             }
           } catch { /* ignore */ }
@@ -481,6 +592,7 @@ export async function action({ request }: Route.ActionArgs) {
     const invoiceNumber = String(form.get("invoiceNumber") ?? "").trim();
     const invoiceDateRaw = String(form.get("invoiceDate") ?? "").trim();
     const paymentTermsRaw = String(form.get("paymentTerms") ?? "").trim();
+    const paymentTermsNotesRaw = String(form.get("paymentTermsNotes") ?? "").trim();
     const dueDateRaw = String(form.get("dueDate") ?? "").trim();
     const shippingCostRaw = String(form.get("shippingCost") ?? "0");
     const adjustmentsRaw = String(form.get("adjustments") ?? "0");
@@ -539,6 +651,7 @@ export async function action({ request }: Route.ActionArgs) {
     const total = subtotal + shippingCostVal + adjustmentsVal;
     const invoiceDate = invoiceDateRaw ? new Date(invoiceDateRaw) : null;
     const paymentTerms = paymentTermsRaw || null;
+    const paymentTermsNotes = paymentTermsNotesRaw || null;
     const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
     const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
@@ -561,6 +674,7 @@ export async function action({ request }: Route.ActionArgs) {
           status: "ORDERED",
           invoiceDate,
           paymentTerms,
+          paymentTermsNotes,
           dueDate,
           total,
           shippingCost: shippingCostVal || null,
@@ -642,10 +756,10 @@ export async function action({ request }: Route.ActionArgs) {
       .filter(({ item }) => !item.variantId);
 
     if (unlinkedEntries.length > 0) {
-      const vendorRecord = await getDb().vendor.findUnique({
+      const vendorRecord = primaryVendorId ? await getDb().vendor.findUnique({
         where: { id: primaryVendorId },
         select: { name: true },
-      });
+      }) : null;
       const vendorName = vendorRecord?.name ?? "";
 
       // Group by productGroupKey; use DB id as solo key so null-SKU items stay separate
@@ -1002,6 +1116,17 @@ function CsvUploadForm({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
         <PaymentTermsFields key={ptfKey} initialInvoiceDate={invoiceDate} />
+      </div>
+
+      <div>
+        <label htmlFor="paymentTermsNotes" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Terms Notes</label>
+        <textarea
+          id="paymentTermsNotes"
+          name="paymentTermsNotes"
+          rows={2}
+          placeholder="e.g. 2% 10 net 30, consignment terms, special arrangement…"
+          className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+        />
       </div>
 
       <div>
@@ -1841,6 +1966,15 @@ function ManualEntryForm({
             />
             <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">Can be negative (e.g. discounts)</p>
           </div>
+        </div>
+        <div className="mt-4">
+          <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Terms Notes</label>
+          <textarea
+            name="paymentTermsNotes"
+            rows={2}
+            placeholder="e.g. 2% 10 net 30, consignment terms, special arrangement…"
+            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+          />
         </div>
       </div>
 
@@ -3519,6 +3653,15 @@ function ReviewScreen({
               initialInvoiceDate={extraction.invoiceDate?.value ?? ""}
               initialDueDate={extraction.dueDate.value ?? ""}
               dueDateFlagged={extraction.dueDate.flagged}
+            />
+          </div>
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Payment Terms Notes</label>
+            <textarea
+              name="paymentTermsNotes"
+              rows={2}
+              placeholder="e.g. 2% 10 net 30, consignment terms, special arrangement…"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
         </div>

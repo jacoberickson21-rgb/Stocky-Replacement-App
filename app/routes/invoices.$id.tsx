@@ -34,6 +34,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       invoiceDate: invoice.invoiceDate ? invoice.invoiceDate.toISOString() : null,
       dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
       paymentTerms: invoice.paymentTerms ?? null,
+      paymentTermsNotes: invoice.paymentTermsNotes ?? null,
       lineItems: invoice.lineItems.map((item) => ({
         ...item,
         unitCost: Number(item.unitCost),
@@ -646,6 +647,14 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
               {invoice.paymentTerms ? (PAYMENT_TERMS_LABELS[invoice.paymentTerms] ?? invoice.paymentTerms) : "—"}
             </p>
           </div>
+          {(invoice as { paymentTermsNotes?: string | null }).paymentTermsNotes && (
+            <div className="col-span-2">
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Payment Terms Notes</p>
+              <p className="text-sm text-gray-800 dark:text-gray-100 whitespace-pre-line">
+                {(invoice as { paymentTermsNotes?: string | null }).paymentTermsNotes}
+              </p>
+            </div>
+          )}
           <div>
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Status</p>
             <span
@@ -697,12 +706,12 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
             Resume Receiving
           </Link>
         )}
-        {invoice.status === "ORDERED" && (
+        {["ORDERED", "RECEIVED", "PAID"].includes(invoice.status) && (
           <Link
             to={`/invoices/${invoice.id}/edit`}
             className="text-sm font-medium px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
           >
-            Edit Invoice
+            {invoice.status === "ORDERED" ? "Edit Invoice" : "Edit Invoice Details"}
           </Link>
         )}
         {invoice.status === "RECEIVED" && (
