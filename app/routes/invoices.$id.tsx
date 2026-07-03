@@ -583,8 +583,9 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
       setLinkingItemId(null);
       setOpenSearchItemId(null);
       setSearchQuery("");
+      revalidator.revalidate();
     }
-  }, [linkFetcher.state, linkFetcher.data, linkingItemId]);
+  }, [linkFetcher.state, linkFetcher.data, linkingItemId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSelectVariant(itemId: number, result: ProductSearchResult) {
     setLinkingItemId(itemId);
