@@ -1431,6 +1431,20 @@ export async function getProductIdFromVariant(variantId: string): Promise<string
   return data.productVariant?.product.id ?? null;
 }
 
+export async function getInventoryItemIdFromVariant(variantId: string): Promise<string | null> {
+  const data = await shopifyGraphQL<{
+    productVariant: { inventoryItem: { id: string } } | null;
+  }>(
+    `query GetInventoryItemId($id: ID!) {
+      productVariant(id: $id) {
+        inventoryItem { id }
+      }
+    }`,
+    { id: variantId }
+  );
+  return data.productVariant?.inventoryItem.id ?? null;
+}
+
 export async function getVariantPrice(variantId: string): Promise<string | null> {
   const data = await shopifyGraphQL<{
     productVariant: { price: string } | null;

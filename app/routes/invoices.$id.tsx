@@ -1,4 +1,4 @@
-import { Link, Form, redirect, useFetcher, useSearchParams, useRevalidator } from "react-router";
+import { Link, Form, redirect, data, useFetcher, useSearchParams, useRevalidator } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
@@ -13,6 +13,8 @@ import {
   createDraftProduct,
   getProductIdFromVariant,
   updateVariantPrice,
+  lookupProduct,
+  getInventoryItemIdFromVariant,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -339,6 +341,158 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { ok: true, intent: "retryShopifySync" as const, barcodeCount, costCount, inventoryCount };
   }
 
+  if (intent === "linkAndSync") {
+    const db = getDb();
+    const lineItemId = Number(formData.get("lineItemId"));
+    const variantId = String(formData.get("variantId") ?? "").trim();
+    const productTitle = String(formData.get("productTitle") ?? "").trim();
+    const inventoryItemId = String(formData.get("inventoryItemId") ?? "").trim();
+    const barcode = (formData.get("barcode") as string | null) || null;
+    const priceRaw = parseFloat((formData.get("price") as string | null) ?? "");
+    const retailPrice = !isNaN(priceRaw) && priceRaw > 0 ? priceRaw : null;
+
+    if (!variantId || !productTitle || !inventoryItemId) {
+      return data({ ok: false, intent: "linkAndSync" as const, lineItemId, error: "Missing required fields" }, { status: 400 });
+    }
+
+    const lineItem = await db.invoiceLineItem.update({
+      where: { id: lineItemId },
+      data: {
+        shopifyVariantId: variantId,
+        shopifyProductTitle: productTitle,
+        shopifyInventoryItemId: inventoryItemId,
+        ...(barcode ? { barcode } : {}),
+        ...(retailPrice !== null ? { retailPrice } : {}),
+      },
+      select: { quantityReceived: true, inventorySynced: true },
+    });
+
+    let inventorySynced = false;
+    let syncError: string | null = null;
+    const invoiceForSync = await db.invoice.findUnique({ where: { id }, select: { status: true } });
+
+    if (invoiceForSync?.status === "RECEIVED" && lineItem.quantityReceived > 0 && !lineItem.inventorySynced) {
+      try {
+        const locationId = await getLocationId();
+        await updateInventoryLevel({ inventoryItemId, locationId, quantity: lineItem.quantityReceived, lineItemId });
+        await db.invoiceLineItem.update({ where: { id: lineItemId }, data: { inventorySynced: true } });
+        inventorySynced = true;
+      } catch (err) {
+        syncError = err instanceof Error ? err.message : String(err);
+        await logFailure("INVENTORY_UPDATE", variantId, `Auto-sync after link failed: ${syncError}`);
+      }
+    }
+
+    return data({ ok: true, intent: "linkAndSync" as const, lineItemId, inventorySynced, syncError });
+  }
+
+  if (intent === "relinkAll") {
+    const db = getDb();
+    const invoice = await db.invoice.findUnique({ where: { id }, include: { lineItems: true } });
+    if (!invoice || invoice.status !== "RECEIVED") {
+      return data({ ok: false, intent: "relinkAll" as const, error: "Invoice must be in RECEIVED state" });
+    }
+
+    const targets = invoice.lineItems.filter(
+      (item) => !item.shopifyInventoryItemId && !item.skipped && item.quantityReceived > 0
+    );
+
+    let linkedCount = 0;
+    let syncedCount = 0;
+
+    let locationId: string | null = null;
+    try { locationId = await getLocationId(); } catch { /* non-fatal */ }
+
+    for (const item of targets) {
+      let resolvedVariantId: string | null = item.shopifyVariantId;
+      let resolvedInventoryItemId: string | null = null;
+      let resolvedTitle: string | null = item.shopifyProductTitle;
+
+      // Already has variantId (ProductCache hit) but missing inventoryItemId — fetch it
+      if (resolvedVariantId) {
+        try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(resolvedVariantId); } catch { /* ignore */ }
+      }
+
+      // No variantId — full lookup chain
+      if (!resolvedVariantId) {
+        // 1a: lookupProduct by SKU
+        if (item.sku) {
+          try {
+            const result = await lookupProduct({ sku: item.sku });
+            if (result?.product.variants[0]) {
+              const v = result.product.variants[0];
+              resolvedVariantId = v.id;
+              resolvedInventoryItemId = v.inventoryItemId;
+              resolvedTitle = result.product.title;
+            }
+          } catch { /* ignore */ }
+        }
+        // 1b: ProductCache SKU fallback
+        if (!resolvedVariantId && item.sku) {
+          try {
+            const hit = await db.productCache.findFirst({ where: { sku: { equals: item.sku, mode: "insensitive" } } });
+            if (hit) {
+              resolvedVariantId = hit.variantId;
+              resolvedTitle = hit.title;
+              try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+        }
+        // 2a: lookupProduct by barcode
+        if (!resolvedVariantId && item.barcode) {
+          try {
+            const result = await lookupProduct({ barcode: item.barcode });
+            if (result?.product.variants[0]) {
+              const v = result.product.variants[0];
+              resolvedVariantId = v.id;
+              resolvedInventoryItemId = v.inventoryItemId;
+              resolvedTitle = result.product.title;
+            }
+          } catch { /* ignore */ }
+        }
+        // 2b: ProductCache barcode fallback
+        if (!resolvedVariantId && item.barcode) {
+          try {
+            const hit = await db.productCache.findFirst({ where: { barcode: item.barcode } });
+            if (hit) {
+              resolvedVariantId = hit.variantId;
+              resolvedTitle = hit.title;
+              try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      if (!resolvedVariantId || !resolvedInventoryItemId) continue;
+
+      try {
+        await db.invoiceLineItem.update({
+          where: { id: item.id },
+          data: {
+            shopifyVariantId: resolvedVariantId,
+            shopifyInventoryItemId: resolvedInventoryItemId,
+            ...(resolvedTitle ? { shopifyProductTitle: resolvedTitle } : {}),
+          },
+        });
+        linkedCount++;
+
+        if (locationId && item.quantityReceived > 0 && !item.inventorySynced) {
+          try {
+            await updateInventoryLevel({ inventoryItemId: resolvedInventoryItemId, locationId, quantity: item.quantityReceived, lineItemId: item.id });
+            await db.invoiceLineItem.update({ where: { id: item.id }, data: { inventorySynced: true } });
+            syncedCount++;
+          } catch (err) {
+            await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, `Auto-sync after relink failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      } catch (err) {
+        await logFailure("relink-all", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    return data({ ok: true, intent: "relinkAll" as const, linkedCount, syncedCount, totalTargets: targets.length });
+  }
+
   if (intent === "reverseInventory") {
     const db = getDb();
     const invoice = await db.invoice.findUnique({
@@ -556,14 +710,16 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   // ── Unlinked items management ─────────────────────────────────────────────
   const skipFetcher = useFetcher<{ ok: boolean; intent: "skipItem"; lineItemId: number }>();
   const createProductFetcher = useFetcher<{ ok: boolean; intent: "createSkeletonProduct"; lineItemId: number; error?: string }>();
-  const linkFetcher = useFetcher<{ ok: boolean }>();
+  const linkFetcher = useFetcher<{ ok: boolean; intent: "linkAndSync"; lineItemId: number; inventorySynced?: boolean; syncError?: string | null; error?: string }>();
   const searchFetcher = useFetcher<ProductSearchResult[]>();
+  const relinkAllFetcher = useFetcher<{ ok: boolean; intent: "relinkAll"; linkedCount?: number; syncedCount?: number; totalTargets?: number; error?: string }>();
 
   const [openSearchItemId, setOpenSearchItemId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [linkingItemId, setLinkingItemId] = useState<number | null>(null);
   const [hiddenItemIds, setHiddenItemIds] = useState<Set<number>>(new Set());
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRelinkingAll = relinkAllFetcher.state !== "idle";
 
   useEffect(() => {
     if (skipFetcher.state === "idle" && skipFetcher.data?.ok && skipFetcher.data.intent === "skipItem") {
@@ -587,20 +743,29 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     }
   }, [linkFetcher.state, linkFetcher.data, linkingItemId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (relinkAllFetcher.state === "idle" && relinkAllFetcher.data?.ok && relinkAllFetcher.data.intent === "relinkAll") {
+      revalidator.revalidate();
+    }
+  }, [relinkAllFetcher.state, relinkAllFetcher.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleSelectVariant(itemId: number, result: ProductSearchResult) {
     setLinkingItemId(itemId);
     const fd = new FormData();
+    fd.append("intent", "linkAndSync");
+    fd.append("lineItemId", String(itemId));
     fd.append("variantId", result.variantId);
     fd.append("productTitle", result.productTitle);
     fd.append("inventoryItemId", result.inventoryItemId);
     if (result.barcode) fd.append("barcode", result.barcode);
     if (result.price != null) fd.append("price", String(result.price));
-    linkFetcher.submit(fd, { method: "post", action: `/api/line-items/${itemId}/link` });
+    linkFetcher.submit(fd, { method: "post" });
   }
 
   const unlinkedItems = lineItems.filter(
-    (item) => !item.shopifyVariantId && !item.skipped && !hiddenItemIds.has(item.id)
+    (item) => !item.shopifyInventoryItemId && !item.skipped && !hiddenItemIds.has(item.id) && item.quantityReceived > 0
   );
+  const relinkAllResult = relinkAllFetcher.state === "idle" && relinkAllFetcher.data?.intent === "relinkAll" ? relinkAllFetcher.data : null;
 
   return (
     <main className="p-8 max-w-5xl mx-auto">
@@ -1147,12 +1312,44 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
       {/* Unlinked Items - Action Required */}
       {unlinkedItems.length > 0 && (
         <div className="mt-6 rounded-2xl border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/20 overflow-hidden">
-          <div className="flex items-center gap-2 px-6 py-3 border-b border-amber-200 dark:border-amber-700 bg-amber-100/60 dark:bg-amber-900/20">
+          <div className="flex items-center gap-3 px-6 py-3 border-b border-amber-200 dark:border-amber-700 bg-amber-100/60 dark:bg-amber-900/20">
             <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-400 text-white text-xs font-bold shrink-0">!</span>
             <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
               Unlinked Items — Action Required
               <span className="ml-1.5 font-normal text-amber-600 dark:text-amber-400">({unlinkedItems.length})</span>
             </h3>
+            <div className="ml-auto flex items-center gap-3">
+              {relinkAllResult?.ok && (
+                <span className="text-xs text-green-700 dark:text-green-400">
+                  {relinkAllResult.linkedCount}/{relinkAllResult.totalTargets} linked, {relinkAllResult.syncedCount} synced
+                </span>
+              )}
+              {relinkAllResult?.ok === false && (
+                <span className="text-xs text-red-600 dark:text-red-400">{relinkAllResult.error}</span>
+              )}
+              {invoice.status === "RECEIVED" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const fd = new FormData();
+                    fd.append("intent", "relinkAll");
+                    relinkAllFetcher.submit(fd, { method: "post" });
+                  }}
+                  disabled={isRelinkingAll}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors disabled:opacity-50"
+                >
+                  {isRelinkingAll ? (
+                    <>
+                      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Re-linking…
+                    </>
+                  ) : "Re-link All"}
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="divide-y divide-amber-100 dark:divide-amber-800/40">
@@ -1239,6 +1436,14 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                   {createFailed && (
                     <p className="px-6 pb-2 text-xs text-red-600 dark:text-red-400">
                       {createProductFetcher.data?.error ?? "Product creation failed — check the failure log"}
+                    </p>
+                  )}
+
+                  {/* Link error */}
+                  {linkFetcher.state === "idle" && linkFetcher.data?.ok === false &&
+                    linkFetcher.data.lineItemId === item.id && (
+                    <p className="px-6 pb-2 text-xs text-red-600 dark:text-red-400">
+                      {linkFetcher.data.error ?? "Link failed — try again"}
                     </p>
                   )}
 
