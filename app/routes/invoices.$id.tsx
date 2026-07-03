@@ -1,4 +1,4 @@
-import { Link, Form, redirect, useFetcher, useSearchParams } from "react-router";
+import { Link, Form, redirect, useFetcher, useSearchParams, useRevalidator } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
@@ -410,6 +410,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   const { invoice } = loaderData;
   const { vendor, lineItems } = invoice;
   const [searchParams] = useSearchParams();
+  const revalidator = useRevalidator();
 
   // SKU inline edit
   const skuFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; sku: string }>();
@@ -505,6 +506,18 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     retrySyncFetcher.state === "idle" && retrySyncFetcher.data?.intent === "retryShopifySync"
       ? retrySyncFetcher.data
       : null;
+
+  // Revalidate loader data after a successful retry so the table reflects updated sync state
+  useEffect(() => {
+    if (retrySyncResult?.ok) {
+      revalidator.revalidate();
+    }
+  }, [retrySyncResult]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Items that have a Shopify link but inventory was never synced
+  const unsyncedLinkedCount = lineItems.filter(
+    (item) => item.shopifyInventoryItemId && !item.inventorySynced && item.quantityReceived > 0
+  ).length;
 
   // ── Reverse inventory panel ───────────────────────────────────────────────
   const reverseFetcher = useFetcher<{ ok: boolean; intent: "reverseInventory"; reversedCount?: number; errors?: string[]; error?: string }>();
@@ -739,34 +752,41 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           </a>
         )}
         {invoice.status === "RECEIVED" && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const fd = new FormData();
-                fd.append("intent", "retryShopifySync");
-                retrySyncFetcher.submit(fd, { method: "post" });
-              }}
-              disabled={isRetrying}
-              className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
-            >
-              {isRetrying ? (
-                <>
-                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Syncing…
-                </>
-              ) : "Retry Shopify Sync"}
-            </button>
-            {retrySyncResult?.ok && (
-              <span className="text-xs text-green-600 dark:text-green-400">
-                {retrySyncResult.inventoryCount} inventory, {retrySyncResult.barcodeCount} barcodes, {retrySyncResult.costCount} costs synced
-              </span>
-            )}
-            {retrySyncResult?.ok === false && (
-              <span className="text-xs text-red-500 dark:text-red-400">{retrySyncResult.error}</span>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const fd = new FormData();
+                  fd.append("intent", "retryShopifySync");
+                  retrySyncFetcher.submit(fd, { method: "post" });
+                }}
+                disabled={isRetrying}
+                className="flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+              >
+                {isRetrying ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Syncing…
+                  </>
+                ) : "Retry Shopify Sync"}
+              </button>
+              {retrySyncResult?.ok && (
+                <span className="text-xs text-green-600 dark:text-green-400">
+                  {retrySyncResult.inventoryCount} inventory, {retrySyncResult.barcodeCount} barcodes, {retrySyncResult.costCount} costs synced
+                </span>
+              )}
+              {retrySyncResult?.ok === false && (
+                <span className="text-xs text-red-500 dark:text-red-400">{retrySyncResult.error}</span>
+              )}
+            </div>
+            {unsyncedLinkedCount > 0 && !retrySyncResult && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                {unsyncedLinkedCount} item{unsyncedLinkedCount !== 1 ? "s" : ""} {unsyncedLinkedCount !== 1 ? "have" : "has"} a Shopify link but inventory was not synced — use Retry Shopify Sync to update {unsyncedLinkedCount !== 1 ? "them" : "it"}.
+              </p>
             )}
           </div>
         )}

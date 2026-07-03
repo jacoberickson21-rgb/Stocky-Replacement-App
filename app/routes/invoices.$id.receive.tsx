@@ -253,36 +253,60 @@ export async function action({ request, params }: Route.ActionArgs) {
 
       const received = Number(formData.get(`qty_${item.id}`));
 
-      // Perform a fresh SKU lookup so we always use the correct inventoryItemId
-      // from Shopify at receive time. The stored DB value may point to the wrong
-      // variant if this invoice was linked before the lookupProduct() bug fix
-      // (which always returned variants[0] regardless of which SKU was searched).
-      // Fall back to the stored value only if the live lookup fails or finds nothing.
       let inventoryItemId: string | null = item.shopifyInventoryItemId;
       let freshVariantId: string | null = null;
       let freshInventoryItemId: string | null = null;
       let freshTitle: string | null = null;
       let freshPrice: string | null = null;
 
-      if (item.sku) {
+      // If the item already has a stored inventoryItemId (manual or auto link),
+      // trust it and skip the fresh lookup. A fresh lookup by SKU can overwrite
+      // a valid manual link with null (if Shopify returns null for inventoryItem.id)
+      // or with the wrong variant. Only do the fresh lookup for truly unlinked items
+      // so we have a chance to auto-match them at receive time.
+      if (item.shopifyInventoryItemId) {
+        console.log(
+          `[receive] item ${item.sku}: SKIPPING fresh lookup — stored variantId=${item.shopifyVariantId} inventoryItemId=${item.shopifyInventoryItemId}`
+        );
+      } else if (item.sku) {
+        console.log(
+          `[receive] item ${item.sku}: stored variantId=${item.shopifyVariantId ?? "null"} inventoryItemId=${item.shopifyInventoryItemId ?? "null"} — running fresh lookup`
+        );
         try {
           const freshResult = await lookupProduct({ sku: item.sku });
           if (freshResult) {
             const v = freshResult.product.variants[0];
-            freshVariantId = v.id;
-            freshInventoryItemId = v.inventoryItemId;
-            freshTitle = freshResult.product.title;
-            freshPrice = v.price;
-            inventoryItemId = v.inventoryItemId;
+            // Guard against Shopify returning null for inventoryItem.id at runtime
+            if (v.inventoryItemId) {
+              freshVariantId = v.id;
+              freshInventoryItemId = v.inventoryItemId;
+              freshTitle = freshResult.product.title;
+              freshPrice = v.price;
+              inventoryItemId = v.inventoryItemId;
+              console.log(
+                `[receive] item ${item.sku}: fresh lookup found variant=${v.id} inventoryItemId=${v.inventoryItemId}`
+              );
+            } else {
+              console.log(
+                `[receive] item ${item.sku}: fresh lookup returned product but inventoryItemId was null — keeping stored value`
+              );
+            }
+          } else {
+            console.log(`[receive] item ${item.sku}: fresh lookup found nothing`);
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          console.log(`[receive] item ${item.sku}: fresh lookup threw — ${msg}`);
           await logFailure(
             "INVENTORY_UPDATE",
             item.sku,
             `Fresh SKU lookup failed, falling back to stored inventoryItemId: ${msg}`
           );
         }
+      } else {
+        console.log(
+          `[receive] item (no SKU) id=${item.id}: stored inventoryItemId=${item.shopifyInventoryItemId ?? "null"}`
+        );
       }
 
       if (!inventoryItemId) {
