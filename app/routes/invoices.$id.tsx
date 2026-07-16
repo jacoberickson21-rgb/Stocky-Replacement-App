@@ -386,6 +386,47 @@ export async function action({ request, params }: Route.ActionArgs) {
     return data({ ok: true, intent: "linkAndSync" as const, lineItemId, inventorySynced, syncError });
   }
 
+  if (intent === "resolveLink") {
+    const db = getDb();
+    const lineItemId = Number(formData.get("lineItemId"));
+    const lineItem = await db.invoiceLineItem.findUnique({
+      where: { id: lineItemId },
+      select: { shopifyVariantId: true, quantityReceived: true, inventorySynced: true },
+    });
+
+    if (!lineItem?.shopifyVariantId) {
+      return data({ ok: false, intent: "resolveLink" as const, lineItemId, error: "No matched variant to resolve" }, { status: 400 });
+    }
+
+    let inventoryItemId: string | null;
+    try {
+      inventoryItemId = await getInventoryItemIdFromVariant(lineItem.shopifyVariantId);
+    } catch (err) {
+      return data({ ok: false, intent: "resolveLink" as const, lineItemId, error: err instanceof Error ? err.message : String(err) });
+    }
+
+    if (!inventoryItemId) {
+      return data({ ok: false, intent: "resolveLink" as const, lineItemId, error: "Could not resolve inventory item from variant" });
+    }
+
+    await db.invoiceLineItem.update({ where: { id: lineItemId }, data: { shopifyInventoryItemId: inventoryItemId } });
+
+    let inventorySynced = false;
+    const invoiceForSync = await db.invoice.findUnique({ where: { id }, select: { status: true } });
+    if (invoiceForSync?.status === "RECEIVED" && lineItem.quantityReceived > 0 && !lineItem.inventorySynced) {
+      try {
+        const locationId = await getLocationId();
+        await updateInventoryLevel({ inventoryItemId, locationId, quantity: lineItem.quantityReceived, lineItemId });
+        await db.invoiceLineItem.update({ where: { id: lineItemId }, data: { inventorySynced: true } });
+        inventorySynced = true;
+      } catch (err) {
+        await logFailure("INVENTORY_UPDATE", lineItem.shopifyVariantId, `Auto-sync after resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return data({ ok: true, intent: "resolveLink" as const, lineItemId, inventorySynced });
+  }
+
   if (intent === "relinkAll") {
     const db = getDb();
     const invoice = await db.invoice.findUnique({ where: { id }, include: { lineItems: true } });
@@ -713,6 +754,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   const linkFetcher = useFetcher<{ ok: boolean; intent: "linkAndSync"; lineItemId: number; inventorySynced?: boolean; syncError?: string | null; error?: string }>();
   const searchFetcher = useFetcher<ProductSearchResult[]>();
   const relinkAllFetcher = useFetcher<{ ok: boolean; intent: "relinkAll"; linkedCount?: number; syncedCount?: number; totalTargets?: number; error?: string }>();
+  const resolveLinkFetcher = useFetcher<{ ok: boolean; intent: "resolveLink"; lineItemId: number; inventorySynced?: boolean; error?: string }>();
 
   const [openSearchItemId, setOpenSearchItemId] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -749,6 +791,13 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     }
   }, [relinkAllFetcher.state, relinkAllFetcher.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (resolveLinkFetcher.state === "idle" && resolveLinkFetcher.data?.ok && resolveLinkFetcher.data.intent === "resolveLink") {
+      setHiddenItemIds((prev) => new Set(prev).add(resolveLinkFetcher.data!.lineItemId));
+      revalidator.revalidate();
+    }
+  }, [resolveLinkFetcher.state, resolveLinkFetcher.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleSelectVariant(itemId: number, result: ProductSearchResult) {
     setLinkingItemId(itemId);
     const fd = new FormData();
@@ -764,6 +813,15 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
 
   const unlinkedItems = lineItems.filter(
     (item) =>
+      !item.shopifyVariantId &&
+      !item.skipped &&
+      !hiddenItemIds.has(item.id) &&
+      (invoice.status === "ORDERED" || invoice.status === "DRAFT_RECEIVING" || item.quantityReceived > 0)
+  );
+  // Matched a product via ProductCache (has a variant) but still needs its inventoryItemId resolved
+  const partiallyLinkedItems = lineItems.filter(
+    (item) =>
+      !!item.shopifyVariantId &&
       !item.shopifyInventoryItemId &&
       !item.skipped &&
       !hiddenItemIds.has(item.id) &&
@@ -1519,6 +1577,75 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
           </div>
         </div>
       )}
+
+      {/* Partially Linked Items - matched a variant but missing inventoryItemId */}
+      {partiallyLinkedItems.length > 0 && (
+        <div className="mt-6 rounded-2xl border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/20 overflow-hidden">
+          <div className="flex items-center gap-3 px-6 py-3 border-b border-blue-200 dark:border-blue-700 bg-blue-100/60 dark:bg-blue-900/20">
+            <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-400 text-white text-xs font-bold shrink-0">i</span>
+            <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-200">
+              Partially Linked Items — Missing Inventory Link
+              <span className="ml-1.5 font-normal text-blue-600 dark:text-blue-400">({partiallyLinkedItems.length})</span>
+            </h3>
+          </div>
+
+          <div className="divide-y divide-blue-100 dark:divide-blue-800/40">
+            {partiallyLinkedItems.map((item) => {
+              const isResolving =
+                resolveLinkFetcher.state !== "idle" &&
+                Number(resolveLinkFetcher.formData?.get("lineItemId")) === item.id;
+              const resolveFailed =
+                resolveLinkFetcher.state === "idle" &&
+                resolveLinkFetcher.data?.ok === false &&
+                resolveLinkFetcher.data.lineItemId === item.id;
+
+              return (
+                <div key={item.id}>
+                  <div className="flex items-center gap-4 px-6 py-3">
+                    <div className="flex-1 min-w-0 grid grid-cols-4 gap-3 text-sm">
+                      <div>
+                        <p className="text-xs font-medium text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-0.5">SKU</p>
+                        <p className="font-mono text-gray-700 dark:text-gray-200 truncate">{item.sku || <span className="italic text-gray-400">—</span>}</p>
+                      </div>
+                      <div className="col-span-2">
+                        <p className="text-xs font-medium text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-0.5">Description</p>
+                        <p className="text-gray-700 dark:text-gray-200 truncate">{item.description}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-0.5">Matched Product</p>
+                        <p className="text-gray-700 dark:text-gray-200 truncate">{item.shopifyProductTitle || "—"}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fd = new FormData();
+                          fd.append("intent", "resolveLink");
+                          fd.append("lineItemId", String(item.id));
+                          resolveLinkFetcher.submit(fd, { method: "post" });
+                        }}
+                        disabled={isResolving}
+                        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors disabled:opacity-50"
+                      >
+                        {isResolving ? "Resolving…" : "Resolve"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {resolveFailed && (
+                    <p className="px-6 pb-2 text-xs text-red-600 dark:text-red-400">
+                      {resolveLinkFetcher.data?.error ?? "Resolve failed — try again"}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Reverse Inventory Adjustment */}
       {invoice.status === "RECEIVED" && linkedItems.length > 0 && (
         <div className="mt-6">
