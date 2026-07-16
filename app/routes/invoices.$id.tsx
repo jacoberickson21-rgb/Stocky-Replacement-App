@@ -763,7 +763,11 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   }
 
   const unlinkedItems = lineItems.filter(
-    (item) => !item.shopifyInventoryItemId && !item.skipped && !hiddenItemIds.has(item.id) && item.quantityReceived > 0
+    (item) =>
+      !item.shopifyInventoryItemId &&
+      !item.skipped &&
+      !hiddenItemIds.has(item.id) &&
+      (invoice.status === "ORDERED" || invoice.status === "DRAFT_RECEIVING" || item.quantityReceived > 0)
   );
   const relinkAllResult = relinkAllFetcher.state === "idle" && relinkAllFetcher.data?.intent === "relinkAll" ? relinkAllFetcher.data : null;
 
