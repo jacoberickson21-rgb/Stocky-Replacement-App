@@ -10,7 +10,7 @@ import type { ExtendedExtractionResult } from "../services/pdf-parser-client.ser
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult, ShopifyProduct } from "../services/shopify.server";
-import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice } from "../services/shopify.server";
+import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice, getInventoryItemIdFromVariant } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
 // Flexible CSV column lookup — checks multiple header name variants
@@ -204,11 +204,16 @@ export async function action({ request }: Route.ActionArgs) {
             where: { sku: { equals: raw, mode: "insensitive" } },
           });
           if (cacheHit) {
+            let cacheInventoryItemId: string | null = null;
+            try {
+              cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+            } catch { /* ignore — will be resolved later via Re-link All */ }
             await getDb().invoiceLineItem.update({
               where: { id: item.id },
               data: {
                 shopifyProductTitle: cacheHit.title,
                 shopifyVariantId: cacheHit.variantId,
+                ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
                 ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
                 ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
               },
@@ -262,11 +267,16 @@ export async function action({ request }: Route.ActionArgs) {
             where: { barcode: item.barcode },
           });
           if (cacheHit) {
+            let cacheInventoryItemId: string | null = null;
+            try {
+              cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+            } catch { /* ignore — will be resolved later via Re-link All */ }
             await getDb().invoiceLineItem.update({
               where: { id: item.id },
               data: {
                 shopifyProductTitle: cacheHit.title,
                 shopifyVariantId: cacheHit.variantId,
+                ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
                 ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
               },
             });
@@ -483,11 +493,16 @@ export async function action({ request }: Route.ActionArgs) {
               where: { sku: { equals: raw, mode: "insensitive" } },
             });
             if (cacheHit) {
+              let cacheInventoryItemId: string | null = null;
+              try {
+                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+              } catch { /* ignore — will be resolved later via Re-link All */ }
               await getDb().invoiceLineItem.update({
                 where: { id: item.id },
                 data: {
                   shopifyProductTitle: cacheHit.title,
                   shopifyVariantId: cacheHit.variantId,
+                  ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
                   ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
                   ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
                 },
@@ -521,11 +536,16 @@ export async function action({ request }: Route.ActionArgs) {
               where: { barcode: item.barcode },
             });
             if (cacheHit) {
+              let cacheInventoryItemId: string | null = null;
+              try {
+                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+              } catch { /* ignore — will be resolved later via Re-link All */ }
               await getDb().invoiceLineItem.update({
                 where: { id: item.id },
                 data: {
                   shopifyProductTitle: cacheHit.title,
                   shopifyVariantId: cacheHit.variantId,
+                  ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
                   ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
                   ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
                 },
