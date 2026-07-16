@@ -55,6 +55,7 @@ export async function loader({ request, params }: { request: Request; params: { 
       invoiceNumber: credit.invoiceNumber,
       notes: credit.notes,
       date: credit.date.toISOString(),
+      adjustments: credit.adjustments !== null ? Number(credit.adjustments) : null,
     },
     lineItems,
     totalQty,
@@ -421,6 +422,11 @@ function exportCsv(data: LoaderData) {
       li.lineTotal.toFixed(2),
       li.inventorySynced ? "Yes" : li.shopifyInventoryItemId ? "Pending" : "No",
     ]);
+    if (credit.adjustments) {
+      rows.push(["", "", "", "", "", ""]);
+      rows.push(["", "", "", "Adjustments", credit.adjustments.toFixed(2), ""]);
+      rows.push(["", "", "", "Total Credit", credit.amount.toFixed(2), ""]);
+    }
     csv = [headers, ...rows]
       .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
       .join("\r\n");
@@ -592,6 +598,12 @@ export default function CreditSummaryPage({ loaderData }: { loaderData: LoaderDa
                     <span>Line subtotal</span>
                     <span>{fmt$(lineSubtotal)}</span>
                   </div>
+                  {credit.adjustments !== null && credit.adjustments !== 0 && (
+                    <div className="totals-line">
+                      <span>Adjustments</span>
+                      <span>{credit.adjustments >= 0 ? "+" : ""}{fmt$(credit.adjustments)}</span>
+                    </div>
+                  )}
                   <div className="totals-line-total">
                     <span>Total Credit</span>
                     <span>{fmt$(credit.amount)}</span>

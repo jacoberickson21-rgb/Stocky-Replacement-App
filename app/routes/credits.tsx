@@ -193,6 +193,8 @@ export async function action({ request }: Route.ActionArgs) {
     const dateRaw = formData.get("date") as string | null;
     const date = parseDateField(dateRaw ?? "");
     const lineItemsRaw = formData.get("lineItems") as string | null;
+    const adjustmentsRaw = formData.get("adjustments") as string | null;
+    const adjustments = adjustmentsRaw?.trim() ? parseFloat(adjustmentsRaw.trim()) || 0 : 0;
 
     if (!vendorId) {
       return data({ error: "Vendor is required.", importResult: null }, { status: 422 });
@@ -222,13 +224,14 @@ export async function action({ request }: Route.ActionArgs) {
       return data({ error: "At least one line item is required.", importResult: null }, { status: 422 });
     }
 
-    const amount = lineItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0);
+    const subtotal = lineItems.reduce((sum, i) => sum + i.quantity * i.unitCost, 0);
+    const amount = subtotal + adjustments;
 
     let credit: { id: number };
     try {
       credit = await db.$transaction(async (tx) => {
         const created = await tx.credit.create({
-          data: { vendorId, supplierId, amount, invoiceNumber, notes, date },
+          data: { vendorId, supplierId, amount, invoiceNumber, notes, date, adjustments: adjustments || null },
         });
         await tx.creditLineItem.createMany({
           data: lineItems.map((i) => ({
@@ -458,6 +461,13 @@ function CreditInvoiceBuilder({
 
   const [lineItems, setLineItems] = useState<BuilderLineItem[]>([]);
   const keyCounter = useRef(0);
+  const [adjustments, setAdjustments] = useState("0");
+
+  const [showCustomForm, setShowCustomForm] = useState(false);
+  const [customDescription, setCustomDescription] = useState("");
+  const [customSku, setCustomSku] = useState("");
+  const [customQuantity, setCustomQuantity] = useState("1");
+  const [customUnitCost, setCustomUnitCost] = useState("");
 
   const searchResults: ProductSearchResult[] = Array.isArray(searchFetcher.data) ? searchFetcher.data : [];
   const isSearching = searchFetcher.state === "loading";
@@ -532,6 +542,33 @@ function CreditInvoiceBuilder({
     setShowDropdown(false);
   }
 
+  function addCustomItem() {
+    const description = customDescription.trim();
+    if (!description) return;
+    const quantity = Math.max(1, parseInt(customQuantity, 10) || 1);
+    const unitCost = Math.max(0, parseFloat(customUnitCost) || 0);
+    setLineItems((prev) => [
+      ...prev,
+      {
+        key: String(++keyCounter.current),
+        sku: customSku.trim(),
+        description,
+        quantity,
+        unitCost,
+        variantId: null,
+        inventoryItemId: null,
+        productTitle: null,
+        variantTitle: null,
+        barcode: "",
+      },
+    ]);
+    setCustomDescription("");
+    setCustomSku("");
+    setCustomQuantity("1");
+    setCustomUnitCost("");
+    setShowCustomForm(false);
+  }
+
   function removeItem(key: string) {
     setLineItems((prev) => prev.filter((i) => i.key !== key));
   }
@@ -544,7 +581,9 @@ function CreditInvoiceBuilder({
     setLineItems((prev) => prev.map((i) => (i.key === key ? { ...i, unitCost: value } : i)));
   }
 
-  const totalCredit = lineItems.reduce((s, i) => s + i.quantity * i.unitCost, 0);
+  const subtotal = lineItems.reduce((s, i) => s + i.quantity * i.unitCost, 0);
+  const adjustmentsVal = parseFloat(adjustments) || 0;
+  const totalCredit = subtotal + adjustmentsVal;
 
   const inputCls = "border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100";
   const labelCls = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
@@ -556,6 +595,7 @@ function CreditInvoiceBuilder({
       <form method="post">
         <input type="hidden" name="intent" value="createCreditInvoice" />
         <input type="hidden" name="lineItems" value={JSON.stringify(lineItems)} />
+        <input type="hidden" name="adjustments" value={adjustments} />
 
         {/* Header fields */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5 mb-6">
@@ -680,6 +720,90 @@ function CreditInvoiceBuilder({
           </div>
         </div>
 
+        {/* Custom (non-Shopify) line item */}
+        <div className="mb-4">
+          {!showCustomForm ? (
+            <button
+              type="button"
+              onClick={() => setShowCustomForm(true)}
+              className="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium"
+            >
+              + Add Custom Item
+            </button>
+          ) : (
+            <div className="border border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-4">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-3">
+                <div className="col-span-2">
+                  <label className={labelCls}>Description <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={customDescription}
+                    onChange={(e) => setCustomDescription(e.target.value)}
+                    placeholder="e.g. Returned item (not in Shopify)"
+                    className={`${inputCls} w-full`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>SKU</label>
+                  <input
+                    type="text"
+                    value={customSku}
+                    onChange={(e) => setCustomSku(e.target.value)}
+                    placeholder="Optional"
+                    className={`${inputCls} w-full`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Quantity</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={customQuantity}
+                    onChange={(e) => setCustomQuantity(e.target.value)}
+                    className={`${inputCls} w-full`}
+                  />
+                </div>
+                <div>
+                  <label className={labelCls}>Unit Cost</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={customUnitCost}
+                    onChange={(e) => setCustomUnitCost(e.target.value)}
+                    placeholder="0.00"
+                    className={`${inputCls} w-full`}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCustomForm(false);
+                    setCustomDescription("");
+                    setCustomSku("");
+                    setCustomQuantity("1");
+                    setCustomUnitCost("");
+                  }}
+                  className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 px-3 py-1.5 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={addCustomItem}
+                  disabled={!customDescription.trim()}
+                  className="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-lg transition-colors font-medium"
+                >
+                  Add Item
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Line items table */}
         {lineItems.length > 0 && (
           <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden mb-4">
@@ -745,12 +869,36 @@ function CreditInvoiceBuilder({
                 })}
               </tbody>
             </table>
-            <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 flex justify-end">
-              <div className="text-sm">
-                <span className="text-gray-500 dark:text-gray-400 mr-3">Total Credit</span>
-                <span className="font-semibold text-red-600 dark:text-red-400 text-base tabular-nums">
-                  {fmtCurrency(-totalCredit)}
-                </span>
+            <div className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-gray-500 dark:text-gray-400">Adjustments</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={adjustments}
+                  onChange={(e) => setAdjustments(e.target.value)}
+                  placeholder="0.00"
+                  className="w-28 text-right border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-sm bg-white dark:bg-gray-800 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <span className="text-xs text-gray-400 dark:text-gray-500">Can be negative</span>
+              </div>
+              <div className="text-sm text-right">
+                {adjustmentsVal !== 0 && (
+                  <>
+                    <div className="text-gray-500 dark:text-gray-400">
+                      Subtotal: <span className="font-mono tabular-nums">{fmtCurrency(-subtotal)}</span>
+                    </div>
+                    <div className="text-gray-500 dark:text-gray-400">
+                      Adjustments: <span className="font-mono tabular-nums">{fmtCurrency(-adjustmentsVal)}</span>
+                    </div>
+                  </>
+                )}
+                <div>
+                  <span className="text-gray-500 dark:text-gray-400 mr-3">Total Credit</span>
+                  <span className="font-semibold text-red-600 dark:text-red-400 text-base tabular-nums">
+                    {fmtCurrency(-totalCredit)}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -990,7 +1138,8 @@ export default function CreditsPage({ loaderData }: Route.ComponentProps) {
                 <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">SKU / Description</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Lines</th>
                 <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Amount</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Notes / Ref</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Reference #</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Notes</th>
                 <th className="w-10" />
               </tr>
             </thead>
@@ -1030,8 +1179,16 @@ export default function CreditsPage({ loaderData }: Route.ComponentProps) {
                   <td className="px-4 py-3 text-right font-medium text-green-600 dark:text-green-400 whitespace-nowrap tabular-nums">
                     {fmtCurrency(credit.amount)}
                   </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <Link
+                      to={`/credits/${credit.id}`}
+                      className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors text-sm"
+                    >
+                      {credit.invoiceNumber || `#${credit.id}`}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-gray-500 dark:text-gray-400 max-w-xs truncate">
-                    {credit.notes ?? credit.invoiceNumber ?? "—"}
+                    {credit.notes ?? "—"}
                   </td>
                   <td className="px-4 py-3 text-center">
                     <Form

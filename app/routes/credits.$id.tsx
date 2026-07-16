@@ -34,6 +34,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       invoiceNumber: credit.invoiceNumber,
       notes: credit.notes,
       date: credit.date.toISOString(),
+      adjustments: credit.adjustments !== null ? Number(credit.adjustments) : null,
       lineItems: credit.lineItems.map((item) => ({
         id: item.id,
         sku: item.sku,
@@ -283,18 +284,41 @@ export default function CreditDetailPage({ loaderData }: Route.ComponentProps) {
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
-                  <td
-                    colSpan={3}
-                    className="px-6 py-3 text-right text-sm text-gray-500 dark:text-gray-400 font-medium"
-                  >
-                    Total Credit
-                  </td>
-                  <td className="px-6 py-3 text-right font-semibold text-red-600 dark:text-red-400 tabular-nums">
-                    {fmtCurrency(credit.amount)}
-                  </td>
-                  <td />
-                </tr>
+                {(() => {
+                  const subtotal = credit.lineItems.reduce((s, i) => s + i.quantity * i.unitCost, 0);
+                  const adj = credit.adjustments ?? 0;
+                  const showBreakdown = adj !== 0;
+                  return (
+                    <>
+                      {showBreakdown && (
+                        <>
+                          <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                            <td colSpan={3} className="px-6 py-2 text-right text-sm text-gray-500 dark:text-gray-400">Subtotal</td>
+                            <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{fmtCurrency(subtotal)}</td>
+                            <td />
+                          </tr>
+                          <tr className="bg-gray-50 dark:bg-gray-800">
+                            <td colSpan={3} className="px-6 py-2 text-right text-sm text-gray-500 dark:text-gray-400">Adjustments</td>
+                            <td className="px-6 py-2 text-right text-sm text-gray-600 dark:text-gray-300 tabular-nums">{adj >= 0 ? "+" : ""}{fmtCurrency(adj)}</td>
+                            <td />
+                          </tr>
+                        </>
+                      )}
+                      <tr className="border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
+                        <td
+                          colSpan={3}
+                          className="px-6 py-3 text-right text-sm text-gray-500 dark:text-gray-400 font-medium"
+                        >
+                          Total Credit
+                        </td>
+                        <td className="px-6 py-3 text-right font-semibold text-red-600 dark:text-red-400 tabular-nums">
+                          {fmtCurrency(credit.amount)}
+                        </td>
+                        <td />
+                      </tr>
+                    </>
+                  );
+                })()}
               </tfoot>
             </table>
           </div>

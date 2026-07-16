@@ -123,6 +123,7 @@ model Credit {
   invoiceNumber String?
   notes         String?
   date          DateTime         @default(now())
+  adjustments   Decimal?         @db.Decimal(10, 2)
   lineItems     CreditLineItem[]
 }
 
