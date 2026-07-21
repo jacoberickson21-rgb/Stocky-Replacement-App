@@ -412,9 +412,9 @@ async function syncSales(syncLogId: string): Promise<number> {
   await updateProgress(db, syncLogId, `Fetching ${daysCutoff} days of order history from Shopify...`);
   const syncStart = Date.now();
 
-  const lineItems = await getAllOrders(daysCutoff);
+  const { lineItems, orderCount } = await getAllOrders(daysCutoff);
 
-  console.log(`[sync:sales] getAllOrders returned ${lineItems.length} line items in ${Date.now() - syncStart}ms`);
+  console.log(`[sync:sales] getAllOrders returned ${orderCount} orders, ${lineItems.length} line items in ${Date.now() - syncStart}ms`);
 
   if (lineItems.length === 0) {
     console.warn("[sync:sales] ⚠ zero line items returned — SalesCache will be empty. Check getAllOrders logs above.");
@@ -462,6 +462,19 @@ async function syncSales(syncLogId: string): Promise<number> {
     }
   }
 
-  console.log(`[sync:sales] done — ${written} SalesCache rows in ${Date.now() - syncStart}ms`);
+  const [dbTotal, distinctVariants] = await Promise.all([
+    db.salesCache.count(),
+    db.$queryRaw<{ count: bigint }[]>`SELECT COUNT(DISTINCT "variantId") as count FROM "SalesCache"`,
+  ]);
+  console.log(
+    `[sync:sales] done — fetched ${orderCount} orders (${lineItems.length} line items) → ` +
+    `wrote ${written} rows this run in ${Date.now() - syncStart}ms. ` +
+    `SalesCache now has ${dbTotal.toLocaleString()} total rows across ${Number(distinctVariants[0]?.count ?? 0).toLocaleString()} distinct variants.`
+  );
+  await updateProgress(
+    db,
+    syncLogId,
+    `Sales done: ${orderCount.toLocaleString()} orders synced. SalesCache has ${dbTotal.toLocaleString()} rows / ${Number(distinctVariants[0]?.count ?? 0).toLocaleString()} variants.`
+  );
   return written;
 }

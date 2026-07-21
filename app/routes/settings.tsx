@@ -7,25 +7,54 @@ import { getSyncStatus, resetRunningSyncs } from "../services/sync.server";
 import type { SyncLogData } from "../services/sync.server";
 import type { POImportResult } from "../utils/po-import.server";
 
-const SETTINGS_KEYS = ["marginFloor", "lowStockThreshold", "autoSyncEnabled", "autoSyncIntervalHours", "salesHistoryDays"] as const;
+const SETTINGS_KEYS = [
+  "marginFloor",
+  "lowStockThreshold",
+  "autoSyncEnabled",
+  "autoSyncIntervalHours",
+  "salesHistoryDays",
+  "storeName",
+  "storeAddress",
+  "storeCity",
+  "storeState",
+  "storeZip",
+  "storePhone",
+  "storeEmail",
+] as const;
 const DEFAULTS: Record<typeof SETTINGS_KEYS[number], string> = {
   marginFloor: "40",
   lowStockThreshold: "5",
   autoSyncEnabled: "true",
   autoSyncIntervalHours: "24",
   salesHistoryDays: "90",
+  storeName: "Idaho Angler, INC",
+  storeAddress: "",
+  storeCity: "",
+  storeState: "",
+  storeZip: "",
+  storePhone: "",
+  storeEmail: "",
 };
 
 export async function loader({ request }: Route.LoaderArgs) {
   await requireUserId(request);
   const db = getDb();
-  const [rows, syncStatus] = await Promise.all([
+  const [rows, syncStatus, salesCacheCount, distinctVariants, dateRange] = await Promise.all([
     db.appSetting.findMany({ where: { key: { in: [...SETTINGS_KEYS] } } }),
     getSyncStatus(),
+    db.salesCache.count(),
+    db.$queryRaw<{ count: bigint }[]>`SELECT COUNT(DISTINCT "variantId") as count FROM "SalesCache"`,
+    db.$queryRaw<{ min: Date | null; max: Date | null }[]>`SELECT MIN(date) as min, MAX(date) as max FROM "SalesCache"`,
   ]);
   const settings = Object.fromEntries(SETTINGS_KEYS.map((k) => [k, DEFAULTS[k]])) as Record<typeof SETTINGS_KEYS[number], string>;
   for (const row of rows) settings[row.key as typeof SETTINGS_KEYS[number]] = row.value;
-  return { settings, syncStatus };
+  const salesCacheStats = {
+    totalRows: salesCacheCount,
+    distinctVariants: Number(distinctVariants[0]?.count ?? 0),
+    minDate: dateRange[0]?.min?.toISOString() ?? null,
+    maxDate: dateRange[0]?.max?.toISOString() ?? null,
+  };
+  return { settings, syncStatus, salesCacheStats };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -52,6 +81,27 @@ export async function action({ request }: Route.ActionArgs) {
       db.appSetting.upsert({ where: { key: "lowStockThreshold" }, update: { value: String(lowStock) }, create: { key: "lowStockThreshold", value: String(lowStock) } }),
     ]);
     return data({ intent: "saveGeneral", error: null });
+  }
+
+  if (intent === "saveStoreInfo") {
+    const storeName = String(formData.get("storeName") ?? "").trim();
+    const storeAddress = String(formData.get("storeAddress") ?? "").trim();
+    const storeCity = String(formData.get("storeCity") ?? "").trim();
+    const storeState = String(formData.get("storeState") ?? "").trim();
+    const storeZip = String(formData.get("storeZip") ?? "").trim();
+    const storePhone = String(formData.get("storePhone") ?? "").trim();
+    const storeEmail = String(formData.get("storeEmail") ?? "").trim();
+
+    await db.$transaction([
+      db.appSetting.upsert({ where: { key: "storeName" }, update: { value: storeName }, create: { key: "storeName", value: storeName } }),
+      db.appSetting.upsert({ where: { key: "storeAddress" }, update: { value: storeAddress }, create: { key: "storeAddress", value: storeAddress } }),
+      db.appSetting.upsert({ where: { key: "storeCity" }, update: { value: storeCity }, create: { key: "storeCity", value: storeCity } }),
+      db.appSetting.upsert({ where: { key: "storeState" }, update: { value: storeState }, create: { key: "storeState", value: storeState } }),
+      db.appSetting.upsert({ where: { key: "storeZip" }, update: { value: storeZip }, create: { key: "storeZip", value: storeZip } }),
+      db.appSetting.upsert({ where: { key: "storePhone" }, update: { value: storePhone }, create: { key: "storePhone", value: storePhone } }),
+      db.appSetting.upsert({ where: { key: "storeEmail" }, update: { value: storeEmail }, create: { key: "storeEmail", value: storeEmail } }),
+    ]);
+    return data({ intent: "saveStoreInfo", error: null });
   }
 
   if (intent === "saveSync") {
@@ -102,6 +152,36 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hrs / 24)} day${Math.floor(hrs / 24) !== 1 ? "s" : ""} ago`;
 }
 
+function SyncProgressBar({ status }: { status: SyncLogData | null }) {
+  if (!status || status.status !== "RUNNING") return null;
+  const hasTotal = !!status.totalVariants && status.totalVariants > 0;
+  const pct = hasTotal ? Math.min(100, Math.round(((status.currentVariant ?? 0) / status.totalVariants!) * 100)) : null;
+  return (
+    <div className="mt-2">
+      <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden relative">
+        {pct !== null ? (
+          <div className="h-full bg-indigo-500 rounded-full transition-[width] duration-500 ease-out" style={{ width: `${pct}%` }} />
+        ) : (
+          <div
+            className="absolute inset-y-0 left-0 w-1/3 rounded-full bg-indigo-500"
+            style={{ animation: "sync-indeterminate 1.2s ease-in-out infinite" }}
+          />
+        )}
+      </div>
+      {pct !== null && (
+        <div className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+          {pct}% · {(status.currentVariant ?? 0).toLocaleString()} / {status.totalVariants!.toLocaleString()} variants
+        </div>
+      )}
+    </div>
+  );
+}
+
+function fmtShortDate(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -109,7 +189,7 @@ function fmtDuration(ms: number): string {
 }
 
 export default function SettingsPage({ loaderData }: Route.ComponentProps) {
-  const { settings, syncStatus: initialSyncStatus } = loaderData;
+  const { settings, syncStatus: initialSyncStatus, salesCacheStats } = loaderData;
   const actionData = useActionData() as { intent: string; error: string | null; resetCount?: number; deletedCount?: number } | undefined;
   const navigation = useNavigation();
   const syncFetcher = useFetcher<SyncLogData>();
@@ -153,8 +233,10 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
 
   const isSavingGeneral = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveGeneral";
   const isSavingSync = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveSync";
+  const isSavingStoreInfo = navigation.state === "submitting" && navigation.formData?.get("intent") === "saveStoreInfo";
   const savedGeneral = navigation.state === "idle" && actionData?.intent === "saveGeneral" && !actionData.error;
   const savedSync = navigation.state === "idle" && actionData?.intent === "saveSync" && !actionData.error;
+  const savedStoreInfo = navigation.state === "idle" && actionData?.intent === "saveStoreInfo" && !actionData.error;
   const isClearingPOs = navigation.state === "submitting" && navigation.formData?.get("intent") === "clearPOs";
   const clearedPOs = navigation.state === "idle" && actionData?.intent === "clearPOs" && !actionData.error;
 
@@ -209,6 +291,69 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
         </Form>
       </div>
 
+      {/* Store Info */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-1">Store Info</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-5">
+          Used as the "From" address on printed purchase orders.
+        </p>
+        <Form method="post">
+          <input type="hidden" name="intent" value="saveStoreInfo" />
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="storeName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Store Name
+              </label>
+              <input id="storeName" name="storeName" type="text" defaultValue={settings.storeName} className={`w-full ${inputClass}`} />
+            </div>
+            <div>
+              <label htmlFor="storeAddress" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Address
+              </label>
+              <input id="storeAddress" name="storeAddress" type="text" defaultValue={settings.storeAddress} className={`w-full ${inputClass}`} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label htmlFor="storeCity" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  City
+                </label>
+                <input id="storeCity" name="storeCity" type="text" defaultValue={settings.storeCity} className={`w-full ${inputClass}`} />
+              </div>
+              <div>
+                <label htmlFor="storeState" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  State
+                </label>
+                <input id="storeState" name="storeState" type="text" defaultValue={settings.storeState} className={`w-full ${inputClass}`} />
+              </div>
+              <div>
+                <label htmlFor="storeZip" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  ZIP
+                </label>
+                <input id="storeZip" name="storeZip" type="text" defaultValue={settings.storeZip} className={`w-full ${inputClass}`} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="storePhone" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Phone
+                </label>
+                <input id="storePhone" name="storePhone" type="tel" defaultValue={settings.storePhone} className={`w-full ${inputClass}`} />
+              </div>
+              <div>
+                <label htmlFor="storeEmail" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Email
+                </label>
+                <input id="storeEmail" name="storeEmail" type="email" defaultValue={settings.storeEmail} className={`w-full ${inputClass}`} />
+              </div>
+            </div>
+          </div>
+          {savedStoreInfo && <p className="text-sm text-green-600 dark:text-green-400 mt-4">Saved.</p>}
+          <button type="submit" disabled={isSavingStoreInfo} className={`mt-5 ${saveBtn(isSavingStoreInfo)}`}>
+            {isSavingStoreInfo ? "Saving…" : "Save"}
+          </button>
+        </Form>
+      </div>
+
       {/* Sync Settings */}
       <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-5">Data Sync</h3>
@@ -237,6 +382,7 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
               {syncStatus.errorMessage && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 font-mono pl-6">{syncStatus.errorMessage}</p>
               )}
+              <SyncProgressBar status={syncStatus} />
               {isStuckRunning && (
                 <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
@@ -277,6 +423,14 @@ export default function SettingsPage({ loaderData }: Route.ComponentProps) {
                 <p className="text-gray-500 dark:text-gray-400 text-xs font-mono truncate">{syncStatus.errorMessage}</p>
               )}
             </div>
+          )}
+        </div>
+
+        {/* SalesCache stats */}
+        <div className="mb-5 p-3 rounded-xl bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400">
+          Last sync: {salesCacheStats.distinctVariants.toLocaleString()} variants, {salesCacheStats.totalRows.toLocaleString()} sales-days cached
+          {salesCacheStats.minDate && salesCacheStats.maxDate && (
+            <span> · covering {fmtShortDate(salesCacheStats.minDate)} – {fmtShortDate(salesCacheStats.maxDate)}</span>
           )}
         </div>
 

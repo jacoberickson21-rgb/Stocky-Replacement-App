@@ -1457,6 +1457,32 @@ export async function getVariantPrice(variantId: string): Promise<string | null>
   return data.productVariant?.price ?? null;
 }
 
+export async function getInventoryItemIdsByVariant(
+  variantIds: string[]
+): Promise<Map<string, string | null>> {
+  if (variantIds.length === 0) return new Map();
+  const data = await shopifyGraphQL<{
+    nodes: ({ id: string; inventoryItem: { id: string } | null } | null)[];
+  }>(
+    `query GetVariantInventoryItemIds($ids: [ID!]!) {
+      nodes(ids: $ids) {
+        ... on ProductVariant {
+          id
+          inventoryItem { id }
+        }
+      }
+    }`,
+    { ids: variantIds }
+  );
+  const result = new Map<string, string | null>();
+  for (const node of data.nodes) {
+    if (node?.id != null) {
+      result.set(node.id, node.inventoryItem?.id ?? null);
+    }
+  }
+  return result;
+}
+
 export async function getInventoryQuantitiesByVariant(
   variantIds: string[]
 ): Promise<Map<string, number | null>> {
@@ -2048,7 +2074,12 @@ export type OrderLineItem = {
   orderDate: string;
 };
 
-export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
+export type OrdersResult = {
+  lineItems: OrderLineItem[];
+  orderCount: number;
+};
+
+export async function getAllOrders(daysCutoff = 90): Promise<OrdersResult> {
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - daysCutoff);
   const startISO = startDate.toISOString();
@@ -2060,6 +2091,7 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
   let cursor: string | null = null;
   let hasNextPage = true;
   let pageNum = 0;
+  let totalOrders = 0;
 
   type OrdersPage = {
     orders: {
@@ -2106,6 +2138,7 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
     );
 
     const ordersOnPage = page.orders.edges.length;
+    totalOrders += ordersOnPage;
     let lineItemsOnPage = 0;
 
     for (const edge of page.orders.edges) {
@@ -2133,174 +2166,11 @@ export async function getAllOrders(daysCutoff = 90): Promise<OrderLineItem[]> {
     );
   }
 
-  console.log(`[getAllOrders] finished: ${pageNum} page(s), ${results.length} total line items`);
-  return results;
+  console.log(`[getAllOrders] finished: ${pageNum} page(s), ${totalOrders} orders, ${results.length} total line items`);
+  return { lineItems: results, orderCount: totalOrders };
 }
 
-// ─── Sales Velocity ───────────────────────────────────────────────────────────
-
-export type SalesVelocityVariant = {
-  variantId: string;
-  productTitle: string;
-  sku: string;
-  vendor: string;
-  productType: string;
-  unitsSold: number;
-  revenue: number;
-  currentStock: number;
-  price: number;
-};
-
-export type SalesVelocityResult = {
-  data: SalesVelocityVariant[];
-  capped: boolean;
-};
-
-const VELOCITY_MAX_PAGES = 2;
-const VELOCITY_PAGE_SIZE = 100;
-
-export async function getSalesVelocityData(
-  startDate: Date,
-  endDate: Date,
-  partialRef?: { current: SalesVelocityVariant[] }
-): Promise<SalesVelocityResult> {
-  const startISO = startDate.toISOString();
-  const endISO = endDate.toISOString();
-  const orderQuery = `created_at:>='${startISO}' created_at:<='${endISO}' NOT financial_status:voided`;
-
-  // salesMap accumulates units/revenue per variant across all pages
-  const salesMap = new Map<string, { unitsSold: number; revenue: number }>();
-  // metaMap caches variant metadata fetched per page (avoids re-fetching seen variants)
-  const metaMap = new Map<string, {
-    productTitle: string; vendor: string; productType: string;
-    sku: string; price: number; currentStock: number;
-  }>();
-
-  let cursor: string | null = null;
-  let hasNextPage = true;
-  let pagesFetched = 0;
-  let capped = false;
-
-  type OrdersPage = {
-    orders: {
-      edges: {
-        node: {
-          lineItems: {
-            nodes: {
-              variant: { id: string } | null;
-              quantity: number;
-              originalUnitPriceSet: { shopMoney: { amount: string } };
-            }[];
-          };
-        };
-      }[];
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-    };
-  };
-
-  while (hasNextPage) {
-    if (pagesFetched >= VELOCITY_MAX_PAGES) {
-      capped = true;
-      break;
-    }
-
-    const ordersPage: OrdersPage = await shopifyGraphQL<OrdersPage>(
-      `query GetOrdersForVelocity($query: String!, $after: String) {
-        orders(first: ${VELOCITY_PAGE_SIZE}, query: $query, after: $after) {
-          edges {
-            node {
-              lineItems(first: 250) {
-                nodes {
-                  variant { id }
-                  quantity
-                  originalUnitPriceSet { shopMoney { amount } }
-                }
-              }
-            }
-          }
-          pageInfo { hasNextPage endCursor }
-        }
-      }`,
-      { query: orderQuery, after: cursor }
-    );
-
-    pagesFetched++;
-
-    // Collect sales and track which variant IDs are new (need metadata lookup)
-    const newVariantIds: string[] = [];
-    for (const edge of ordersPage.orders.edges) {
-      for (const item of edge.node.lineItems.nodes) {
-        const vid = item.variant?.id;
-        if (!vid) continue;
-        const prev = salesMap.get(vid) ?? { unitsSold: 0, revenue: 0 };
-        prev.unitsSold += item.quantity;
-        prev.revenue += item.quantity * parseFloat(item.originalUnitPriceSet.shopMoney.amount);
-        salesMap.set(vid, prev);
-        if (!metaMap.has(vid)) newVariantIds.push(vid);
-      }
-    }
-
-    // Interleave: fetch variant metadata for this page's new variants immediately
-    const BATCH = 50;
-    for (let i = 0; i < newVariantIds.length; i += BATCH) {
-      const ids = newVariantIds.slice(i, i + BATCH);
-      const variantPage = await shopifyGraphQL<{
-        nodes: ({
-          __typename: string;
-          id: string;
-          sku: string;
-          price: string;
-          inventoryQuantity: number;
-          product: { title: string; vendor: string; productType: string };
-        } | null)[];
-      }>(
-        `query GetVariantDetails($ids: [ID!]!) {
-          nodes(ids: $ids) {
-            __typename
-            ... on ProductVariant {
-              id sku price inventoryQuantity
-              product { title vendor productType }
-            }
-          }
-        }`,
-        { ids }
-      );
-
-      for (const node of variantPage.nodes) {
-        if (!node || node.__typename !== "ProductVariant") continue;
-        metaMap.set(node.id, {
-          productTitle: node.product.title,
-          vendor: node.product.vendor,
-          productType: node.product.productType,
-          sku: node.sku,
-          price: parseFloat(node.price),
-          currentStock: node.inventoryQuantity,
-        });
-      }
-    }
-
-    // Snapshot partial results so the timeout can return whatever we have so far
-    if (partialRef) {
-      const partial: SalesVelocityVariant[] = [];
-      for (const [vid, sales] of salesMap) {
-        const meta = metaMap.get(vid);
-        if (!meta) continue;
-        partial.push({ variantId: vid, ...meta, ...sales });
-      }
-      partialRef.current = partial;
-    }
-
-    hasNextPage = ordersPage.orders.pageInfo.hasNextPage;
-    cursor = ordersPage.orders.pageInfo.endCursor;
-  }
-
-  const results: SalesVelocityVariant[] = [];
-  for (const [vid, sales] of salesMap) {
-    const meta = metaMap.get(vid);
-    if (!meta) continue;
-    results.push({ variantId: vid, ...meta, ...sales });
-  }
-
-  return { data: results.sort((a, b) => b.unitsSold - a.unitsSold), capped };
-}
+// Sales velocity now lives in services/sales-velocity.server.ts, backed by
+// SalesCache — ShopifyQL's `sales` dataset can't group by variant, so it
+// can't drive accurate per-SKU numbers (see getVariantSalesVelocity).
 

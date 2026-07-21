@@ -21,6 +21,11 @@ export async function action({ request }: Route.ActionArgs) {
   const contactName = String(form.get("contactName") ?? "").trim() || null;
   const email = String(form.get("email") ?? "").trim() || null;
   const phone = String(form.get("phone") ?? "").trim() || null;
+  const address = String(form.get("address") ?? "").trim() || null;
+  const city = String(form.get("city") ?? "").trim() || null;
+  const state = String(form.get("state") ?? "").trim() || null;
+  const zip = String(form.get("zip") ?? "").trim() || null;
+  const website = String(form.get("website") ?? "").trim() || null;
   const supplierIdRaw = String(form.get("supplierId") ?? "").trim();
   const supplierId = supplierIdRaw ? Number(supplierIdRaw) : null;
 
@@ -28,7 +33,7 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ error: "Vendor name is required." }, { status: 400 });
   }
 
-  await getDb().vendor.create({ data: { name, contactName, email, phone, supplierId } });
+  await getDb().vendor.create({ data: { name, contactName, email, phone, address, city, state, zip, website, supplierId } });
 
   return redirect("/vendors");
 }
@@ -98,6 +103,67 @@ export default function NewVendorPage({ actionData, loaderData }: Route.Componen
               id="phone"
               name="phone"
               type="tel"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="address" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Address
+            </label>
+            <input
+              id="address"
+              name="address"
+              type="text"
+              className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label htmlFor="city" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                City
+              </label>
+              <input
+                id="city"
+                name="city"
+                type="text"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label htmlFor="state" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                State
+              </label>
+              <input
+                id="state"
+                name="state"
+                type="text"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label htmlFor="zip" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                ZIP
+              </label>
+              <input
+                id="zip"
+                name="zip"
+                type="text"
+                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="website" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Website
+            </label>
+            <input
+              id="website"
+              name="website"
+              type="text"
+              placeholder="e.g. https://vendor.com"
               className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>

@@ -34,6 +34,11 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       contactName: vendor.contactName,
       email: vendor.email,
       phone: vendor.phone,
+      address: vendor.address,
+      city: vendor.city,
+      state: vendor.state,
+      zip: vendor.zip,
+      website: vendor.website,
       shopifyVendorName: vendor.shopifyVendorName,
       supplier: vendor.supplier,
     },
@@ -111,11 +116,16 @@ export async function action({ request, params }: Route.ActionArgs) {
     const contactName = String(formData.get("contactName") ?? "").trim() || null;
     const email = String(formData.get("email") ?? "").trim() || null;
     const phone = String(formData.get("phone") ?? "").trim() || null;
+    const address = String(formData.get("address") ?? "").trim() || null;
+    const city = String(formData.get("city") ?? "").trim() || null;
+    const state = String(formData.get("state") ?? "").trim() || null;
+    const zip = String(formData.get("zip") ?? "").trim() || null;
+    const website = String(formData.get("website") ?? "").trim() || null;
     const shopifyVendorName = String(formData.get("shopifyVendorName") ?? "").trim() || null;
     if (!name) return { error: "Vendor name is required." };
     await getDb().vendor.update({
       where: { id: vendorId },
-      data: { name, contactName, email, phone, shopifyVendorName },
+      data: { name, contactName, email, phone, address, city, state, zip, website, shopifyVendorName },
     });
     return { success: "editVendor" };
   }
@@ -271,6 +281,54 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
                 />
               </div>
               <div className="col-span-2">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Address</label>
+                <input
+                  name="address"
+                  type="text"
+                  defaultValue={vendor.address ?? ""}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">City</label>
+                <input
+                  name="city"
+                  type="text"
+                  defaultValue={vendor.city ?? ""}
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">State</label>
+                  <input
+                    name="state"
+                    type="text"
+                    defaultValue={vendor.state ?? ""}
+                    className={`${inputClass} w-full`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">ZIP</label>
+                  <input
+                    name="zip"
+                    type="text"
+                    defaultValue={vendor.zip ?? ""}
+                    className={`${inputClass} w-full`}
+                  />
+                </div>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Website</label>
+                <input
+                  name="website"
+                  type="text"
+                  defaultValue={vendor.website ?? ""}
+                  placeholder="e.g. https://vendor.com"
+                  className={`${inputClass} w-full`}
+                />
+              </div>
+              <div className="col-span-2">
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
                   Shopify Vendor Name
                 </label>
@@ -331,7 +389,7 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
       </div>
 
       {/* Contact info + Supplier */}
-      {(vendor.contactName || vendor.email || vendor.phone || vendor.supplier || allSuppliers.length > 0) && (
+      {(vendor.contactName || vendor.email || vendor.phone || vendor.address || vendor.website || vendor.supplier || allSuppliers.length > 0) && (
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-3">Details</h3>
           <div className="flex flex-wrap gap-8 text-sm text-gray-600 dark:text-gray-300">
@@ -345,6 +403,23 @@ export default function VendorDetailPage({ loaderData }: Route.ComponentProps) {
               </a>
             )}
             {vendor.phone && <span>{vendor.phone}</span>}
+            {(vendor.address || vendor.city || vendor.state || vendor.zip) && (
+              <span>
+                {[vendor.address, [vendor.city, vendor.state].filter(Boolean).join(", "), vendor.zip]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+            {vendor.website && (
+              <a
+                href={vendor.website.startsWith("http") ? vendor.website : `https://${vendor.website}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
+              >
+                {vendor.website}
+              </a>
+            )}
             <div className="flex items-center gap-3">
               <span className="text-gray-400 dark:text-gray-500 text-xs font-medium uppercase tracking-wide">
                 Supplier:

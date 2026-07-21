@@ -37,6 +37,11 @@ model Vendor {
   contactName        String?
   email              String?
   phone              String?
+  address            String?
+  city               String?
+  state              String?
+  zip                String?
+  website            String?
   shopifyVendorName  String?
   supplierId         Int?
   supplier           Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
