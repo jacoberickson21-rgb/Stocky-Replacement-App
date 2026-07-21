@@ -105,3 +105,21 @@ export async function getVariantSalesVelocity(period: SalesVelocityPeriod): Prom
 
   return { rows, dayRange };
 }
+
+// Exact-date-range units sold per variant, sourced directly from SalesCache —
+// used for "compare to a historical period" (e.g. same window last year),
+// independent of the rolling lookback periods above.
+export async function getHistoricalUnitsSoldByVariant(
+  variantIds: string[],
+  from: Date,
+  toExclusive: Date
+): Promise<Map<string, number>> {
+  if (variantIds.length === 0) return new Map();
+  const db = getDb();
+  const rows = await db.salesCache.groupBy({
+    by: ["variantId"],
+    where: { variantId: { in: variantIds }, date: { gte: from, lt: toExclusive } },
+    _sum: { unitsSold: true },
+  });
+  return new Map(rows.map((r) => [r.variantId, r._sum.unitsSold ?? 0]));
+}

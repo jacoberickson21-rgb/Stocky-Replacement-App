@@ -4,7 +4,7 @@ import Papa from "papaparse";
 import type { Route } from "./+types/reorder";
 import { requireUserId } from "../session.server";
 import { getDb } from "../db.server";
-import { getVariantSalesVelocity, type SalesVelocityPeriod } from "../services/sales-velocity.server";
+import { getVariantSalesVelocity, getHistoricalUnitsSoldByVariant, type SalesVelocityPeriod } from "../services/sales-velocity.server";
 import { getSyncStatus } from "../services/sync.server";
 import type { SyncLogData } from "../services/sync.server";
 import { resolveVendorId } from "../utils/vendor-resolve.server";
@@ -51,6 +51,8 @@ type ReorderRow = {
   avgDaily: number;
   daysRemaining: number | null;
   suggestedQty: number;
+  historicalUnitsSold: number | null;
+  historicalSuggestedQty: number | null;
 };
 
 type ReorderProductGroup = {
@@ -62,6 +64,8 @@ type ReorderProductGroup = {
   avgDaily: number;
   daysRemaining: number | null;
   totalSuggestedQty: number;
+  totalHistoricalUnitsSold: number | null;
+  totalHistoricalSuggestedQty: number | null;
 };
 
 type PreseasonComparisonRow = {
@@ -99,6 +103,23 @@ export async function loader({ request }: Route.LoaderArgs) {
   const maxDays = Math.max(1, parseInt(url.searchParams.get("maxDays") ?? "30"));
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
 
+  const histFrom = url.searchParams.get("histFrom") ?? "";
+  const histTo = url.searchParams.get("histTo") ?? "";
+  let historicalDays: number | null = null;
+  let histFromDate: Date | null = null;
+  let histToExclusiveDate: Date | null = null;
+  if (histFrom && histTo) {
+    const from = new Date(`${histFrom}T00:00:00`);
+    const toExclusive = new Date(`${histTo}T00:00:00`);
+    toExclusive.setDate(toExclusive.getDate() + 1);
+    if (!isNaN(from.getTime()) && !isNaN(toExclusive.getTime()) && toExclusive > from) {
+      histFromDate = from;
+      histToExclusiveDate = toExclusive;
+      historicalDays = Math.max(1, Math.round((toExclusive.getTime() - from.getTime()) / 86_400_000));
+    }
+  }
+  const hasHistRange = histFromDate !== null && histToExclusiveDate !== null;
+
   const [{ rows: velocityRows, dayRange }, vendors, distinctTypes, lastSync] = await Promise.all([
     getVariantSalesVelocity(period),
     db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
@@ -130,9 +151,20 @@ export async function loader({ request }: Route.LoaderArgs) {
       avgDaily: r.avgDailySales,
       daysRemaining: r.daysRemaining,
       suggestedQty: Math.max(0, Math.ceil(r.avgDailySales * coverageDays - r.currentStock)),
+      historicalUnitsSold: null,
+      historicalSuggestedQty: null,
     }));
 
   rows = rows.sort((a, b) => (a.daysRemaining ?? Infinity) - (b.daysRemaining ?? Infinity));
+
+  // Debug: verify the suggested-qty math for a handful of sample variants.
+  for (const r of rows.slice(0, 5)) {
+    console.log(
+      `[reorder] SKU=${r.sku || "—"} unitsSold=${r.unitsSold} dayRange=${dayRange} ` +
+      `avgDailySales=${r.avgDaily.toFixed(4)} currentStock=${r.currentStock} ` +
+      `coverageDays=${coverageDays} suggestedQty=${r.suggestedQty}`
+    );
+  }
 
   // Group the (already-filtered) variants by product; parent rows show
   // aggregated totals, matching the sales-velocity report's grouping pattern.
@@ -149,20 +181,52 @@ export async function loader({ request }: Route.LoaderArgs) {
     const avgDaily = totalUnitsSold / dayRange;
     const daysRemaining = avgDaily > 0 ? Math.floor(totalCurrentStock / avgDaily) : null;
     const totalSuggestedQty = variants.reduce((s, v) => s + v.suggestedQty, 0);
-    return { productTitle, vendor, variants, totalCurrentStock, totalUnitsSold, avgDaily, daysRemaining, totalSuggestedQty };
+    return {
+      productTitle,
+      vendor,
+      variants,
+      totalCurrentStock,
+      totalUnitsSold,
+      avgDaily,
+      daysRemaining,
+      totalSuggestedQty,
+      totalHistoricalUnitsSold: null,
+      totalHistoricalSuggestedQty: null,
+    };
   });
 
   groups = groups.sort((a, b) => (a.daysRemaining ?? Infinity) - (b.daysRemaining ?? Infinity));
 
   const totalCount = groups.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  const pageGroups = groups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  let pageGroups = groups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Historical comparison is computed only for the variants actually shown on
+  // this page, keeping the SalesCache query scoped instead of covering every
+  // filtered row across all pages.
+  if (hasHistRange && histFromDate && histToExclusiveDate) {
+    const pageVariantIds = Array.from(new Set(pageGroups.flatMap((g) => g.variants.map((v) => v.variantId))));
+    const historicalMap = await getHistoricalUnitsSoldByVariant(pageVariantIds, histFromDate, histToExclusiveDate);
+    pageGroups = pageGroups.map((group) => {
+      const variants = group.variants.map((v) => {
+        const historicalUnitsSold = historicalMap.get(v.variantId) ?? 0;
+        const historicalAvgDaily = historicalUnitsSold / (historicalDays as number);
+        const historicalSuggestedQty = Math.max(0, Math.ceil(historicalAvgDaily * coverageDays - v.currentStock));
+        return { ...v, historicalUnitsSold, historicalSuggestedQty };
+      });
+      const totalHistoricalUnitsSold = variants.reduce((s, v) => s + (v.historicalUnitsSold ?? 0), 0);
+      const totalHistoricalSuggestedQty = variants.reduce((s, v) => s + (v.historicalSuggestedQty ?? 0), 0);
+      return { ...group, variants, totalHistoricalUnitsSold, totalHistoricalSuggestedQty };
+    });
+  }
 
   return {
     groups: pageGroups,
     vendors,
     distinctTypes: distinctTypes.map((r) => r.productType!).filter(Boolean),
-    filters: { vendor: vendorFilter, productType: productTypeFilter, period, maxDays, coverageDays },
+    filters: { vendor: vendorFilter, productType: productTypeFilter, period, maxDays, coverageDays, histFrom, histTo },
+    dayRange,
+    historicalDays,
     pagination: { page, totalPages, totalCount },
     lastSync,
   };
@@ -443,8 +507,13 @@ type ActionData =
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
+function toIsoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 export default function ReorderPage({ loaderData }: Route.ComponentProps) {
-  const { groups, vendors, distinctTypes, filters, pagination, lastSync: initialLastSync } = loaderData;
+  const { groups, vendors, distinctTypes, filters, dayRange, historicalDays, pagination, lastSync: initialLastSync } = loaderData;
+  const hasHistCompare = !!filters.histFrom && !!filters.histTo;
   const [, setSearchParams] = useSearchParams();
   const navigation = useNavigation();
   const actionData = useActionData() as ActionData | undefined;
@@ -452,23 +521,53 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [qtyOverrides, setQtyOverrides] = useState<Record<string, number>>({});
+  const [qtyInputs, setQtyInputs] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showImport, setShowImport] = useState(false);
   const [importVendorId, setImportVendorId] = useState("");
   const [comparison, setComparison] = useState<{ rows: PreseasonComparisonRow[]; vendorId: string; vendorName: string } | null>(null);
   const [lastSync, setLastSync] = useState<SyncLogData | null>(initialLastSync);
 
+  // Local text state for the "Below X days of stock" input — lets staff fully
+  // clear the field while typing instead of it snapping back to the URL value
+  // on every keystroke. Committed to the URL (via setFilter) on blur/Enter.
+  const [maxDaysInput, setMaxDaysInput] = useState(String(filters.maxDays));
+  useEffect(() => {
+    setMaxDaysInput(String(filters.maxDays));
+  }, [filters.maxDays]);
+
+  function commitMaxDays() {
+    const parsed = parseInt(maxDaysInput, 10);
+    const next = !isNaN(parsed) && parsed >= 1 ? parsed : filters.maxDays;
+    setMaxDaysInput(String(next));
+    if (next !== filters.maxDays) setFilter("maxDays", String(next));
+  }
+
   const allVariantRows = useMemo(() => groups.flatMap((g) => g.variants), [groups]);
 
-  // Reset selection when the underlying row set changes (filters/page/period),
-  // pre-checking critical items: out of stock, or under a week of stock left.
+  // Reset selection when the underlying row set changes (filters/page/period).
+  // Nothing is pre-checked — staff select what they want to order manually.
   useEffect(() => {
-    const critical = allVariantRows.filter(
-      (r) => r.currentStock === 0 || (r.daysRemaining !== null && r.daysRemaining < 7)
-    );
-    setSelected(new Set(critical.map((r) => r.sku)));
+    setSelected(new Set());
     setQtyOverrides({});
-  }, [allVariantRows]);
+    setQtyInputs({});
+  }, [groups]);
+
+  // Commit a variant's qty-override input (same empty-state-friendly pattern
+  // as maxDays above): falls back to `fallback` (the suggested qty) if what
+  // was typed isn't a valid non-negative number.
+  function commitQtyOverride(sku: string, fallback: number) {
+    const raw = qtyInputs[sku];
+    if (raw === undefined) return;
+    const parsed = parseInt(raw, 10);
+    const finalQty = !isNaN(parsed) && parsed >= 0 ? parsed : fallback;
+    setQtyOverrides((prev) => ({ ...prev, [sku]: finalQty }));
+    setQtyInputs((prev) => {
+      const next = { ...prev };
+      delete next[sku];
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (actionData && "comparison" in actionData) {
@@ -507,6 +606,8 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
     params.set("period", String(next.period));
     params.set("maxDays", String(next.maxDays));
     params.set("coverageDays", String(next.coverageDays));
+    if (next.histFrom) params.set("histFrom", String(next.histFrom));
+    if (next.histTo) params.set("histTo", String(next.histTo));
     setSearchParams(params);
   }
 
@@ -518,7 +619,34 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
     params.set("period", coverageToPeriod(coverageDays));
     params.set("maxDays", String(filters.maxDays));
     params.set("coverageDays", String(coverageDays));
+    if (filters.histFrom) params.set("histFrom", filters.histFrom);
+    if (filters.histTo) params.set("histTo", filters.histTo);
     setSearchParams(params);
+  }
+
+  function setHistRange(histFrom: string, histTo: string) {
+    const params = new URLSearchParams();
+    if (filters.vendor) params.set("vendor", filters.vendor);
+    if (filters.productType) params.set("productType", filters.productType);
+    params.set("period", filters.period);
+    params.set("maxDays", String(filters.maxDays));
+    params.set("coverageDays", String(filters.coverageDays));
+    if (histFrom) params.set("histFrom", histFrom);
+    if (histTo) params.set("histTo", histTo);
+    setSearchParams(params);
+  }
+
+  function clearHistRange() {
+    setHistRange("", "");
+  }
+
+  function compareToLastYear() {
+    const now = new Date();
+    const to = new Date(now);
+    to.setDate(to.getDate() - 365);
+    const from = new Date(to);
+    from.setDate(from.getDate() - (dayRange - 1));
+    setHistRange(toIsoDate(from), toIsoDate(to));
   }
 
   function buildPageUrl(p: number) {
@@ -528,6 +656,8 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
     params.set("period", filters.period);
     params.set("maxDays", String(filters.maxDays));
     params.set("coverageDays", String(filters.coverageDays));
+    if (filters.histFrom) params.set("histFrom", filters.histFrom);
+    if (filters.histTo) params.set("histTo", filters.histTo);
     params.set("page", String(p));
     return `?${params.toString()}`;
   }
@@ -657,6 +787,49 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
         </span>
       </div>
 
+      {/* Historical comparison (optional) */}
+      <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-4 mb-4 flex flex-wrap gap-3 items-end">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Compare to historical period</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={filters.histFrom}
+              onChange={(e) => setHistRange(e.target.value, filters.histTo)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
+            />
+            <span className="text-xs text-gray-400 dark:text-gray-500">to</span>
+            <input
+              type="date"
+              value={filters.histTo}
+              onChange={(e) => setHistRange(filters.histFrom, e.target.value)}
+              className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={compareToLastYear}
+          className="text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+        >
+          Compare to last year
+        </button>
+        {hasHistCompare && (
+          <>
+            <span className="text-xs text-gray-400 dark:text-gray-500">
+              {historicalDays ? `${historicalDays} day window` : ""}
+            </span>
+            <button
+              type="button"
+              onClick={clearHistRange}
+              className="text-sm text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            >
+              Clear
+            </button>
+          </>
+        )}
+      </div>
+
       {/* Preseason CSV import panel */}
       {showImport && (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-5 mb-6">
@@ -724,7 +897,7 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
             <tbody>
               {comparison.rows.map((row, i) => (
                 <tr key={`${row.sku}-${i}`} className={i < comparison.rows.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                  <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">{row.productTitle}</td>
+                  <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs whitespace-normal">{row.productTitle}</td>
                   <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">{row.sku}</td>
                   <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.preseasonQty}</td>
                   <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{row.currentStock ?? "—"}</td>
@@ -793,8 +966,16 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
           <input
             type="number"
             min={1}
-            value={filters.maxDays}
-            onChange={(e) => setFilter("maxDays", e.target.value || "30")}
+            value={maxDaysInput}
+            onChange={(e) => setMaxDaysInput(e.target.value)}
+            onBlur={commitMaxDays}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitMaxDays();
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
             className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100 w-24"
           />
         </div>
@@ -818,6 +999,7 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                 <button type="button" onClick={collapseAll} className="font-medium text-indigo-600 dark:text-indigo-400 hover:underline">Collapse All</button>
               </span>
             </div>
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -829,6 +1011,11 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                   <th className="text-left px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Vendor</th>
                   <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Current Stock</th>
                   <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Units Sold</th>
+                  {hasHistCompare && (
+                    <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400" title={`${filters.histFrom} to ${filters.histTo}`}>
+                      Historical Units Sold
+                    </th>
+                  )}
                   <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Avg Daily Sales</th>
                   <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Days of Stock</th>
                   <th className="text-right px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Suggested Qty</th>
@@ -855,16 +1042,16 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                             aria-label="Select all variants"
                           />
                         </td>
-                        <td className="px-5 py-3 text-gray-800 dark:text-gray-100 max-w-xs truncate">
+                        <td className="px-5 py-3 text-gray-800 dark:text-gray-100 align-top">
                           <button
                             type="button"
                             onClick={() => toggleExpand(group.productTitle)}
                             aria-label={isExpanded ? "Collapse" : "Expand"}
-                            className="mr-2 w-4 inline-block text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
+                            className="mr-2 w-4 inline-block text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 align-top"
                           >
                             {isExpanded ? "▼" : "▶"}
                           </button>
-                          {group.productTitle}
+                          <span className="inline-block max-w-xs align-top whitespace-normal">{group.productTitle}</span>
                         </td>
                         <td className="px-5 py-3 font-mono text-gray-600 dark:text-gray-300 text-xs">
                           {group.variants.length === 1 ? group.variants[0].sku : `${group.variants.length} SKUs`}
@@ -872,6 +1059,14 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                         <td className="px-5 py-3 text-gray-600 dark:text-gray-300">{group.vendor || "—"}</td>
                         <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{group.totalCurrentStock}</td>
                         <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">{group.totalUnitsSold}</td>
+                        {hasHistCompare && (
+                          <td className="px-5 py-3 text-right text-gray-700 dark:text-gray-200">
+                            <div>{group.totalHistoricalUnitsSold ?? "—"}</div>
+                            <div className="text-[10px] text-gray-400 dark:text-gray-500 font-normal">
+                              {group.totalHistoricalSuggestedQty ?? 0} suggested
+                            </div>
+                          </td>
+                        )}
                         <td className="px-5 py-3 text-right text-gray-600 dark:text-gray-300">{group.avgDaily.toFixed(2)}</td>
                         <td className="px-5 py-3 text-right">
                           <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(group.daysRemaining)}`}>
@@ -900,6 +1095,28 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                               <td className="px-5 py-2 text-gray-500 dark:text-gray-400 text-xs">—</td>
                               <td className="px-5 py-2 text-right text-gray-600 dark:text-gray-300 text-xs">{row.currentStock ?? "—"}</td>
                               <td className="px-5 py-2 text-right text-gray-600 dark:text-gray-300 text-xs">{row.unitsSold}</td>
+                              {hasHistCompare && (
+                                <td className="px-5 py-2 text-right text-gray-600 dark:text-gray-300 text-xs">
+                                  <div>{row.historicalUnitsSold ?? "—"}</div>
+                                  {row.historicalSuggestedQty !== null && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setQtyOverrides((prev) => ({ ...prev, [row.sku]: row.historicalSuggestedQty! }));
+                                        setQtyInputs((prev) => {
+                                          const next = { ...prev };
+                                          delete next[row.sku];
+                                          return next;
+                                        });
+                                      }}
+                                      className="text-[10px] text-indigo-500 dark:text-indigo-400 hover:underline font-normal"
+                                      title="Use the historical suggestion for this variant's qty override"
+                                    >
+                                      {row.historicalSuggestedQty} suggested · Use →
+                                    </button>
+                                  )}
+                                </td>
+                              )}
                               <td className="px-5 py-2 text-right text-gray-500 dark:text-gray-400 text-xs">{row.avgDaily.toFixed(2)}</td>
                               <td className="px-5 py-2 text-right">
                                 <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${daysBadgeBg(row.daysRemaining)}`}>
@@ -917,10 +1134,16 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                                 <input
                                   type="number"
                                   min={0}
-                                  value={qtyOverrides[row.sku] ?? row.suggestedQty}
-                                  onChange={(e) =>
-                                    setQtyOverrides((prev) => ({ ...prev, [row.sku]: parseInt(e.target.value, 10) || 0 }))
-                                  }
+                                  value={qtyInputs[row.sku] ?? String(qtyOverrides[row.sku] ?? row.suggestedQty)}
+                                  onChange={(e) => setQtyInputs((prev) => ({ ...prev, [row.sku]: e.target.value }))}
+                                  onBlur={() => commitQtyOverride(row.sku, row.suggestedQty)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitQtyOverride(row.sku, row.suggestedQty);
+                                      (e.target as HTMLInputElement).blur();
+                                    }
+                                  }}
                                   className="w-20 text-sm text-right border border-gray-200 dark:border-gray-700 rounded-lg px-2 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-100"
                                 />
                               </td>
@@ -932,6 +1155,7 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
