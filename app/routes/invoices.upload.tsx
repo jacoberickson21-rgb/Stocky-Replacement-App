@@ -1641,34 +1641,6 @@ function ManualEntryForm({
   const [manualOptions, setManualOptions] = useState<{ name: string; values: string[] }[]>([]);
   const [optionValueInputs, setOptionValueInputs] = useState<string[]>([]);
 
-  function addShopifyItem(result: ProductSearchResult) {
-    console.log(`[addShopifyItem] sku=${result.sku} barcode=${result.barcode}`);
-    setLineItems((prev) => [
-      ...prev,
-      {
-        key: String(++keyCounter.current),
-        sku: result.sku,
-        description: result.productTitle,
-        quantity: 1,
-        unitCost: result.unitCost ?? 0,
-        retailPrice: result.price ?? null,
-        shopifyPrice: result.price ?? null,
-        shopifyCost: result.unitCost,
-        updateShopifyCost: false,
-        variantId: result.variantId,
-        inventoryItemId: result.inventoryItemId,
-        productGroupKey: null,
-        variantOptions: null,
-        productTitle: null,
-        variantTitle: result.variantTitle !== "Default Title" ? result.variantTitle : null,
-        barcode: result.barcode ?? "",
-        vendorId: addItemVendorId || selectedVendorId,
-      },
-    ]);
-    setSearchQuery("");
-    setShowDropdown(false);
-  }
-
   function addOption() {
     if (manualOptions.length >= 3) return;
     setManualOptions((prev) => [...prev, { name: "", values: [] }]);
@@ -2067,7 +2039,7 @@ function ManualEntryForm({
                       return (
                         <div
                           key={result.variantId}
-                          onClick={() => addShopifyItem(result)}
+                          onClick={() => toggleSelection(result.variantId)}
                           className="group flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors"
                         >
                           <input

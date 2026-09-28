@@ -14,14 +14,10 @@ import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
 import {
   lookupProduct,
-  getLocationId,
-  updateInventoryLevel,
-  getVariantPrice,
-  updateVariantBarcode,
-  getProductIdFromVariant,
   getInventoryQuantitiesByVariant,
 } from "../services/shopify.server";
 import type { ProductSearchResult } from "../services/shopify.server";
+import { syncInvoiceToShopify } from "../services/invoice-shopify-sync.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -230,164 +226,12 @@ export async function action({ request, params }: Route.ActionArgs) {
     );
   }
 
-  // Shopify inventory update — best-effort after DB commit
-  let locationId: string | null = null;
-  try {
-    locationId = await getLocationId();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    for (const item of invoice.lineItems.filter(
-      (i) => i.shopifyInventoryItemId
-    )) {
-      await logFailure(
-        "INVENTORY_UPDATE",
-        item.sku ?? item.description,
-        `Could not fetch Shopify location: ${msg}`
-      );
-    }
-  }
-
-  if (locationId) {
-    for (const item of invoice.lineItems) {
-      if (item.inventorySynced) continue;
-
-      const received = Number(formData.get(`qty_${item.id}`));
-
-      let inventoryItemId: string | null = item.shopifyInventoryItemId;
-      let freshVariantId: string | null = null;
-      let freshInventoryItemId: string | null = null;
-      let freshTitle: string | null = null;
-      let freshPrice: string | null = null;
-
-      // If the item already has a stored inventoryItemId (manual or auto link),
-      // trust it and skip the fresh lookup. A fresh lookup by SKU can overwrite
-      // a valid manual link with null (if Shopify returns null for inventoryItem.id)
-      // or with the wrong variant. Only do the fresh lookup for truly unlinked items
-      // so we have a chance to auto-match them at receive time.
-      if (item.shopifyInventoryItemId) {
-        console.log(
-          `[receive] item ${item.sku}: SKIPPING fresh lookup — stored variantId=${item.shopifyVariantId} inventoryItemId=${item.shopifyInventoryItemId}`
-        );
-      } else if (item.sku) {
-        console.log(
-          `[receive] item ${item.sku}: stored variantId=${item.shopifyVariantId ?? "null"} inventoryItemId=${item.shopifyInventoryItemId ?? "null"} — running fresh lookup`
-        );
-        try {
-          const freshResult = await lookupProduct({ sku: item.sku });
-          if (freshResult) {
-            const v = freshResult.product.variants[0];
-            // Guard against Shopify returning null for inventoryItem.id at runtime
-            if (v.inventoryItemId) {
-              freshVariantId = v.id;
-              freshInventoryItemId = v.inventoryItemId;
-              freshTitle = freshResult.product.title;
-              freshPrice = v.price;
-              inventoryItemId = v.inventoryItemId;
-              console.log(
-                `[receive] item ${item.sku}: fresh lookup found variant=${v.id} inventoryItemId=${v.inventoryItemId}`
-              );
-            } else {
-              console.log(
-                `[receive] item ${item.sku}: fresh lookup returned product but inventoryItemId was null — keeping stored value`
-              );
-            }
-          } else {
-            console.log(`[receive] item ${item.sku}: fresh lookup found nothing`);
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.log(`[receive] item ${item.sku}: fresh lookup threw — ${msg}`);
-          await logFailure(
-            "INVENTORY_UPDATE",
-            item.sku,
-            `Fresh SKU lookup failed, falling back to stored inventoryItemId: ${msg}`
-          );
-        }
-      } else {
-        console.log(
-          `[receive] item (no SKU) id=${item.id}: stored inventoryItemId=${item.shopifyInventoryItemId ?? "null"}`
-        );
-      }
-
-      if (!inventoryItemId) {
-        await logFailure(
-          "INVENTORY_UPDATE",
-          item.sku ?? item.description,
-          "No Shopify product linked — inventory update skipped"
-        );
-        continue;
-      }
-
-      try {
-        await updateInventoryLevel({
-          inventoryItemId,
-          locationId,
-          quantity: received,
-          lineItemId: item.id,
-          reason: received < 0 ? "correction" : "received",
-        });
-        await db.invoiceLineItem.update({
-          where: { id: item.id },
-          data: {
-            inventorySynced: true,
-            ...(freshInventoryItemId != null && {
-              shopifyInventoryItemId: freshInventoryItemId,
-              shopifyVariantId: freshVariantId,
-              ...(freshTitle && { shopifyProductTitle: freshTitle }),
-            }),
-            ...(freshPrice && !item.retailPrice ? { retailPrice: parseFloat(freshPrice) } : {}),
-          },
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, msg);
-      }
-    }
-  }
-
-  // Retail price capture — best-effort after DB commit
-  for (const item of invoice.lineItems) {
-    if (item.shopifyVariantId) {
-      try {
-        const price = await getVariantPrice(item.shopifyVariantId);
-        if (price !== null) {
-          await db.invoiceLineItem.update({
-            where: { id: item.id },
-            data: { retailPrice: parseFloat(price) },
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await logFailure("RETAIL_PRICE_FETCH", item.sku ?? item.description, msg);
-      }
-    }
-  }
-
-  // Barcode sync — best-effort after DB commit
-  for (const item of invoice.lineItems) {
-    if (item.shopifyVariantId && item.barcode) {
-      const cached = await db.productCache.findUnique({
-        where: { variantId: item.shopifyVariantId },
-        select: { productId: true },
-      });
-      let productId = cached?.productId ?? null;
-      if (!productId) {
-        try {
-          productId = await getProductIdFromVariant(item.shopifyVariantId);
-        } catch { /* ignore */ }
-      }
-      if (productId) {
-        try {
-          await updateVariantBarcode(productId, item.shopifyVariantId, item.barcode);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          await logFailure("BARCODE_SYNC", item.sku ?? item.description, msg);
-        }
-      } else {
-        await logFailure("BARCODE_SYNC", item.sku ?? item.description, `Could not resolve productId for variant ${item.shopifyVariantId}`);
-      }
-    }
-  }
+  // Shopify sync (inventory, price, barcode) — fire-and-forget in the background.
+  // The DB transaction above already committed the receive; don't make staff wait
+  // on Shopify round-trips before they can move on.
+  syncInvoiceToShopify(id).catch((err) => {
+    console.error("[receive] background Shopify sync failed:", err);
+  });
 
   return redirect(`/invoices/${id}`);
 }

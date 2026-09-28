@@ -15,8 +15,10 @@ import {
   updateVariantPrice,
   lookupProduct,
   getInventoryItemIdFromVariant,
+  batchUpdateInventory,
+  mapWithConcurrency,
 } from "../services/shopify.server";
-import type { ProductSearchResult } from "../services/shopify.server";
+import type { ProductSearchResult, BatchInventoryChange } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -37,6 +39,8 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       dueDate: invoice.dueDate ? invoice.dueDate.toISOString() : null,
       paymentTerms: invoice.paymentTerms ?? null,
       paymentTermsNotes: invoice.paymentTermsNotes ?? null,
+      shopifySyncStartedAt: invoice.shopifySyncStartedAt ? invoice.shopifySyncStartedAt.toISOString() : null,
+      shopifySyncEndedAt: invoice.shopifySyncEndedAt ? invoice.shopifySyncEndedAt.toISOString() : null,
       lineItems: invoice.lineItems.map((item) => ({
         ...item,
         unitCost: Number(item.unitCost),
@@ -276,67 +280,103 @@ export async function action({ request, params }: Route.ActionArgs) {
       return { ok: false, intent: "retryShopifySync" as const, error: "Invoice is not in RECEIVED state" };
     }
 
-    let barcodeCount = 0;
-    let costCount = 0;
-    let inventoryCount = 0;
+    await db.invoice.update({
+      where: { id },
+      data: { shopifySyncStatus: "SYNCING", shopifySyncStartedAt: new Date(), shopifySyncError: null },
+    });
 
-    for (const item of invoice.lineItems) {
-      if (item.shopifyVariantId && item.barcode) {
-        const cached = await db.productCache.findUnique({
-          where: { variantId: item.shopifyVariantId },
-          select: { productId: true },
-        });
-        let productId = cached?.productId ?? null;
-        if (!productId) {
-          try {
-            productId = await getProductIdFromVariant(item.shopifyVariantId);
-          } catch { /* ignore */ }
-        }
-        if (productId) {
-          try {
-            await updateVariantBarcode(productId, item.shopifyVariantId, item.barcode);
-            barcodeCount++;
-          } catch (err) {
-            await logFailure("BARCODE_SYNC", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
-          }
-        }
-      }
+    const errors: string[] = [];
 
-      if (item.shopifyInventoryItemId && Number(item.unitCost) > 0) {
+    // Barcode sync — parallel, bounded concurrency
+    const barcodeResults = await mapWithConcurrency(
+      invoice.lineItems.filter((item) => item.shopifyVariantId && item.barcode),
+      6,
+      async (item) => {
         try {
-          await updateInventoryItemCost(item.shopifyInventoryItemId, Number(item.unitCost));
-          costCount++;
+          const cached = await db.productCache.findUnique({
+            where: { variantId: item.shopifyVariantId! },
+            select: { productId: true },
+          });
+          let productId = cached?.productId ?? null;
+          if (!productId) {
+            try {
+              productId = await getProductIdFromVariant(item.shopifyVariantId!);
+            } catch { /* ignore */ }
+          }
+          if (!productId) return false;
+          await updateVariantBarcode(productId, item.shopifyVariantId!, item.barcode!);
+          return true;
         } catch (err) {
-          await logFailure("shopify:set-cost", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
+          const msg = err instanceof Error ? err.message : String(err);
+          await logFailure("BARCODE_SYNC", item.sku ?? item.description, msg);
+          errors.push(msg);
+          return false;
         }
       }
-    }
+    );
+    const barcodeCount = barcodeResults.filter(Boolean).length;
 
-    // Sync inventory for unsynced items only
+    // Cost sync — parallel, bounded concurrency
+    const costResults = await mapWithConcurrency(
+      invoice.lineItems.filter((item) => item.shopifyInventoryItemId && Number(item.unitCost) > 0),
+      6,
+      async (item) => {
+        try {
+          await updateInventoryItemCost(item.shopifyInventoryItemId!, Number(item.unitCost));
+          return true;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await logFailure("shopify:set-cost", item.sku ?? item.description, msg);
+          errors.push(msg);
+          return false;
+        }
+      }
+    );
+    const costCount = costResults.filter(Boolean).length;
+
+    // Inventory sync for unsynced items only — batched into as few mutations as possible
+    let inventoryCount = 0;
     try {
       const locationId = await getLocationId();
-      for (const item of invoice.lineItems) {
-        if (item.shopifyInventoryItemId && item.quantityReceived > 0 && !item.inventorySynced) {
-          try {
-            await updateInventoryLevel({
-              inventoryItemId: item.shopifyInventoryItemId,
-              locationId,
-              quantity: item.quantityReceived,
-              lineItemId: item.id,
-            });
-            await db.invoiceLineItem.update({
-              where: { id: item.id },
-              data: { inventorySynced: true },
-            });
-            inventoryCount++;
-          } catch (err) {
-            await logFailure("INVENTORY_UPDATE", item.sku ?? item.description, err instanceof Error ? err.message : String(err));
-          }
+      const inventoryTargets = invoice.lineItems.filter(
+        (item) => item.shopifyInventoryItemId && item.quantityReceived > 0 && !item.inventorySynced
+      );
+      const inventoryTargetById = new Map(inventoryTargets.map((item) => [item.id, item]));
+      const changes: BatchInventoryChange[] = inventoryTargets.map((item) => ({
+        inventoryItemId: item.shopifyInventoryItemId!,
+        locationId,
+        delta: item.quantityReceived,
+        lineItemId: item.id,
+      }));
+      if (changes.length > 0) {
+        const outcome = await batchUpdateInventory(changes);
+        if (outcome.succeeded.length > 0) {
+          await db.invoiceLineItem.updateMany({
+            where: { id: { in: outcome.succeeded.map((lid) => Number(lid)) } },
+            data: { inventorySynced: true },
+          });
+          inventoryCount = outcome.succeeded.length;
+        }
+        for (const f of outcome.failed) {
+          const failedItem = inventoryTargetById.get(Number(f.lineItemId));
+          await logFailure("INVENTORY_UPDATE", failedItem?.sku ?? failedItem?.description ?? String(f.lineItemId), f.error);
+          errors.push(f.error);
         }
       }
     } catch (err) {
-      await logFailure("INVENTORY_UPDATE", `Invoice #${invoice.invoiceNumber}`, `Could not fetch location: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      await logFailure("INVENTORY_UPDATE", `Invoice #${invoice.invoiceNumber}`, `Could not fetch location: ${msg}`);
+      errors.push(`Could not fetch location: ${msg}`);
     }
+
+    await db.invoice.update({
+      where: { id },
+      data: {
+        shopifySyncStatus: errors.length > 0 ? "FAILED" : "SYNCED",
+        shopifySyncEndedAt: new Date(),
+        shopifySyncError: errors.length > 0 ? errors.slice(0, 5).join("; ") : null,
+      },
+    });
 
     return { ok: true, intent: "retryShopifySync" as const, barcodeCount, costCount, inventoryCount };
   }
@@ -606,6 +646,13 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
   const { vendor, lineItems } = invoice;
   const [searchParams] = useSearchParams();
   const revalidator = useRevalidator();
+
+  // Poll while the background Shopify sync (kicked off right after receiving) is running
+  useEffect(() => {
+    if (invoice.shopifySyncStatus !== "SYNCING") return;
+    const id = setInterval(() => revalidator.revalidate(), 3000);
+    return () => clearInterval(id);
+  }, [invoice.shopifySyncStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // SKU inline edit
   const skuFetcher = useFetcher<{ success: boolean; intent: string; lineItemId: number; sku: string }>();
@@ -994,6 +1041,20 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
         )}
         {invoice.status === "RECEIVED" && (
           <div className="flex flex-col gap-1.5">
+            {invoice.shopifySyncStatus === "SYNCING" && (
+              <p className="flex items-center gap-1.5 text-xs text-blue-700 dark:text-blue-400">
+                <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Syncing to Shopify in background…
+              </p>
+            )}
+            {invoice.shopifySyncStatus === "FAILED" && !retrySyncResult && (
+              <p className="text-xs text-red-500 dark:text-red-400">
+                Background Shopify sync failed{invoice.shopifySyncError ? `: ${invoice.shopifySyncError}` : ""} — use Retry Shopify Sync below.
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <button
                 type="button"

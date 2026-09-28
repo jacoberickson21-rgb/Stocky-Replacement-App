@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { logFailure } from "./failure-log.server";
 
 // ─── Error Types ──────────────────────────────────────────────────────────────
@@ -573,6 +574,175 @@ export async function updateInventoryLevel(
       .join("; ");
     throw new ShopifyUserError(`Inventory update failed: ${messages}`);
   }
+}
+
+// ─── Batch Inventory Update ────────────────────────────────────────────────────
+
+// Shopify caps inventoryAdjustQuantities (and nodes()) at 250 entries per call.
+// Chunk below that so we never hit the ceiling as invoices grow.
+const INVENTORY_BATCH_CHUNK_SIZE = 200;
+
+export type BatchInventoryChange = {
+  inventoryItemId: string;
+  locationId: string;
+  delta: number;
+  lineItemId: number | string;
+  reason?: string;
+};
+
+export type BatchInventoryOutcome = {
+  succeeded: (number | string)[];
+  failed: { lineItemId: number | string; error: string }[];
+};
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+async function fetchInventoryLevelsBulk(
+  inventoryItemIds: string[],
+  locationId: string
+): Promise<Map<string, number>> {
+  if (inventoryItemIds.length === 0) return new Map();
+  const data = await shopifyGraphQL<{
+    nodes: (
+      | { id: string; inventoryLevel: { quantities: { name: string; quantity: number }[] } | null }
+      | null
+    )[];
+  }>(
+    `query GetInventoryLevelsBulk($ids: [ID!]!, $locationId: ID!) {
+      nodes(ids: $ids) {
+        ... on InventoryItem {
+          id
+          inventoryLevel(locationId: $locationId) {
+            quantities(names: ["available"]) {
+              name
+              quantity
+            }
+          }
+        }
+      }
+    }`,
+    { ids: inventoryItemIds, locationId }
+  );
+  const result = new Map<string, number>();
+  for (const node of data.nodes) {
+    if (node?.id) {
+      const qty = node.inventoryLevel?.quantities.find((q) => q.name === "available")?.quantity ?? 0;
+      result.set(node.id, qty);
+    }
+  }
+  return result;
+}
+
+// Adjusts many inventory items in as few Shopify calls as possible. Sends one
+// inventoryAdjustQuantities mutation per chunk instead of one call per item.
+// inventoryAdjustQuantities applies its changes[] atomically — if any single entry
+// conflicts (e.g. a concurrent sale moved the "available" quantity since we fetched
+// it for changeFromQuantity), Shopify rejects the whole chunk. On that failure we fall
+// back to per-item updateInventoryLevel calls for just that chunk, so one stale
+// quantity can't silently drop everyone else's inventory update.
+export async function batchUpdateInventory(
+  changes: BatchInventoryChange[]
+): Promise<BatchInventoryOutcome> {
+  const outcome: BatchInventoryOutcome = { succeeded: [], failed: [] };
+  if (changes.length === 0) return outcome;
+
+  for (const chunk of chunkArray(changes, INVENTORY_BATCH_CHUNK_SIZE)) {
+    const locationId = chunk[0].locationId;
+    const currentQuantities = await fetchInventoryLevelsBulk(
+      chunk.map((c) => c.inventoryItemId),
+      locationId
+    );
+
+    const idempotencyKey = `batch-receive-${createHash("sha256")
+      .update(chunk.map((c) => `${c.inventoryItemId}:${c.delta}`).sort().join("|"))
+      .digest("hex")
+      .slice(0, 16)}`;
+
+    try {
+      const data = await shopifyGraphQL<{
+        inventoryAdjustQuantities: { userErrors: UserError[] };
+      }>(
+        `mutation BatchAdjustInventory($input: InventoryAdjustQuantitiesInput!, $key: String!) {
+          inventoryAdjustQuantities(input: $input) @idempotent(key: $key) {
+            inventoryAdjustmentGroup { id }
+            userErrors { field message }
+          }
+        }`,
+        {
+          input: {
+            name: "available",
+            reason: chunk[0].reason ?? "received",
+            changes: chunk.map((c) => ({
+              inventoryItemId: c.inventoryItemId,
+              locationId: c.locationId,
+              delta: c.delta,
+              changeFromQuantity: currentQuantities.get(c.inventoryItemId) ?? 0,
+            })),
+          },
+          key: idempotencyKey,
+        }
+      );
+
+      const { userErrors } = data.inventoryAdjustQuantities;
+      if (userErrors.length > 0) {
+        throw new ShopifyUserError(
+          userErrors.map((e) => `${e.field.join(".")}: ${e.message}`).join("; ")
+        );
+      }
+
+      outcome.succeeded.push(...chunk.map((c) => c.lineItemId));
+    } catch (err) {
+      for (const c of chunk) {
+        try {
+          await updateInventoryLevel({
+            inventoryItemId: c.inventoryItemId,
+            locationId: c.locationId,
+            quantity: c.delta,
+            lineItemId: c.lineItemId,
+            reason: c.reason,
+          });
+          outcome.succeeded.push(c.lineItemId);
+        } catch (itemErr) {
+          outcome.failed.push({
+            lineItemId: c.lineItemId,
+            error: itemErr instanceof Error ? itemErr.message : String(itemErr),
+          });
+        }
+      }
+    }
+  }
+
+  return outcome;
+}
+
+// ─── Bounded Concurrency ────────────────────────────────────────────────────────
+
+// Runs fn over items with at most `concurrency` in flight at once. Shopify's GraphQL
+// endpoint is rate-limited by a leaky-bucket cost budget with no client-side retry in
+// shopifyGraphQL, so an unbounded Promise.all over 100+ calls reliably trips THROTTLED
+// errors. Callers are expected to catch their own errors inside fn.
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results;
 }
 
 export async function updateInventoryItemCost(

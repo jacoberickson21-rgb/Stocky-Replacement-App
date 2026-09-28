@@ -53,8 +53,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   const receivedFrom = url.searchParams.get("receivedFrom");
   const receivedTo = url.searchParams.get("receivedTo");
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1"));
-  const sortByRaw = url.searchParams.get("sortBy") ?? "invoiceDate";
-  const sortBy: SortColumn = (SORTABLE_COLUMNS as readonly string[]).includes(sortByRaw) ? sortByRaw as SortColumn : "invoiceDate";
+  const sortByRaw = url.searchParams.get("sortBy") ?? "receivedAt";
+  const sortBy: SortColumn = (SORTABLE_COLUMNS as readonly string[]).includes(sortByRaw) ? sortByRaw as SortColumn : "receivedAt";
   const sortDir = url.searchParams.get("sortDir") === "asc" ? "asc" : "desc";
 
   const db = getDb();
@@ -88,8 +88,9 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
   if (searchParam) {
     where.OR = [
-      { invoiceNumber: { contains: searchParam } },
-      { vendor: { name: { contains: searchParam } } },
+      { invoiceNumber: { contains: searchParam, mode: "insensitive" } },
+      { vendor: { name: { contains: searchParam, mode: "insensitive" } } },
+      { supplier: { name: { contains: searchParam, mode: "insensitive" } } },
     ];
   }
   if (poDateFrom || poDateTo) {

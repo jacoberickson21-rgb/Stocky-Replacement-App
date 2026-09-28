@@ -83,6 +83,11 @@ model Invoice {
   updatedAt       DateTime          @updatedAt
   lineItems       InvoiceLineItem[]
   discrepancyLogs DiscrepancyLog[]
+
+  shopifySyncStatus    ShopifySyncStatus?
+  shopifySyncStartedAt DateTime?
+  shopifySyncEndedAt   DateTime?
+  shopifySyncError     String?
 }
 
 enum InvoiceStatus {
@@ -90,6 +95,12 @@ enum InvoiceStatus {
   DRAFT_RECEIVING
   RECEIVED
   PAID
+}
+
+enum ShopifySyncStatus {
+  SYNCING
+  SYNCED
+  FAILED
 }
 
 model InvoiceLineItem {
