@@ -17,6 +17,10 @@ import {
   getInventoryItemIdFromVariant,
   batchUpdateInventory,
   mapWithConcurrency,
+  productVariantsBulkCreate,
+  stagedUploadCreate,
+  createProductMedia,
+  assignVariantImage,
 } from "../services/shopify.server";
 import type { ProductSearchResult, BatchInventoryChange } from "../services/shopify.server";
 import type { InvoiceStatus } from "@prisma/client";
@@ -258,6 +262,94 @@ export async function action({ request, params }: Route.ActionArgs) {
         `Skeleton creation failed from invoice detail: ${err instanceof Error ? err.message : String(err)}`
       );
       return { ok: false, intent: "createSkeletonProduct" as const, lineItemId, error: "Product creation failed — check the failure log" };
+    }
+  }
+
+  if (intent === "addVariantToExistingProduct") {
+    const lineItemId = Number(formData.get("lineItemId"));
+    const productId = String(formData.get("productId") ?? "").trim();
+    const productTitle = String(formData.get("productTitle") ?? "").trim();
+    const sku = String(formData.get("sku") ?? "").trim();
+    const barcode = String(formData.get("barcode") ?? "").trim();
+    const costRaw = String(formData.get("cost") ?? "").trim();
+    const priceRaw = String(formData.get("price") ?? "").trim();
+    const optionValuesRaw = String(formData.get("optionValues") ?? "[]");
+    const imageFile = formData.get("image");
+
+    let optionValues: { optionName: string; name: string }[] = [];
+    try {
+      const parsed = JSON.parse(optionValuesRaw);
+      if (Array.isArray(parsed)) optionValues = parsed;
+    } catch { /* ignore */ }
+
+    if (!productId) {
+      return { ok: false, intent: "addVariantToExistingProduct" as const, lineItemId, error: "No product selected" };
+    }
+    if (!priceRaw || isNaN(parseFloat(priceRaw))) {
+      return { ok: false, intent: "addVariantToExistingProduct" as const, lineItemId, error: "MSRP is required" };
+    }
+
+    const db = getDb();
+    const lineItem = await db.invoiceLineItem.findUnique({
+      where: { id: lineItemId },
+      select: { sku: true, description: true },
+    });
+    if (!lineItem) {
+      return { ok: false, intent: "addVariantToExistingProduct" as const, lineItemId, error: "Line item not found" };
+    }
+    const itemLabel = sku || lineItem.sku || lineItem.description;
+
+    try {
+      const created = await productVariantsBulkCreate(productId, [
+        { optionValues, price: parseFloat(priceRaw).toFixed(2), sku, barcode },
+      ]);
+      const newVariant = created[0];
+      if (!newVariant) throw new Error("No variant returned from Shopify.");
+
+      const cost = costRaw && !isNaN(parseFloat(costRaw)) ? parseFloat(costRaw) : null;
+      if (cost !== null) {
+        try {
+          await updateInventoryItemCost(newVariant.inventoryItemId, cost);
+        } catch (err) {
+          await logFailure("shopify:set-cost", itemLabel, `Cost sync failed for new variant ${newVariant.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (imageFile instanceof File && imageFile.size > 0) {
+        try {
+          const staged = await stagedUploadCreate(imageFile.name, imageFile.type, imageFile.size);
+          const uploadForm = new FormData();
+          for (const p of staged.parameters) uploadForm.append(p.name, p.value);
+          uploadForm.append("file", imageFile);
+          const uploadResp = await fetch(staged.url, { method: "POST", body: uploadForm });
+          if (!uploadResp.ok) throw new Error(`Staged upload failed: ${uploadResp.status}`);
+          const stagedPath = staged.parameters.find((p) => p.name === "key")?.value ?? imageFile.name;
+          const media = await createProductMedia(productId, stagedPath, imageFile.name);
+          if (media) {
+            await assignVariantImage(newVariant.id, media.id);
+          }
+        } catch (err) {
+          await logFailure("shopify:attach-image", itemLabel, `Image upload failed for new variant ${newVariant.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      await db.invoiceLineItem.update({
+        where: { id: lineItemId },
+        data: {
+          shopifyVariantId: newVariant.id,
+          shopifyInventoryItemId: newVariant.inventoryItemId,
+          shopifyProductTitle: productTitle || newVariant.title,
+          retailPrice: parseFloat(priceRaw),
+          ...(barcode ? { barcode } : {}),
+          ...(sku ? { sku } : {}),
+        },
+      });
+
+      return { ok: true, intent: "addVariantToExistingProduct" as const, lineItemId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await logFailure("shopify:add-variant", itemLabel, `Add variant to existing product failed: ${msg}`);
+      return { ok: false, intent: "addVariantToExistingProduct" as const, lineItemId, error: msg };
     }
   }
 
@@ -856,6 +948,79 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     if (result.barcode) fd.append("barcode", result.barcode);
     if (result.price != null) fd.append("price", String(result.price));
     linkFetcher.submit(fd, { method: "post" });
+  }
+
+  // ── Add as variant to existing product ────────────────────────────────────
+  type VariantParentProduct = { productId: string; productTitle: string; vendor: string; productOptions: { id: string; name: string; values: string[] }[] };
+  const addVariantFetcher = useFetcher<{ ok: boolean; intent: "addVariantToExistingProduct"; lineItemId: number; error?: string }>();
+  const variantProductSearchFetcher = useFetcher<ProductSearchResult[]>();
+  const [addVariantItemId, setAddVariantItemId] = useState<number | null>(null);
+  const [variantProductQuery, setVariantProductQuery] = useState("");
+  const [variantSelectedProduct, setVariantSelectedProduct] = useState<VariantParentProduct | null>(null);
+  const [variantOptionValues, setVariantOptionValues] = useState<Record<string, string>>({});
+  const [variantSku, setVariantSku] = useState("");
+  const [variantCost, setVariantCost] = useState("");
+  const [variantPrice, setVariantPrice] = useState("");
+  const [variantBarcode, setVariantBarcode] = useState("");
+  const variantImageRef = useRef<HTMLInputElement>(null);
+  const variantSearchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isAddingVariant = addVariantFetcher.state !== "idle";
+
+  const variantProductResults: ProductSearchResult[] = Array.isArray(variantProductSearchFetcher.data) ? variantProductSearchFetcher.data : [];
+  const variantGroupedProducts: VariantParentProduct[] = [];
+  {
+    const seen = new Set<string>();
+    for (const r of variantProductResults) {
+      if (seen.has(r.productId)) continue;
+      seen.add(r.productId);
+      variantGroupedProducts.push({ productId: r.productId, productTitle: r.productTitle, vendor: r.vendor, productOptions: r.productOptions });
+    }
+  }
+
+  useEffect(() => {
+    if (addVariantFetcher.state === "idle" && addVariantFetcher.data?.ok && addVariantFetcher.data.intent === "addVariantToExistingProduct") {
+      setHiddenItemIds((prev) => new Set(prev).add(addVariantFetcher.data!.lineItemId));
+      setAddVariantItemId(null);
+      setVariantSelectedProduct(null);
+      revalidator.revalidate();
+    }
+  }, [addVariantFetcher.state, addVariantFetcher.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function openAddVariantPanel(item: (typeof lineItems)[number]) {
+    setAddVariantItemId(item.id);
+    setOpenSearchItemId(null);
+    setVariantProductQuery("");
+    setVariantSelectedProduct(null);
+    setVariantOptionValues({});
+    setVariantSku(item.sku ?? "");
+    setVariantCost(Number(item.unitCost).toFixed(2));
+    setVariantPrice(item.retailPrice != null ? Number(item.retailPrice).toFixed(2) : "");
+    setVariantBarcode(item.barcode ?? "");
+  }
+
+  function selectVariantProduct(p: VariantParentProduct) {
+    setVariantSelectedProduct(p);
+    setVariantOptionValues(Object.fromEntries(p.productOptions.map((o) => [o.name, ""])));
+  }
+
+  function submitAddVariant(lineItemId: number) {
+    if (!variantSelectedProduct) return;
+    const fd = new FormData();
+    fd.append("intent", "addVariantToExistingProduct");
+    fd.append("lineItemId", String(lineItemId));
+    fd.append("productId", variantSelectedProduct.productId);
+    fd.append("productTitle", variantSelectedProduct.productTitle);
+    fd.append("sku", variantSku);
+    fd.append("barcode", variantBarcode);
+    fd.append("cost", variantCost);
+    fd.append("price", variantPrice);
+    const optionValues = variantSelectedProduct.productOptions
+      .map((o) => ({ optionName: o.name, name: (variantOptionValues[o.name] ?? "").trim() }))
+      .filter((ov) => ov.name);
+    fd.append("optionValues", JSON.stringify(optionValues));
+    const file = variantImageRef.current?.files?.[0];
+    if (file) fd.append("image", file);
+    addVariantFetcher.submit(fd, { method: "post", encType: "multipart/form-data" });
   }
 
   const unlinkedItems = lineItems.filter(
@@ -1513,7 +1678,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                       <div className="col-span-2">
                         <p className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide mb-0.5">Description</p>
-                        <p className="text-gray-700 dark:text-gray-200 truncate">{item.description}</p>
+                        <p className="text-gray-700 dark:text-gray-200 break-words">{item.description}</p>
                       </div>
                       <div>
                         <p className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide mb-0.5">Qty / Cost</p>
@@ -1551,6 +1716,20 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                         className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
                       >
                         {isCreating ? "Creating…" : "Create Product"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (addVariantItemId === item.id) {
+                            setAddVariantItemId(null);
+                          } else {
+                            openAddVariantPanel(item);
+                          }
+                        }}
+                        disabled={isAddingVariant}
+                        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
+                      >
+                        {addVariantItemId === item.id ? "Close" : "Add as Variant"}
                       </button>
                       <button
                         type="button"
@@ -1641,6 +1820,170 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                               ))}
                             </div>
                           )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Add as variant to existing product */}
+                  {addVariantItemId === item.id && (
+                    <div className="px-6 pb-4 space-y-3">
+                      {!variantSelectedProduct ? (
+                        <div className="relative">
+                          <input
+                            autoFocus
+                            type="text"
+                            value={variantProductQuery}
+                            onChange={(e) => {
+                              const q = e.target.value;
+                              setVariantProductQuery(q);
+                              if (variantSearchDebounceRef.current) clearTimeout(variantSearchDebounceRef.current);
+                              if (q.length >= 2) {
+                                variantSearchDebounceRef.current = setTimeout(() => {
+                                  variantProductSearchFetcher.load(`/api/shopify/products?q=${encodeURIComponent(q)}`);
+                                }, 300);
+                              }
+                            }}
+                            placeholder="Search for the parent product…"
+                            className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                          />
+                          {variantProductSearchFetcher.state === "loading" && (
+                            <span className="absolute right-3 top-2 text-xs text-gray-400 pointer-events-none">Searching…</span>
+                          )}
+                          {variantProductSearchFetcher.data !== undefined && variantProductQuery.length >= 2 && (
+                            <div className="mt-1 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden shadow-sm bg-white dark:bg-gray-900">
+                              {variantGroupedProducts.length === 0 ? (
+                                <p className="px-3 py-2 text-xs text-gray-400">No products found</p>
+                              ) : (
+                                <div className="max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
+                                  {variantGroupedProducts.map((p) => (
+                                    <button
+                                      key={p.productId}
+                                      type="button"
+                                      onClick={() => selectVariantProduct(p)}
+                                      className="w-full text-left px-3 py-2 text-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/30 transition-colors"
+                                    >
+                                      <span className="font-medium text-gray-800 dark:text-gray-100">{p.productTitle}</span>
+                                      {p.vendor && <span className="text-gray-400 dark:text-gray-500 ml-1.5">({p.vendor})</span>}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/20 p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                              Adding variant to <span className="font-normal">{variantSelectedProduct.productTitle}</span>
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setVariantSelectedProduct(null)}
+                              className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                            >
+                              Change product
+                            </button>
+                          </div>
+
+                          {variantSelectedProduct.productOptions.length > 0 && (
+                            <div className={`grid gap-3 ${variantSelectedProduct.productOptions.length === 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2 sm:grid-cols-3"}`}>
+                              {variantSelectedProduct.productOptions.map((opt) => (
+                                <div key={opt.id}>
+                                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{opt.name}</label>
+                                  <input
+                                    type="text"
+                                    list={`add-variant-opt-${opt.id}-list`}
+                                    value={variantOptionValues[opt.name] ?? ""}
+                                    onChange={(e) => setVariantOptionValues((prev) => ({ ...prev, [opt.name]: e.target.value }))}
+                                    placeholder={`e.g. ${opt.values[0] ?? opt.name}`}
+                                    className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                                  />
+                                  <datalist id={`add-variant-opt-${opt.id}-list`}>
+                                    {opt.values.map((v) => <option key={v} value={v} />)}
+                                  </datalist>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">SKU</label>
+                              <input
+                                type="text"
+                                value={variantSku}
+                                onChange={(e) => setVariantSku(e.target.value)}
+                                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Cost</label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={variantCost}
+                                onChange={(e) => setVariantCost(e.target.value)}
+                                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                                MSRP <span className="text-red-500">*</span>
+                              </label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={variantPrice}
+                                onChange={(e) => setVariantPrice(e.target.value)}
+                                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Barcode</label>
+                              <input
+                                type="text"
+                                value={variantBarcode}
+                                onChange={(e) => setVariantBarcode(e.target.value)}
+                                className="w-full border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Image (optional)</label>
+                            <input
+                              ref={variantImageRef}
+                              type="file"
+                              accept="image/*"
+                              className="text-xs text-gray-600 dark:text-gray-300"
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-3 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => submitAddVariant(item.id)}
+                              disabled={isAddingVariant || !variantPrice}
+                              className="text-xs font-medium px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                            >
+                              {isAddingVariant ? "Saving…" : "Add Variant"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAddVariantItemId(null)}
+                              className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                            {addVariantFetcher.state === "idle" && addVariantFetcher.data?.ok === false &&
+                              addVariantFetcher.data.lineItemId === item.id && (
+                              <span className="text-xs text-red-600 dark:text-red-400">{addVariantFetcher.data.error ?? "Add variant failed"}</span>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>

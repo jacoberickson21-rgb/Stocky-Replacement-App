@@ -1430,9 +1430,9 @@ export async function createProductMedia(
   productId: string,
   stagedUploadPath: string,
   filename: string
-): Promise<void> {
+): Promise<{ id: string } | null> {
   const data = await shopifyGraphQL<{
-    productCreateMedia: { userErrors: UserError[] };
+    productCreateMedia: { media: { id: string }[]; userErrors: UserError[] };
   }>(
     `mutation CreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
       productCreateMedia(productId: $productId, media: $media) {
@@ -1445,10 +1445,11 @@ export async function createProductMedia(
       media: [{ originalSource: stagedUploadPath, mediaContentType: "IMAGE", alt: filename }],
     }
   );
-  const { userErrors } = data.productCreateMedia;
+  const { media, userErrors } = data.productCreateMedia;
   if (userErrors.length > 0) {
     throw new ShopifyUserError(userErrors.map((e) => e.message).join("; "));
   }
+  return media[0] ?? null;
 }
 
 export async function deleteProductImage(

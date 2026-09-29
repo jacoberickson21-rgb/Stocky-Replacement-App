@@ -78,10 +78,10 @@ export async function action({ request, params }: Route.ActionArgs) {
       quantity: number;
       unitCost: number;
       retailPrice: number | null;
-      shopifyPrice: number | null;
       variantId: string | null;
       inventoryItemId: string | null;
       updateShopifyCost: boolean;
+      updateShopifyPrice: boolean;
       productGroupKey: string | null;
       variantOptions: { name: string; value: string }[] | null;
       productTitle: string | null;
@@ -204,9 +204,9 @@ export async function action({ request, params }: Route.ActionArgs) {
       }
     }
 
-    // Push updated retail prices to Shopify where price differs from original
+    // Push updated retail prices to Shopify for items where "Also update in Shopify" was checked
     const priceUpdateVariantIds = lineItems
-      .filter((i) => i.variantId && i.retailPrice != null && i.shopifyPrice != null && i.retailPrice !== i.shopifyPrice)
+      .filter((i) => i.updateShopifyPrice && i.variantId && i.retailPrice != null)
       .map((i) => i.variantId!);
     const priceUpdateCacheEntries = priceUpdateVariantIds.length
       ? await db.productCache.findMany({
@@ -216,12 +216,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       : [];
     const productIdByVariantId = new Map(priceUpdateCacheEntries.map((e) => [e.variantId, e.productId]));
     for (const item of lineItems) {
-      if (
-        item.variantId &&
-        item.retailPrice != null &&
-        item.shopifyPrice != null &&
-        item.retailPrice !== item.shopifyPrice
-      ) {
+      if (item.updateShopifyPrice && item.variantId && item.retailPrice != null) {
         try {
           await updateVariantPrice(productIdByVariantId.get(item.variantId) ?? "", item.variantId, item.retailPrice.toFixed(2), null);
         } catch (err) {
@@ -471,9 +466,9 @@ type LineItemRow = {
   quantity: number;
   unitCost: number;
   retailPrice: number | null;
-  shopifyPrice: number | null;
   shopifyCost: number | null;
   updateShopifyCost: boolean;
+  updateShopifyPrice: boolean;
   variantId: string | null;
   inventoryItemId: string | null;
   productGroupKey: string | null;
@@ -502,9 +497,9 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
       quantity: item.quantityOrdered,
       unitCost: item.unitCost,
       retailPrice: item.retailPrice,
-      shopifyPrice: item.retailPrice,
       shopifyCost: null,
       updateShopifyCost: false,
+      updateShopifyPrice: false,
       variantId: item.shopifyVariantId,
       inventoryItemId: item.shopifyInventoryItemId,
       productGroupKey: null,
@@ -581,9 +576,9 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
         quantity: 1,
         unitCost: result.unitCost ?? 0,
         retailPrice: result.price ?? null,
-        shopifyPrice: result.price ?? null,
         shopifyCost: result.unitCost,
         updateShopifyCost: false,
+        updateShopifyPrice: false,
         variantId: result.variantId,
         inventoryItemId: result.inventoryItemId,
         productGroupKey: null,
@@ -620,9 +615,9 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
         quantity: 1,
         unitCost: result.unitCost ?? 0,
         retailPrice: result.price ?? null,
-        shopifyPrice: result.price ?? null,
         shopifyCost: result.unitCost,
         updateShopifyCost: false,
+        updateShopifyPrice: false,
         variantId: result.variantId,
         inventoryItemId: result.inventoryItemId,
         productGroupKey: null as string | null,
@@ -661,6 +656,12 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
   function toggleUpdateShopifyCost(key: string) {
     setLineItems((prev) =>
       prev.map((item) => (item.key === key ? { ...item, updateShopifyCost: !item.updateShopifyCost } : item))
+    );
+  }
+
+  function toggleUpdateShopifyPrice(key: string) {
+    setLineItems((prev) =>
+      prev.map((item) => (item.key === key ? { ...item, updateShopifyPrice: !item.updateShopifyPrice } : item))
     );
   }
 
@@ -1004,6 +1005,17 @@ export default function InvoiceEditPage({ loaderData }: Route.ComponentProps) {
                           placeholder="—"
                           className="w-24 text-right border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-gray-800 dark:text-gray-100"
                         />
+                        {item.variantId !== null && (
+                          <label className="mt-1 flex items-center justify-end gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={item.updateShopifyPrice}
+                              onChange={() => toggleUpdateShopifyPrice(item.key)}
+                              className="h-3 w-3 rounded border-gray-300 dark:border-gray-600 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">Also update in Shopify</span>
+                          </label>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         {(() => {

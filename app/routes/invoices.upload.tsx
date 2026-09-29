@@ -10,7 +10,7 @@ import type { ExtendedExtractionResult } from "../services/pdf-parser-client.ser
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult, ShopifyProduct } from "../services/shopify.server";
-import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice, getInventoryItemIdFromVariant } from "../services/shopify.server";
+import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice, getInventoryItemIdFromVariant, mapWithConcurrency } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
 // Flexible CSV column lookup — checks multiple header name variants
@@ -144,163 +144,162 @@ export async function action({ request }: Route.ActionArgs) {
       return created;
     });
 
-    // Auto-match saved line items against Shopify using multiple SKU strategies + barcode
+    // Auto-match saved line items against ProductCache first — a single batched query,
+    // no Shopify API calls. Anything left unmatched is resolved against Shopify in the
+    // background (below) so the response isn't held up by per-item network calls.
     const savedItems = await getDb().invoiceLineItem.findMany({
       where: { invoiceId: invoice.id, sku: { not: null } },
       select: { id: true, sku: true, barcode: true, unitCost: true },
     });
-    let matchCount = 0;
-    let skuMatchCount = 0;
-    let barcodeMatchCount = 0;
-    let loggedCsvMatches = 0;
+
+    const allSkus = [...new Set(savedItems.map((i) => i.sku!))];
+    const cacheHits = allSkus.length > 0
+      ? await getDb().productCache.findMany({ where: { sku: { in: allSkus, mode: "insensitive" } } })
+      : [];
+    const cacheBySku = new Map(
+      cacheHits.filter((c) => c.sku).map((c) => [c.sku!.toLowerCase(), c])
+    );
+
+    const matchedByCache: typeof savedItems = [];
+    const unmatched: typeof savedItems = [];
     for (const item of savedItems) {
-      const raw = item.sku!;
-      const stripped = parseInt(raw, 10);
-      const skuVariants = [...new Set([
-        raw,
-        raw.toUpperCase(),
-        raw.toLowerCase(),
-        isNaN(stripped) ? null : String(stripped),
-      ].filter(Boolean) as string[])];
+      if (cacheBySku.has(item.sku!.toLowerCase())) matchedByCache.push(item);
+      else unmatched.push(item);
+    }
 
-      let matched = false;
-      for (const sku of skuVariants) {
-        if (matched) break;
-        try {
-          const result = await lookupProduct({ sku });
-          if (result?.product.variants[0]) {
-            const { product, matchedBy } = result;
-            const variant = product.variants[0];
-            await getDb().invoiceLineItem.update({
-              where: { id: item.id },
-              data: {
-                shopifyProductTitle: product.title,
-                shopifyVariantId: variant.id,
-                shopifyInventoryItemId: variant.inventoryItemId,
-                ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
-                ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
-              },
-            });
-            try {
-              await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
-            } catch (err) {
-              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
-            }
-            if (loggedCsvMatches < 5) {
-              console.log(`[CSV match] SKU: ${item.sku}, variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
-              loggedCsvMatches++;
-            }
-            matchCount++;
-            if (matchedBy === "sku") skuMatchCount++; else barcodeMatchCount++;
-            matched = true;
-          }
-        } catch { /* ignore individual lookup errors */ }
-      }
-
-      // 1b. ProductCache fallback for exact SKU (case-insensitive)
-      if (!matched) {
-        try {
-          const cacheHit = await getDb().productCache.findFirst({
-            where: { sku: { equals: raw, mode: "insensitive" } },
-          });
-          if (cacheHit) {
-            let cacheInventoryItemId: string | null = null;
-            try {
-              cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
-            } catch { /* ignore — will be resolved later via Re-link All */ }
-            await getDb().invoiceLineItem.update({
-              where: { id: item.id },
-              data: {
-                shopifyProductTitle: cacheHit.title,
-                shopifyVariantId: cacheHit.variantId,
-                ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
-                ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
-                ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
-              },
-            });
-            if (loggedCsvMatches < 5) {
-              console.log(`[CSV match via cache] SKU: "${item.sku}", variantId: ${cacheHit.variantId}`);
-              loggedCsvMatches++;
-            }
-            matchCount++;
-            skuMatchCount++;
-            matched = true;
-          }
-        } catch { /* ignore */ }
-      }
-
-      // 2. Fallback: try item's barcode directly if SKU strategies all missed
-      if (!matched && item.barcode) {
-        try {
-          const result = await lookupProduct({ barcode: item.barcode });
-          if (result?.product.variants[0]) {
-            const { product } = result;
-            const variant = product.variants[0];
-            await getDb().invoiceLineItem.update({
-              where: { id: item.id },
-              data: {
-                shopifyProductTitle: product.title,
-                shopifyVariantId: variant.id,
-                shopifyInventoryItemId: variant.inventoryItemId,
-                ...(variant.price ? { retailPrice: parseFloat(variant.price) } : {}),
-              },
-            });
-            try {
-              await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
-            } catch (err) {
-              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
-            }
-            if (loggedCsvMatches < 5) {
-              console.log(`[CSV match] SKU: ${item.sku} (barcode fallback), variantId: ${variant.id}, price: ${variant.price ?? "null"}`);
-              loggedCsvMatches++;
-            }
-            matchCount++;
-            barcodeMatchCount++;
-          }
-        } catch { /* ignore */ }
-      }
-
-      // 2b. ProductCache barcode fallback
-      if (!matched && item.barcode) {
-        try {
-          const cacheHit = await getDb().productCache.findFirst({
-            where: { barcode: item.barcode },
-          });
-          if (cacheHit) {
-            let cacheInventoryItemId: string | null = null;
-            try {
-              cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
-            } catch { /* ignore — will be resolved later via Re-link All */ }
-            await getDb().invoiceLineItem.update({
-              where: { id: item.id },
-              data: {
-                shopifyProductTitle: cacheHit.title,
-                shopifyVariantId: cacheHit.variantId,
-                ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
-                ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
-              },
-            });
-            if (loggedCsvMatches < 5) {
-              console.log(`[CSV match via cache] SKU: "${item.sku}" (barcode cache), variantId: ${cacheHit.variantId}`);
-              loggedCsvMatches++;
-            }
-            matchCount++;
-            barcodeMatchCount++;
-            matched = true;
-          }
-        } catch { /* ignore */ }
-      }
-
-      if (!matched) {
-        console.log(
-          `[CSV UNLINKED] SKU="${raw}" barcode="${item.barcode ?? "none"}"` +
-          ` | skuVariants tried: [${skuVariants.map((s) => `"${s}"`).join(", ")}]`
-        );
-      }
+    // Link cache-matched items immediately — DB writes only, retail price is intentionally
+    // left untouched (captured at receive time instead) and inventoryItemId/cost sync happen
+    // in the background since resolving them requires a Shopify call per item.
+    for (const item of matchedByCache) {
+      const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
+      await getDb().invoiceLineItem.update({
+        where: { id: item.id },
+        data: {
+          shopifyProductTitle: cacheHit.title,
+          shopifyVariantId: cacheHit.variantId,
+          ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
+        },
+      });
     }
     if (savedItems.length > 0) {
-      console.log(`CSV import match: ${matchCount} / ${savedItems.length} items linked (${skuMatchCount} by SKU, ${barcodeMatchCount} by barcode)`);
+      console.log(`CSV import match: ${matchedByCache.length} / ${savedItems.length} items linked instantly via ProductCache; ${unmatched.length} pending background Shopify match`);
     }
+
+    // Resolve inventoryItemIds, sync costs, and match remaining SKUs/barcodes against
+    // Shopify in the background — fire-and-forget, not awaited, so the redirect below is
+    // not blocked by per-item Shopify API calls.
+    void (async () => {
+      const db = getDb();
+
+      await mapWithConcurrency(matchedByCache, 5, async (item) => {
+        const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
+        try {
+          const inventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+          if (inventoryItemId) {
+            await db.invoiceLineItem.update({ where: { id: item.id }, data: { shopifyInventoryItemId: inventoryItemId } });
+            try {
+              await updateInventoryItemCost(inventoryItemId, item.unitCost.toNumber());
+            } catch (err) {
+              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        } catch { /* ignore — resolvable later via Re-link All */ }
+      });
+
+      await mapWithConcurrency(unmatched, 5, async (item) => {
+        const raw = item.sku!;
+        const stripped = parseInt(raw, 10);
+        const skuVariants = [...new Set([
+          raw,
+          raw.toUpperCase(),
+          raw.toLowerCase(),
+          isNaN(stripped) ? null : String(stripped),
+        ].filter(Boolean) as string[])];
+
+        let matched = false;
+        for (const sku of skuVariants) {
+          if (matched) break;
+          try {
+            const result = await lookupProduct({ sku });
+            if (result?.product.variants[0]) {
+              const { product } = result;
+              const variant = product.variants[0];
+              await db.invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: product.title,
+                  shopifyVariantId: variant.id,
+                  shopifyInventoryItemId: variant.inventoryItemId,
+                  ...(!item.barcode && variant.barcode ? { barcode: variant.barcode } : {}),
+                },
+              });
+              try {
+                await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
+              } catch (err) {
+                await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+              }
+              matched = true;
+            }
+          } catch { /* ignore individual lookup errors */ }
+        }
+
+        // Fallback: try item's barcode directly against Shopify if SKU strategies all missed
+        if (!matched && item.barcode) {
+          try {
+            const result = await lookupProduct({ barcode: item.barcode });
+            if (result?.product.variants[0]) {
+              const { product } = result;
+              const variant = product.variants[0];
+              await db.invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: product.title,
+                  shopifyVariantId: variant.id,
+                  shopifyInventoryItemId: variant.inventoryItemId,
+                },
+              });
+              try {
+                await updateInventoryItemCost(variant.inventoryItemId, item.unitCost.toNumber());
+              } catch (err) {
+                await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${variant.inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
+              }
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
+        // Last resort: ProductCache barcode fallback (DB only)
+        if (!matched && item.barcode) {
+          try {
+            const cacheHit = await db.productCache.findFirst({ where: { barcode: item.barcode } });
+            if (cacheHit) {
+              let cacheInventoryItemId: string | null = null;
+              try {
+                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+              } catch { /* ignore — will be resolved later via Re-link All */ }
+              await db.invoiceLineItem.update({
+                where: { id: item.id },
+                data: {
+                  shopifyProductTitle: cacheHit.title,
+                  shopifyVariantId: cacheHit.variantId,
+                  ...(cacheInventoryItemId ? { shopifyInventoryItemId: cacheInventoryItemId } : {}),
+                },
+              });
+              matched = true;
+            }
+          } catch { /* ignore */ }
+        }
+
+        if (!matched) {
+          console.log(
+            `[CSV UNLINKED] SKU="${raw}" barcode="${item.barcode ?? "none"}"` +
+            ` | skuVariants tried: [${skuVariants.map((s) => `"${s}"`).join(", ")}]`
+          );
+        }
+      });
+    })().catch((err) => {
+      console.error("[uploadCsv background match] failed:", err);
+    });
 
     const importParams = new URLSearchParams({ imported: String(lineItems.length) });
     if (zeroQtyCount > 0) importParams.set("skippedZero", String(zeroQtyCount));
