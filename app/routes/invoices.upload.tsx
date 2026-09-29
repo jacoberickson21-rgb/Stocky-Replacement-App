@@ -10,7 +10,7 @@ import type { ExtendedExtractionResult } from "../services/pdf-parser-client.ser
 import type { ExtractionResult } from "../services/invoice-parser.server";
 import { logFailure } from "../services/failure-log.server";
 import type { ProductSearchResult, ShopifyProduct } from "../services/shopify.server";
-import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice, getInventoryItemIdFromVariant, mapWithConcurrency } from "../services/shopify.server";
+import { lookupProduct, updateInventoryItemCost, createDraftProduct, createDraftProductWithVariants, updateVariantPrice, getInventoryItemIdFromVariant, getInventoryItemIdsByVariant, mapWithConcurrency } from "../services/shopify.server";
 import type { DraftProductVariantInput } from "../services/shopify.server";
 
 // Flexible CSV column lookup — checks multiple header name variants
@@ -167,9 +167,9 @@ export async function action({ request }: Route.ActionArgs) {
       else unmatched.push(item);
     }
 
-    // Link cache-matched items immediately — DB writes only, retail price is intentionally
-    // left untouched (captured at receive time instead) and inventoryItemId/cost sync happen
-    // in the background since resolving them requires a Shopify call per item.
+    // Link cache-matched items immediately — DB writes only. Retail price comes straight from
+    // the cached row (no Shopify call needed); inventoryItemId/cost sync still happen in the
+    // background since resolving them requires a Shopify call.
     for (const item of matchedByCache) {
       const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
       await getDb().invoiceLineItem.update({
@@ -178,6 +178,7 @@ export async function action({ request }: Route.ActionArgs) {
           shopifyProductTitle: cacheHit.title,
           shopifyVariantId: cacheHit.variantId,
           ...(!item.barcode && cacheHit.barcode ? { barcode: cacheHit.barcode } : {}),
+          ...(cacheHit.price ? { retailPrice: Number(cacheHit.price) } : {}),
         },
       });
     }
@@ -190,11 +191,23 @@ export async function action({ request }: Route.ActionArgs) {
     // not blocked by per-item Shopify API calls.
     void (async () => {
       const db = getDb();
+      console.log(`[uploadCsv background match] started for invoice ${invoice.id}: ${matchedByCache.length} cache-matched, ${unmatched.length} unmatched`);
 
-      await mapWithConcurrency(matchedByCache, 5, async (item) => {
-        const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
+      // Resolve inventoryItemIds for all cache-matched items in a single batched Shopify
+      // call (ProductCache doesn't store inventoryItemId directly), instead of one Shopify
+      // call per item — avoids items sitting as "partially linked" while calls trickle in.
+      if (matchedByCache.length > 0) {
+        let inventoryItemIdByVariant = new Map<string, string | null>();
         try {
-          const inventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+          const variantIds = matchedByCache.map((item) => cacheBySku.get(item.sku!.toLowerCase())!.variantId);
+          inventoryItemIdByVariant = await getInventoryItemIdsByVariant(variantIds);
+        } catch (err) {
+          console.error(`[uploadCsv background match] batch inventoryItemId lookup failed for invoice ${invoice.id}:`, err);
+        }
+
+        await mapWithConcurrency(matchedByCache, 5, async (item) => {
+          const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
+          const inventoryItemId = inventoryItemIdByVariant.get(cacheHit.variantId);
           if (inventoryItemId) {
             await db.invoiceLineItem.update({ where: { id: item.id }, data: { shopifyInventoryItemId: inventoryItemId } });
             try {
@@ -203,8 +216,8 @@ export async function action({ request }: Route.ActionArgs) {
               await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
-        } catch { /* ignore — resolvable later via Re-link All */ }
-      });
+        });
+      }
 
       await mapWithConcurrency(unmatched, 5, async (item) => {
         const raw = item.sku!;
@@ -297,6 +310,8 @@ export async function action({ request }: Route.ActionArgs) {
           );
         }
       });
+
+      console.log(`[uploadCsv background match] completed for invoice ${invoice.id}`);
     })().catch((err) => {
       console.error("[uploadCsv background match] failed:", err);
     });
