@@ -34,6 +34,21 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     include: { vendor: true, supplier: true, lineItems: true },
   });
   if (!invoice) throw new Response("Not Found", { status: 404 });
+
+  const linkedVariantIds = [...new Set(
+    invoice.lineItems.map((item) => item.shopifyVariantId).filter((v): v is string => !!v)
+  )];
+  const variantTitleByVariantId = new Map<string, string>();
+  if (linkedVariantIds.length > 0) {
+    const cacheRows = await getDb().productCache.findMany({
+      where: { variantId: { in: linkedVariantIds } },
+      select: { variantId: true, variantTitle: true },
+    });
+    for (const row of cacheRows) {
+      if (row.variantTitle) variantTitleByVariantId.set(row.variantId, row.variantTitle);
+    }
+  }
+
   return {
     invoice: {
       ...invoice,
@@ -50,6 +65,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
         ...item,
         unitCost: Number(item.unitCost),
         retailPrice: item.retailPrice !== null ? Number(item.retailPrice) : null,
+        shopifyVariantTitle: item.shopifyVariantId ? variantTitleByVariantId.get(item.shopifyVariantId) ?? null : null,
       })),
     },
   };
@@ -1030,6 +1046,9 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
     addVariantFetcher.submit(fd, { method: "post", encType: "multipart/form-data" });
   }
 
+  // Truly unlinked = no Shopify variant at all. Items that have a variantId but are
+  // still missing their inventoryItemId belong in partiallyLinkedItems below, not here —
+  // shopifyInventoryItemId must never gate this filter.
   const unlinkedItems = lineItems.filter(
     (item) =>
       !item.shopifyVariantId &&
@@ -1365,18 +1384,24 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300">
-                    <div>{item.description}</div>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 max-w-[260px]">
+                    <div className="truncate" title={item.description}>{item.description}</div>
                     {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
-                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.shopifyProductTitle}</div>
+                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate">{item.shopifyProductTitle}</div>
                     )}
                     {item.shopifyVariantId && (
-                      <div className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 mt-0.5" title={item.shopifyVariantId}>
+                      <div
+                        className={`flex items-center gap-1 text-xs mt-0.5 min-w-0 ${item.shopifyInventoryItemId ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}
+                        title={item.shopifyInventoryItemId ? item.shopifyVariantId : `${item.shopifyVariantId} — missing inventory link`}
+                      >
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" aria-hidden="true">
                           <path d="M9.019 2.578a2.75 2.75 0 0 1 3.889 3.889l-1.777 1.777a.75.75 0 0 0 1.06 1.06l1.778-1.776a4.25 4.25 0 0 0-6.01-6.01L5.182 4.196a4.25 4.25 0 0 0 .927 6.712.75.75 0 1 0 .734-1.309 2.75 2.75 0 0 1-.6-4.343l2.776-2.678Z" />
                           <path d="M6.981 13.422a2.75 2.75 0 0 1-3.889-3.889l1.777-1.777a.75.75 0 1 0-1.06-1.06L2.03 8.472a4.25 4.25 0 0 0 6.01 6.01l2.777-2.678a4.25 4.25 0 0 0-.927-6.712.75.75 0 1 0-.734 1.309 2.75 2.75 0 0 1 .6 4.343l-2.776 2.678Z" />
                         </svg>
-                        <span className="truncate">Linked: {item.shopifyProductTitle || "Shopify variant"}</span>
+                        <span className="truncate min-w-0">
+                          {item.shopifyInventoryItemId ? "Linked" : "Partial link"}: {item.shopifyProductTitle || "Shopify variant"}
+                          {item.shopifyVariantTitle && item.shopifyVariantTitle !== "Default Title" ? ` — ${item.shopifyVariantTitle}` : ""}
+                        </span>
                       </div>
                     )}
                   </td>
