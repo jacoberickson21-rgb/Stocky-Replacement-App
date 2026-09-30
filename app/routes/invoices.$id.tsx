@@ -1384,29 +1384,28 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300 max-w-[260px]">
-                    <div className="truncate" title={item.description}>{item.description}</div>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-300">
+                    <div>{item.description}</div>
                     {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
-                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 truncate">{item.shopifyProductTitle}</div>
+                      <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.shopifyProductTitle}</div>
                     )}
                     {item.shopifyVariantId && (
                       <div
-                        className={`flex items-center gap-1 text-xs mt-0.5 min-w-0 ${item.shopifyInventoryItemId ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}
-                        title={item.shopifyInventoryItemId ? item.shopifyVariantId : `${item.shopifyVariantId} — missing inventory link`}
+                        className={`flex items-start gap-1 text-xs mt-0.5 ${item.shopifyInventoryItemId ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0 mt-0.5" aria-hidden="true">
                           <path d="M9.019 2.578a2.75 2.75 0 0 1 3.889 3.889l-1.777 1.777a.75.75 0 0 0 1.06 1.06l1.778-1.776a4.25 4.25 0 0 0-6.01-6.01L5.182 4.196a4.25 4.25 0 0 0 .927 6.712.75.75 0 1 0 .734-1.309 2.75 2.75 0 0 1-.6-4.343l2.776-2.678Z" />
                           <path d="M6.981 13.422a2.75 2.75 0 0 1-3.889-3.889l1.777-1.777a.75.75 0 1 0-1.06-1.06L2.03 8.472a4.25 4.25 0 0 0 6.01 6.01l2.777-2.678a4.25 4.25 0 0 0-.927-6.712.75.75 0 1 0-.734 1.309 2.75 2.75 0 0 1 .6 4.343l-2.776 2.678Z" />
                         </svg>
-                        <span className="truncate min-w-0">
+                        <span title={item.shopifyInventoryItemId ? item.shopifyVariantId : `${item.shopifyVariantId} — missing inventory link`}>
                           {item.shopifyInventoryItemId ? "Linked" : "Partial link"}: {item.shopifyProductTitle || "Shopify variant"}
                           {item.shopifyVariantTitle && item.shopifyVariantTitle !== "Default Title" ? ` — ${item.shopifyVariantTitle}` : ""}
                         </span>
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>
-                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200">
+                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200 whitespace-nowrap">{item.quantityOrdered}</td>
+                  <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200 whitespace-nowrap">
                     ${Number(item.unitCost).toFixed(2)}
                   </td>
                   <td className="px-4 py-3 min-w-[130px]">
@@ -1525,7 +1524,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                           {savedRpId === item.id ? (
                             <span className="text-green-600 dark:text-green-400 text-xs font-medium">✓</span>
                           ) : null}
-                          <span className={`text-sm ${currentRp ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
+                          <span className={`text-sm whitespace-nowrap ${currentRp ? "text-gray-700 dark:text-gray-200" : "text-gray-400 dark:text-gray-500 italic"}`}>
                             {currentRp ? `$${currentRp.toFixed(2)}` : "— no price"}
                           </span>
                           <button
@@ -1552,7 +1551,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       </div>
                     )}
                   </td>
-                  <td className="px-3 py-3 text-right">
+                  <td className="px-3 py-3 text-right whitespace-nowrap">
                     {(() => {
                       const uc = Number(item.unitCost);
                       if (!currentRp || !uc) return <span className="text-gray-400 dark:text-gray-500 text-sm">—</span>;
@@ -1600,7 +1599,7 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                       );
                     })()}
                   </td>
-                  <td className="px-4 py-3 text-right font-medium text-gray-800 dark:text-gray-100">
+                  <td className="px-4 py-3 text-right font-medium text-gray-800 dark:text-gray-100 whitespace-nowrap">
                     ${lineTotal.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
                 </tr>

@@ -196,7 +196,9 @@ export async function action({ request }: Route.ActionArgs) {
       // ProductCache now stores inventoryItemId directly (populated by the background
       // sync), so most cache-matched items resolve with no Shopify call at all. Only
       // items whose cache row predates that sync (inventoryItemId still null) fall back
-      // to a single batched Shopify call, instead of one call per item.
+      // to a single batched Shopify call — getInventoryItemIdsByVariant chunks internally
+      // under Shopify's 250-id nodes() limit, so this stays one logical call no matter
+      // how many items need a fresh lookup (e.g. a 318-item invoice).
       if (matchedByCache.length > 0) {
         const needsLookup = [...new Set(
           matchedByCache
@@ -213,16 +215,34 @@ export async function action({ request }: Route.ActionArgs) {
           }
         }
 
-        await mapWithConcurrency(matchedByCache, 5, async (item) => {
+        const resolved: { item: (typeof matchedByCache)[number]; inventoryItemId: string }[] = [];
+        for (const item of matchedByCache) {
           const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
           const inventoryItemId = cacheHit.inventoryItemId ?? inventoryItemIdByVariant.get(cacheHit.variantId);
-          if (inventoryItemId) {
-            await db.invoiceLineItem.update({ where: { id: item.id }, data: { shopifyInventoryItemId: inventoryItemId } });
-            try {
-              await updateInventoryItemCost(inventoryItemId, item.unitCost.toNumber());
-            } catch (err) {
-              await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
-            }
+          if (inventoryItemId) resolved.push({ item, inventoryItemId });
+        }
+
+        // Persist every resolved inventoryItemId in one transaction instead of one
+        // UPDATE per item — matters at this scale (hundreds of items per invoice).
+        // Interactive form (not the array form) so a custom timeout can be set —
+        // the array form's options only accept isolationLevel, not timeout.
+        if (resolved.length > 0) {
+          await db.$transaction(
+            async (tx) => {
+              for (const { item, inventoryItemId } of resolved) {
+                await tx.invoiceLineItem.update({ where: { id: item.id }, data: { shopifyInventoryItemId: inventoryItemId } });
+              }
+            },
+            { timeout: 30000 }
+          );
+        }
+
+        // Cost sync is a per-item Shopify call (each line has its own cost) — bounded concurrency.
+        await mapWithConcurrency(resolved, 5, async ({ item, inventoryItemId }) => {
+          try {
+            await updateInventoryItemCost(inventoryItemId, item.unitCost.toNumber());
+          } catch (err) {
+            await logFailure("shopify:set-cost", item.sku!, `Cost update failed for inventoryItem ${inventoryItemId}: ${err instanceof Error ? err.message : String(err)}`);
           }
         });
       }

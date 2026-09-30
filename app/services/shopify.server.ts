@@ -1628,27 +1628,34 @@ export async function getVariantPrice(variantId: string): Promise<string | null>
   return data.productVariant?.price ?? null;
 }
 
+// Shopify's nodes() query has a hard 250-ID limit per call — chunk below that so
+// callers never need to worry about the limit, regardless of how many variantIds
+// they pass in.
+const NODES_QUERY_CHUNK_SIZE = 200;
+
 export async function getInventoryItemIdsByVariant(
   variantIds: string[]
 ): Promise<Map<string, string | null>> {
   if (variantIds.length === 0) return new Map();
-  const data = await shopifyGraphQL<{
-    nodes: ({ id: string; inventoryItem: { id: string } | null } | null)[];
-  }>(
-    `query GetVariantInventoryItemIds($ids: [ID!]!) {
-      nodes(ids: $ids) {
-        ... on ProductVariant {
-          id
-          inventoryItem { id }
-        }
-      }
-    }`,
-    { ids: variantIds }
-  );
   const result = new Map<string, string | null>();
-  for (const node of data.nodes) {
-    if (node?.id != null) {
-      result.set(node.id, node.inventoryItem?.id ?? null);
+  for (const chunk of chunkArray(variantIds, NODES_QUERY_CHUNK_SIZE)) {
+    const data = await shopifyGraphQL<{
+      nodes: ({ id: string; inventoryItem: { id: string } | null } | null)[];
+    }>(
+      `query GetVariantInventoryItemIds($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on ProductVariant {
+            id
+            inventoryItem { id }
+          }
+        }
+      }`,
+      { ids: chunk }
+    );
+    for (const node of data.nodes) {
+      if (node?.id != null) {
+        result.set(node.id, node.inventoryItem?.id ?? null);
+      }
     }
   }
   return result;
