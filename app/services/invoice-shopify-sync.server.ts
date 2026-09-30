@@ -6,6 +6,7 @@ import {
   updateVariantBarcode,
   getProductIdFromVariant,
   getVariantPrice,
+  getInventoryItemIdFromVariant,
   batchUpdateInventory,
   mapWithConcurrency,
   type BatchInventoryChange,
@@ -15,6 +16,18 @@ import {
 // is rate-limited and shopifyGraphQL has no built-in retry/backoff, so this stays
 // well under the point at which we'd start seeing THROTTLED errors.
 const SYNC_CONCURRENCY = 6;
+
+// Resolves a variant's inventoryItemId from ProductCache first (populated by the
+// background sync) and only falls back to a live Shopify call on a cache miss —
+// avoids a per-item Shopify round trip for the common case.
+export async function resolveInventoryItemId(variantId: string): Promise<string | null> {
+  const cached = await getDb().productCache.findUnique({
+    where: { variantId },
+    select: { inventoryItemId: true },
+  });
+  if (cached?.inventoryItemId) return cached.inventoryItemId;
+  return getInventoryItemIdFromVariant(variantId);
+}
 
 export type InvoiceSyncResult = {
   invoiceId: number;

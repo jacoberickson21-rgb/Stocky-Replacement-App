@@ -1964,6 +1964,7 @@ export async function getInventoryValuationData(opts?: {
 export type SyncVariant = {
   productId: string;
   variantId: string;
+  inventoryItemId: string | null;
   title: string;
   variantTitle: string;
   sku: string | null;
@@ -2134,6 +2135,7 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
   // as separate lines (not embedded in the ProductVariant line).
   // We need two extra maps to reconstruct cost and resolve InventoryLevel parentIds.
   const inventoryItemToVariant = new Map<string, string>(); // inventoryItemGID → variantGID
+  const variantToInventoryItemId = new Map<string, string>(); // variantGID → inventoryItemGID
   const variantToCost = new Map<string, string>();           // variantGID → unitCost.amount
   const variantTracked = new Map<string, boolean>();         // variantGID → tracked (false = "Don't track inventory")
 
@@ -2164,6 +2166,8 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
       variantTracked.set(parentId, (obj.tracked as boolean | undefined) !== false);
       // Track InventoryItem GID → variant GID so we can resolve InventoryLevel parentIds below.
       inventoryItemToVariant.set(id, parentId);
+      // And the reverse, so each SyncVariant can carry its own inventoryItemId.
+      variantToInventoryItemId.set(parentId, id);
     } else if (Array.isArray(obj.quantities) && parentId) {
       // InventoryLevel line (no GID).
       // __parentId is the InventoryItem GID when inventoryLevels is nested under inventoryItem,
@@ -2218,6 +2222,7 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
     results.push({
       productId: v.__parentId,
       variantId,
+      inventoryItemId: variantToInventoryItemId.get(variantId) ?? null,
       title: product.title,
       variantTitle: v.title,
       sku: v.sku,

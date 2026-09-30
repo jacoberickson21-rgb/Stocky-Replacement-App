@@ -213,6 +213,7 @@ model ProductCache {
   id               String   @id @default(cuid())
   variantId        String   @unique
   productId        String
+  inventoryItemId  String?
   title            String
   variantTitle     String
   sku              String?

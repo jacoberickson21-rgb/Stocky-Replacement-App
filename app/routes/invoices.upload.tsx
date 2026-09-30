@@ -193,21 +193,29 @@ export async function action({ request }: Route.ActionArgs) {
       const db = getDb();
       console.log(`[uploadCsv background match] started for invoice ${invoice.id}: ${matchedByCache.length} cache-matched, ${unmatched.length} unmatched`);
 
-      // Resolve inventoryItemIds for all cache-matched items in a single batched Shopify
-      // call (ProductCache doesn't store inventoryItemId directly), instead of one Shopify
-      // call per item — avoids items sitting as "partially linked" while calls trickle in.
+      // ProductCache now stores inventoryItemId directly (populated by the background
+      // sync), so most cache-matched items resolve with no Shopify call at all. Only
+      // items whose cache row predates that sync (inventoryItemId still null) fall back
+      // to a single batched Shopify call, instead of one call per item.
       if (matchedByCache.length > 0) {
+        const needsLookup = [...new Set(
+          matchedByCache
+            .map((item) => cacheBySku.get(item.sku!.toLowerCase())!)
+            .filter((cacheHit) => !cacheHit.inventoryItemId)
+            .map((cacheHit) => cacheHit.variantId)
+        )];
         let inventoryItemIdByVariant = new Map<string, string | null>();
-        try {
-          const variantIds = matchedByCache.map((item) => cacheBySku.get(item.sku!.toLowerCase())!.variantId);
-          inventoryItemIdByVariant = await getInventoryItemIdsByVariant(variantIds);
-        } catch (err) {
-          console.error(`[uploadCsv background match] batch inventoryItemId lookup failed for invoice ${invoice.id}:`, err);
+        if (needsLookup.length > 0) {
+          try {
+            inventoryItemIdByVariant = await getInventoryItemIdsByVariant(needsLookup);
+          } catch (err) {
+            console.error(`[uploadCsv background match] batch inventoryItemId lookup failed for invoice ${invoice.id}:`, err);
+          }
         }
 
         await mapWithConcurrency(matchedByCache, 5, async (item) => {
           const cacheHit = cacheBySku.get(item.sku!.toLowerCase())!;
-          const inventoryItemId = inventoryItemIdByVariant.get(cacheHit.variantId);
+          const inventoryItemId = cacheHit.inventoryItemId ?? inventoryItemIdByVariant.get(cacheHit.variantId);
           if (inventoryItemId) {
             await db.invoiceLineItem.update({ where: { id: item.id }, data: { shopifyInventoryItemId: inventoryItemId } });
             try {
@@ -286,10 +294,12 @@ export async function action({ request }: Route.ActionArgs) {
           try {
             const cacheHit = await db.productCache.findFirst({ where: { barcode: item.barcode } });
             if (cacheHit) {
-              let cacheInventoryItemId: string | null = null;
-              try {
-                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
-              } catch { /* ignore — will be resolved later via Re-link All */ }
+              let cacheInventoryItemId: string | null = cacheHit.inventoryItemId;
+              if (!cacheInventoryItemId) {
+                try {
+                  cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+                } catch { /* ignore — will be resolved later via Re-link All */ }
+              }
               await db.invoiceLineItem.update({
                 where: { id: item.id },
                 data: {
@@ -507,10 +517,12 @@ export async function action({ request }: Route.ActionArgs) {
               where: { sku: { equals: raw, mode: "insensitive" } },
             });
             if (cacheHit) {
-              let cacheInventoryItemId: string | null = null;
-              try {
-                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
-              } catch { /* ignore — will be resolved later via Re-link All */ }
+              let cacheInventoryItemId: string | null = cacheHit.inventoryItemId;
+              if (!cacheInventoryItemId) {
+                try {
+                  cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+                } catch { /* ignore — will be resolved later via Re-link All */ }
+              }
               await getDb().invoiceLineItem.update({
                 where: { id: item.id },
                 data: {
@@ -550,10 +562,12 @@ export async function action({ request }: Route.ActionArgs) {
               where: { barcode: item.barcode },
             });
             if (cacheHit) {
-              let cacheInventoryItemId: string | null = null;
-              try {
-                cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
-              } catch { /* ignore — will be resolved later via Re-link All */ }
+              let cacheInventoryItemId: string | null = cacheHit.inventoryItemId;
+              if (!cacheInventoryItemId) {
+                try {
+                  cacheInventoryItemId = await getInventoryItemIdFromVariant(cacheHit.variantId);
+                } catch { /* ignore — will be resolved later via Re-link All */ }
+              }
               await getDb().invoiceLineItem.update({
                 where: { id: item.id },
                 data: {

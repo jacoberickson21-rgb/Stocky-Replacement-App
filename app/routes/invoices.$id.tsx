@@ -4,6 +4,7 @@ import type { Route } from "./+types/invoices.$id";
 import { getDb } from "../db.server";
 import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
+import { resolveInventoryItemId } from "../services/invoice-shopify-sync.server";
 import {
   updateInventoryItemSku,
   updateInventoryLevel,
@@ -532,7 +533,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 
     let inventoryItemId: string | null;
     try {
-      inventoryItemId = await getInventoryItemIdFromVariant(lineItem.shopifyVariantId);
+      inventoryItemId = await resolveInventoryItemId(lineItem.shopifyVariantId);
     } catch (err) {
       return data({ ok: false, intent: "resolveLink" as const, lineItemId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -581,9 +582,9 @@ export async function action({ request, params }: Route.ActionArgs) {
       let resolvedInventoryItemId: string | null = null;
       let resolvedTitle: string | null = item.shopifyProductTitle;
 
-      // Already has variantId (ProductCache hit) but missing inventoryItemId — fetch it
+      // Already has variantId (ProductCache hit) but missing inventoryItemId — resolve it
       if (resolvedVariantId) {
-        try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(resolvedVariantId); } catch { /* ignore */ }
+        try { resolvedInventoryItemId = await resolveInventoryItemId(resolvedVariantId); } catch { /* ignore */ }
       }
 
       // No variantId — full lookup chain
@@ -607,7 +608,10 @@ export async function action({ request, params }: Route.ActionArgs) {
             if (hit) {
               resolvedVariantId = hit.variantId;
               resolvedTitle = hit.title;
-              try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+              resolvedInventoryItemId = hit.inventoryItemId;
+              if (!resolvedInventoryItemId) {
+                try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+              }
             }
           } catch { /* ignore */ }
         }
@@ -630,7 +634,10 @@ export async function action({ request, params }: Route.ActionArgs) {
             if (hit) {
               resolvedVariantId = hit.variantId;
               resolvedTitle = hit.title;
-              try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+              resolvedInventoryItemId = hit.inventoryItemId;
+              if (!resolvedInventoryItemId) {
+                try { resolvedInventoryItemId = await getInventoryItemIdFromVariant(hit.variantId); } catch { /* ignore */ }
+              }
             }
           } catch { /* ignore */ }
         }
@@ -1362,6 +1369,15 @@ export default function InvoiceDetailPage({ loaderData }: Route.ComponentProps) 
                     <div>{item.description}</div>
                     {item.shopifyProductTitle && item.shopifyProductTitle !== item.description && (
                       <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{item.shopifyProductTitle}</div>
+                    )}
+                    {item.shopifyVariantId && (
+                      <div className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 mt-0.5" title={item.shopifyVariantId}>
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" aria-hidden="true">
+                          <path d="M9.019 2.578a2.75 2.75 0 0 1 3.889 3.889l-1.777 1.777a.75.75 0 0 0 1.06 1.06l1.778-1.776a4.25 4.25 0 0 0-6.01-6.01L5.182 4.196a4.25 4.25 0 0 0 .927 6.712.75.75 0 1 0 .734-1.309 2.75 2.75 0 0 1-.6-4.343l2.776-2.678Z" />
+                          <path d="M6.981 13.422a2.75 2.75 0 0 1-3.889-3.889l1.777-1.777a.75.75 0 1 0-1.06-1.06L2.03 8.472a4.25 4.25 0 0 0 6.01 6.01l2.777-2.678a4.25 4.25 0 0 0-.927-6.712.75.75 0 1 0-.734 1.309 2.75 2.75 0 0 1 .6 4.343l-2.776 2.678Z" />
+                        </svg>
+                        <span className="truncate">Linked: {item.shopifyProductTitle || "Shopify variant"}</span>
+                      </div>
                     )}
                   </td>
                   <td className="px-3 py-3 text-right text-gray-700 dark:text-gray-200">{item.quantityOrdered}</td>

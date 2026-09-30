@@ -305,6 +305,7 @@ async function syncProducts(syncLogId: string, syncStart: number, lastSyncDate: 
             create: {
               variantId: v.variantId,
               productId: v.productId,
+              inventoryItemId: v.inventoryItemId,
               title: v.title,
               variantTitle: v.variantTitle,
               sku: v.sku,
@@ -321,6 +322,7 @@ async function syncProducts(syncLogId: string, syncStart: number, lastSyncDate: 
             },
             update: {
               productId: v.productId,
+              inventoryItemId: v.inventoryItemId,
               title: v.title,
               variantTitle: v.variantTitle,
               sku: v.sku,
