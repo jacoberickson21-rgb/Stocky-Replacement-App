@@ -81,10 +81,13 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     .filter((id): id is string => id !== null);
   let currentInventory: Record<string, number | null> = {};
   if (linkedVariantIds.length > 0) {
+    console.log(`[receive] fetching inventory for ${linkedVariantIds.length} variantIds:`, linkedVariantIds);
     try {
       const qtyMap = await getInventoryQuantitiesByVariant(linkedVariantIds);
       currentInventory = Object.fromEntries(qtyMap);
-    } catch {
+      console.log(`[receive] got ${qtyMap.size} quantities back:`, currentInventory);
+    } catch (err) {
+      console.error("[receive] getInventoryQuantitiesByVariant failed:", err);
       // Non-fatal — page still works, column shows "—"
     }
   }
@@ -303,13 +306,15 @@ function ProductCell({ item }: { item: LineItem }) {
     query.trim().length >= 2;
 
   return (
-    <div>
-      <span className="font-mono text-gray-700 dark:text-gray-300">{item.sku}</span>
+    <div className="min-w-0">
+      <span className="block font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
+        {item.sku}
+      </span>
 
       {linked.title ? (
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
-          <span className="text-xs text-green-700 dark:text-green-400 leading-tight">
+          <span className="text-xs text-gray-400 dark:text-gray-500 leading-tight truncate">
             {linked.title}
           </span>
         </div>
@@ -464,29 +469,29 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
 
       {/* Receiving form */}
       <Form method="post">
-        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-visible mb-6">
-          <table className="w-full text-sm">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-x-auto mb-6">
+          <table className="w-full text-sm min-w-[1200px]">
             <thead>
               <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-64">
                   SKU / Product
                 </th>
                 <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
                   Description
                 </th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                <th className="text-center px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-20">
                   Expected
                 </th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                <th className="text-center px-4 py-3 font-medium text-gray-600 dark:text-gray-400 w-24">
                   Current Qty
                 </th>
                 <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-36">
                   Received
                 </th>
-                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-28">
+                <th className="text-right px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-24">
                   Line Total
                 </th>
-                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400">
+                <th className="text-left px-6 py-3 font-medium text-gray-600 dark:text-gray-400 w-64">
                   Note
                 </th>
                 <th className="px-4 py-3 w-10"></th>
@@ -517,10 +522,10 @@ export default function ReceivingPage({ loaderData }: Route.ComponentProps) {
                     <td className="px-6 py-4 text-gray-600 dark:text-gray-300 align-top">
                       {item.description}
                     </td>
-                    <td className="px-6 py-4 text-right text-gray-700 dark:text-gray-300 tabular-nums align-top">
+                    <td className="px-4 py-4 text-center text-gray-700 dark:text-gray-300 tabular-nums align-top">
                       {item.quantityOrdered}
                     </td>
-                    <td className="px-6 py-4 text-right tabular-nums align-top">
+                    <td className="px-4 py-4 text-center tabular-nums align-top">
                       {item.shopifyVariantId && item.shopifyVariantId in currentInventory ? (
                         <span className="text-gray-400 dark:text-gray-500">
                           {currentInventory[item.shopifyVariantId] ?? "—"}

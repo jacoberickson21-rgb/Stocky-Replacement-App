@@ -1665,23 +1665,25 @@ export async function getInventoryQuantitiesByVariant(
   variantIds: string[]
 ): Promise<Map<string, number | null>> {
   if (variantIds.length === 0) return new Map();
-  const data = await shopifyGraphQL<{
-    nodes: ({ id: string; inventoryQuantity: number | null } | null)[];
-  }>(
-    `query GetVariantInventory($ids: [ID!]!) {
-      nodes(ids: $ids) {
-        ... on ProductVariant {
-          id
-          inventoryQuantity
-        }
-      }
-    }`,
-    { ids: variantIds }
-  );
   const result = new Map<string, number | null>();
-  for (const node of data.nodes) {
-    if (node?.id != null) {
-      result.set(node.id, node.inventoryQuantity ?? null);
+  for (const chunk of chunkArray(variantIds, NODES_QUERY_CHUNK_SIZE)) {
+    const data = await shopifyGraphQL<{
+      nodes: ({ id: string; inventoryQuantity: number | null } | null)[];
+    }>(
+      `query GetVariantInventory($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on ProductVariant {
+            id
+            inventoryQuantity
+          }
+        }
+      }`,
+      { ids: chunk }
+    );
+    for (const node of data.nodes) {
+      if (node?.id != null) {
+        result.set(node.id, node.inventoryQuantity ?? null);
+      }
     }
   }
   return result;
