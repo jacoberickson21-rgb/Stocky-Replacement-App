@@ -4,7 +4,7 @@ import Papa from "papaparse";
 import type { Route } from "./+types/reorder";
 import { requireUserId } from "../session.server";
 import { getDb } from "../db.server";
-import { getVariantSalesVelocity, getHistoricalUnitsSoldByVariant, type SalesVelocityPeriod } from "../services/sales-velocity.server";
+import { getVariantSalesVelocity, getHistoricalUnitsSoldByVariant, getSalesCacheDateRange, type SalesVelocityPeriod } from "../services/sales-velocity.server";
 import { getSyncStatus } from "../services/sync.server";
 import type { SyncLogData } from "../services/sync.server";
 import { resolveVendorId } from "../utils/vendor-resolve.server";
@@ -120,7 +120,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
   const hasHistRange = histFromDate !== null && histToExclusiveDate !== null;
 
-  const [{ rows: velocityRows, dayRange }, vendors, distinctTypes, lastSync] = await Promise.all([
+  const [{ rows: velocityRows, dayRange }, vendors, distinctTypes, lastSync, salesCacheRange] = await Promise.all([
     getVariantSalesVelocity(period),
     db.vendor.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } }),
     db.productCache.findMany({
@@ -130,6 +130,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       orderBy: { productType: "asc" },
     }),
     getSyncStatus(),
+    getSalesCacheDateRange(),
   ]);
 
   const vendorNeedle = vendorFilter.toLowerCase();
@@ -204,9 +205,29 @@ export async function loader({ request }: Route.LoaderArgs) {
   // Historical comparison is computed only for the variants actually shown on
   // this page, keeping the SalesCache query scoped instead of covering every
   // filtered row across all pages.
+  //
+  // histDataInsufficient flags when the requested window starts before
+  // SalesCache's oldest cached day (or SalesCache is empty outright) — the
+  // sync's lookback (Settings → Sales History Lookback) doesn't reach far
+  // enough back to cover this comparison, as distinct from the variants
+  // genuinely having zero sales in-range.
+  let histDataInsufficient = false;
   if (hasHistRange && histFromDate && histToExclusiveDate) {
+    histDataInsufficient = !salesCacheRange.min || histFromDate < salesCacheRange.min;
+
     const pageVariantIds = Array.from(new Set(pageGroups.flatMap((g) => g.variants.map((v) => v.variantId))));
     const historicalMap = await getHistoricalUnitsSoldByVariant(pageVariantIds, histFromDate, histToExclusiveDate);
+
+    console.log(
+      `[reorder:historical] range=${histFrom}..${histTo} (${historicalDays} days) · ` +
+      `salesCacheCoverage=${salesCacheRange.min?.toISOString().slice(0, 10) ?? "none"}..${salesCacheRange.max?.toISOString().slice(0, 10) ?? "none"} · ` +
+      `insufficientCoverage=${histDataInsufficient}`
+    );
+    const skuByVariantId = new Map(pageGroups.flatMap((g) => g.variants.map((v) => [v.variantId, v.sku] as const)));
+    const sample = Array.from(historicalMap.entries()).slice(0, 5)
+      .map(([variantId, unitsSold]) => `variantId=${variantId} SKU="${skuByVariantId.get(variantId) ?? "?"}" unitsSold=${unitsSold}`);
+    console.log(`[reorder:historical] sample (${Math.min(5, historicalMap.size)} of ${historicalMap.size}):\n  ${sample.join("\n  ") || "(no rows found)"}`);
+
     pageGroups = pageGroups.map((group) => {
       const variants = group.variants.map((v) => {
         const historicalUnitsSold = historicalMap.get(v.variantId) ?? 0;
@@ -227,6 +248,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     filters: { vendor: vendorFilter, productType: productTypeFilter, period, maxDays, coverageDays, histFrom, histTo },
     dayRange,
     historicalDays,
+    histDataInsufficient,
+    salesCacheMinDate: salesCacheRange.min?.toISOString() ?? null,
     pagination: { page, totalPages, totalCount },
     lastSync,
   };
@@ -512,7 +535,7 @@ function toIsoDate(d: Date): string {
 }
 
 export default function ReorderPage({ loaderData }: Route.ComponentProps) {
-  const { groups, vendors, distinctTypes, filters, dayRange, historicalDays, pagination, lastSync: initialLastSync } = loaderData;
+  const { groups, vendors, distinctTypes, filters, dayRange, historicalDays, histDataInsufficient, salesCacheMinDate, pagination, lastSync: initialLastSync } = loaderData;
   const hasHistCompare = !!filters.histFrom && !!filters.histTo;
   const [, setSearchParams] = useSearchParams();
   const navigation = useNavigation();
@@ -641,11 +664,16 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
   }
 
   function compareToLastYear() {
+    // Mirrors the forward-looking forecast window (today → today + coverageDays),
+    // shifted back exactly one calendar year — not the backward-looking velocity
+    // lookback period, which answers a different question (recent sales pace).
     const now = new Date();
-    const to = new Date(now);
-    to.setDate(to.getDate() - 365);
-    const from = new Date(to);
-    from.setDate(from.getDate() - (dayRange - 1));
+    const curTo = new Date(now);
+    curTo.setDate(curTo.getDate() + (filters.coverageDays - 1));
+    const from = new Date(now);
+    from.setFullYear(from.getFullYear() - 1);
+    const to = new Date(curTo);
+    to.setFullYear(to.getFullYear() - 1);
     setHistRange(toIsoDate(from), toIsoDate(to));
   }
 
@@ -828,7 +856,24 @@ export default function ReorderPage({ loaderData }: Route.ComponentProps) {
             </button>
           </>
         )}
+        {!hasHistCompare && (
+          <span className="text-xs text-gray-400 dark:text-gray-500">
+            {salesCacheMinDate
+              ? `Sales data available back to ${new Date(salesCacheMinDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+              : "No sales data synced yet"}
+          </span>
+        )}
       </div>
+
+      {hasHistCompare && histDataInsufficient && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-sm rounded-xl px-4 py-3 mb-4">
+          No sales data available for this period
+          {salesCacheMinDate
+            ? ` — cached sales only go back to ${new Date(salesCacheMinDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.`
+            : "."}
+          {" "}Try a more recent date range.
+        </div>
+      )}
 
       {/* Preseason CSV import panel */}
       {showImport && (

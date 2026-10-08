@@ -121,5 +121,22 @@ export async function getHistoricalUnitsSoldByVariant(
     where: { variantId: { in: variantIds }, date: { gte: from, lt: toExclusive } },
     _sum: { unitsSold: true },
   });
+  console.log(
+    `[reorder:historical] queried SalesCache for ${variantIds.length} variants, ` +
+    `date >= ${from.toISOString().slice(0, 10)} AND date < ${toExclusive.toISOString().slice(0, 10)} ` +
+    `(i.e. through ${new Date(toExclusive.getTime() - 86_400_000).toISOString().slice(0, 10)}) ` +
+    `→ ${rows.length} variant(s) with matching SalesCache rows`
+  );
   return new Map(rows.map((r) => [r.variantId, r._sum.unitsSold ?? 0]));
+}
+
+// Earliest/latest calendar date present in SalesCache — used to warn staff when
+// a requested historical comparison window falls outside the data the
+// background sync has actually collected.
+export async function getSalesCacheDateRange(): Promise<{ min: Date | null; max: Date | null }> {
+  const db = getDb();
+  const range = await db.$queryRaw<{ min: Date | null; max: Date | null }[]>`
+    SELECT MIN(date) as min, MAX(date) as max FROM "SalesCache"
+  `;
+  return { min: range[0]?.min ?? null, max: range[0]?.max ?? null };
 }
