@@ -1984,6 +1984,7 @@ export type SyncVariant = {
   price: number;
   cost: number | null;
   currentInventory: number;
+  tracked: boolean;
   imageUrl: string | null;
   status: string;
 };
@@ -2242,6 +2243,7 @@ export async function downloadAndParseJSONL(url: string): Promise<SyncVariant[]>
       price: parseFloat(v.price) || 0,
       cost: cost && cost > 0 ? cost : null,
       currentInventory: available,
+      tracked: isTracked,
       imageUrl: product.featuredImage?.url ?? null,
       status: product.status,
     });

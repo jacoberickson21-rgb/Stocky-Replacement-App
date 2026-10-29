@@ -9,14 +9,18 @@ datasource db {
 }
 
 model User {
-  id               Int              @id @default(autoincrement())
-  username         String           @unique
-  passwordHash     String
-  name             String
-  createdAt        DateTime         @default(now())
-  auditLogs        AuditLog[]
-  failuresResolved FailureLog[]
-  discrepancyLogs  DiscrepancyLog[]
+  id                  Int                       @id @default(autoincrement())
+  username            String                    @unique
+  passwordHash        String
+  name                String
+  createdAt           DateTime                  @default(now())
+  auditLogs           AuditLog[]
+  failuresResolved    FailureLog[]
+  discrepancyLogs     DiscrepancyLog[]
+  stocktakesStarted   Stocktake[]               @relation("StocktakeStartedBy")
+  stocktakesCompleted Stocktake[]               @relation("StocktakeCompletedBy")
+  stocktakeScans      StocktakeScan[]
+  stocktakeUnknowns   StocktakeUnknownBarcode[]
 }
 
 model Supplier {
@@ -32,26 +36,26 @@ model Supplier {
 }
 
 model Vendor {
-  id                 Int              @id @default(autoincrement())
-  name               String
-  contactName        String?
-  email              String?
-  phone              String?
-  address            String?
-  city               String?
-  state              String?
-  zip                String?
-  website            String?
-  shopifyVendorName  String?
-  supplierId         Int?
-  supplier           Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  createdAt          DateTime         @default(now())
-  invoices           Invoice[]
-  credits            Credit[]
-  auditLogs          AuditLog[]
-  vendorProfile      VendorProfile?
-  lineItems          InvoiceLineItem[]
-  discrepancyLogs    DiscrepancyLog[]
+  id                Int               @id @default(autoincrement())
+  name              String
+  contactName       String?
+  email             String?
+  phone             String?
+  address           String?
+  city              String?
+  state             String?
+  zip               String?
+  website           String?
+  shopifyVendorName String?
+  supplierId        Int?
+  supplier          Supplier?         @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  invoices          Invoice[]
+  credits           Credit[]
+  auditLogs         AuditLog[]
+  vendorProfile     VendorProfile?
+  lineItems         InvoiceLineItem[]
+  discrepancyLogs   DiscrepancyLog[]
 }
 
 model VendorProfile {
@@ -65,24 +69,24 @@ model VendorProfile {
 }
 
 model Invoice {
-  id              Int               @id @default(autoincrement())
-  invoiceNumber   String
-  vendor          Vendor?           @relation(fields: [vendorId], references: [id])
-  vendorId        Int?
-  supplier        Supplier?         @relation(fields: [supplierId], references: [id], onDelete: SetNull)
-  supplierId      Int?
-  status          InvoiceStatus     @default(ORDERED)
-  invoiceDate     DateTime?
+  id                Int               @id @default(autoincrement())
+  invoiceNumber     String
+  vendor            Vendor?           @relation(fields: [vendorId], references: [id])
+  vendorId          Int?
+  supplier          Supplier?         @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  supplierId        Int?
+  status            InvoiceStatus     @default(ORDERED)
+  invoiceDate       DateTime?
   paymentTerms      String?
   paymentTermsNotes String?
   dueDate           DateTime?
-  total           Decimal           @db.Decimal(10, 2)
-  shippingCost    Decimal?          @db.Decimal(10, 2)
-  adjustments     Decimal?          @db.Decimal(10, 2)
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  lineItems       InvoiceLineItem[]
-  discrepancyLogs DiscrepancyLog[]
+  total             Decimal           @db.Decimal(10, 2)
+  shippingCost      Decimal?          @db.Decimal(10, 2)
+  adjustments       Decimal?          @db.Decimal(10, 2)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  lineItems         InvoiceLineItem[]
+  discrepancyLogs   DiscrepancyLog[]
 
   shopifySyncStatus    ShopifySyncStatus?
   shopifySyncStartedAt DateTime?
@@ -224,6 +228,7 @@ model ProductCache {
   price            Decimal  @db.Decimal(10, 2)
   cost             Decimal? @db.Decimal(10, 2)
   currentInventory Int
+  tracked          Boolean  @default(true)
   imageUrl         String?
   status           String   @default("ACTIVE")
   syncedAt         DateTime
@@ -254,4 +259,140 @@ model SyncLog {
   totalVariants   Int?
   currentVariant  Int?
   errorMessage    String?
+}
+
+// ─── Stocktake ────────────────────────────────────────────────────────────────
+
+enum StocktakeMode {
+  SCOPED
+  FREE_SCAN
+}
+
+enum StocktakeStatus {
+  PREPARING
+  IN_PROGRESS
+  REVIEW
+  APPLYING
+  COMPLETED
+  CANCELLED
+}
+
+enum StocktakeDriftResolution {
+  KEEP_COUNT
+  ADJUST_FOR_MOVEMENT
+  SKIP
+}
+
+enum StocktakeScanKind {
+  SCAN
+  MANUAL_SET
+  LINKED
+}
+
+model Stocktake {
+  id            Int             @id @default(autoincrement())
+  name          String
+  mode          StocktakeMode
+  filters       Json?
+  status        StocktakeStatus @default(PREPARING)
+  locationId    String
+  zeroUnscanned Boolean         @default(false)
+  notes         String?
+  startedById   Int
+  startedBy     User            @relation("StocktakeStartedBy", fields: [startedById], references: [id])
+  startedAt     DateTime        @default(now())
+  completedById Int?
+  completedBy   User?           @relation("StocktakeCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  completedAt   DateTime?
+
+  // Live snapshot progress (PREPARING)
+  snapshotTotal Int?
+  snapshotDone  Int?
+
+  // Background apply progress (APPLYING)
+  applyTotal     Int?
+  applyDone      Int?
+  applyStartedAt DateTime?
+  applyEndedAt   DateTime?
+  applyError     String?
+  applyAttempt   Int       @default(0)
+
+  items           StocktakeItem[]
+  scans           StocktakeScan[]
+  unknownBarcodes StocktakeUnknownBarcode[]
+
+  @@index([status])
+  @@index([startedAt])
+}
+
+// All quantities (expectedQty, liveQtyAtReview, targetQty) are Shopify "on_hand"
+// values so they compare like-for-like with changeFromQuantity on apply.
+model StocktakeItem {
+  id                    Int                       @id @default(autoincrement())
+  stocktakeId           Int
+  stocktake             Stocktake                 @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)
+  variantId             String
+  productId             String?
+  inventoryItemId       String
+  sku                   String?
+  barcode               String?
+  title                 String
+  variantTitle          String
+  vendor                String?
+  expectedQty           Int
+  countedQty            Int?
+  cost                  Decimal?                  @db.Decimal(10, 2)
+  outsideScope          Boolean                   @default(false)
+  liveQtyAtReview       Int?
+  liveAvailableAtReview Int?
+  drifted               Boolean                   @default(false)
+  driftResolution       StocktakeDriftResolution?
+  targetQty             Int?
+  applied               Boolean                   @default(false)
+  appliedAt             DateTime?
+  applyError            String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  scans                 StocktakeScan[]
+  linkedUnknowns        StocktakeUnknownBarcode[]
+
+  @@unique([stocktakeId, variantId])
+  @@index([stocktakeId, barcode])
+  @@index([stocktakeId, sku])
+  @@index([stocktakeId, applied])
+}
+
+model StocktakeScan {
+  id          Int               @id @default(autoincrement())
+  stocktakeId Int
+  stocktake   Stocktake         @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)
+  itemId      Int
+  item        StocktakeItem     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  kind        StocktakeScanKind @default(SCAN)
+  barcode     String?
+  qtyBefore   Int?
+  qtyAfter    Int
+  scannedById Int
+  scannedBy   User              @relation(fields: [scannedById], references: [id])
+  scannedAt   DateTime          @default(now())
+  undoneAt    DateTime?
+
+  @@index([stocktakeId, scannedById, scannedAt])
+  @@index([itemId])
+}
+
+model StocktakeUnknownBarcode {
+  id              Int            @id @default(autoincrement())
+  stocktakeId     Int
+  stocktake       Stocktake      @relation(fields: [stocktakeId], references: [id], onDelete: Cascade)
+  barcode         String
+  scanCount       Int            @default(1)
+  lastScannedById Int?
+  lastScannedBy   User?          @relation(fields: [lastScannedById], references: [id], onDelete: SetNull)
+  lastScannedAt   DateTime       @default(now())
+  resolvedItemId  Int?
+  resolvedItem    StocktakeItem? @relation(fields: [resolvedItemId], references: [id], onDelete: SetNull)
+  resolvedAt      DateTime?
+
+  @@unique([stocktakeId, barcode])
 }
