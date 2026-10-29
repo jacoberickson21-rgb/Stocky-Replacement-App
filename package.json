@@ -16,6 +16,8 @@
     "@react-router/serve": "7.14.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/papaparse": "^5.5.2",
+    "@zxing/browser": "0.2.1",
+    "@zxing/library": "0.23.0",
     "bcryptjs": "^3.0.3",
     "isbot": "^5.1.36",
     "lucide-react": "^1.17.0",

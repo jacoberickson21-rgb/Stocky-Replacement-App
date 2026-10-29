@@ -5,8 +5,8 @@ import { ClipboardList, ScanLine } from "lucide-react";
 import type { Route } from "./+types/stocktakes.new";
 import { requireUserId } from "../session.server";
 import { logFailure } from "../services/failure-log.server";
+import { EMPTY_SCOPE, type StocktakeScope } from "../utils/stocktake-scope";
 import {
-  EMPTY_SCOPE,
   StocktakeStartError,
   getScopeFilterOptions,
   getScopePreview,
@@ -15,7 +15,6 @@ import {
   startScopedStocktake,
   type ScopePreview,
   type ScopePreviewRow,
-  type StocktakeScope,
 } from "../services/stocktake.server";
 
 export async function loader({ request }: Route.LoaderArgs) {

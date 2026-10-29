@@ -1,4 +1,4 @@
-import { Form, Link, data, useNavigation, useRevalidator } from "react-router";
+import { Form, Link, data, redirect, useActionData, useNavigation, useRevalidator } from "react-router";
 import { useEffect } from "react";
 import type { Route } from "./+types/stocktakes.$id";
 import { requireUserId } from "../session.server";
@@ -8,6 +8,8 @@ import {
   readFiltersJson,
   runStocktakeSnapshot,
 } from "../services/stocktake.server";
+import { StocktakeCountError, cancelStocktake } from "../services/stocktake-count.server";
+import { logFailure } from "../services/failure-log.server";
 import { modeLabels, statusLabels, statusStyles } from "../utils/stocktake-labels";
 
 const PAGE_SIZE = 50;
@@ -68,9 +70,21 @@ export async function loader({ request, params }: Route.LoaderArgs) {
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
-  await requireUserId(request);
+  const userId = await requireUserId(request);
   const id = Number(params.id);
   const form = await request.formData();
+
+  if (form.get("intent") === "cancel") {
+    try {
+      await cancelStocktake({ stocktakeId: id, userId });
+    } catch (err) {
+      if (err instanceof StocktakeCountError) return data({ error: err.message }, { status: 400 });
+      const msg = err instanceof Error ? err.message : String(err);
+      await logFailure("STOCKTAKE_CANCEL", `Stocktake #${id}`, msg);
+      return data({ error: "Could not cancel the stocktake. The error has been logged." }, { status: 500 });
+    }
+    return redirect(`/stocktakes/${id}`);
+  }
 
   if (form.get("intent") === "resume-snapshot") {
     const stocktake = await getDb().stocktake.findUnique({ where: { id }, select: { status: true } });
@@ -94,6 +108,9 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
   const { stocktake, snapshot, snapshotRunning, items, pagination } = loaderData;
   const revalidator = useRevalidator();
   const navigation = useNavigation();
+  const actionData = useActionData<typeof action>();
+  const actionError = actionData && "error" in actionData ? actionData.error : null;
+  const cancellable = ["PREPARING", "IN_PROGRESS", "REVIEW"].includes(stocktake.status);
   const resuming = navigation.state !== "idle" && navigation.formData?.get("intent") === "resume-snapshot";
 
   const preparing = stocktake.status === "PREPARING";
@@ -119,10 +136,33 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
           {statusLabels[stocktake.status]}
         </span>
       </div>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        {modeLabels[stocktake.mode]} · started by {stocktake.startedBy} on {new Date(stocktake.startedAt).toLocaleString()}
-        {stocktake.notes && <> · {stocktake.notes}</>}
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          {modeLabels[stocktake.mode]} · started by {stocktake.startedBy} on {new Date(stocktake.startedAt).toLocaleString()}
+          {stocktake.notes && <> · {stocktake.notes}</>}
+        </p>
+        {cancellable && (
+          <Form
+            method="post"
+            onSubmit={(e) => {
+              if (!window.confirm(`Cancel "${stocktake.name}"? Counts are kept for the record, but nothing will be applied to Shopify and counting stops.`)) {
+                e.preventDefault();
+              }
+            }}
+          >
+            <input type="hidden" name="intent" value="cancel" />
+            <button type="submit" className="text-sm font-medium text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Cancel stocktake
+            </button>
+          </Form>
+        )}
+      </div>
+
+      {actionError && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-4 py-3 mb-6 text-sm text-red-700 dark:text-red-300">
+          {actionError}
+        </div>
+      )}
 
       {preparing && (
         <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-5 mb-6">
@@ -176,8 +216,11 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
       )}
 
       {stocktake.status === "IN_PROGRESS" && (
-        <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl px-4 py-3 mb-6 text-sm text-indigo-800 dark:text-indigo-300">
-          Ready to count. The counting screen is coming in the next build phase.
+        <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl px-4 py-3 mb-6 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-indigo-800 dark:text-indigo-300">Ready to count. Several people can scan into this stocktake at once.</span>
+          <Link to={`/stocktakes/${stocktake.id}/count`} className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2">
+            Open counting screen
+          </Link>
         </div>
       )}
 

@@ -1796,6 +1796,87 @@ export async function fetchLiveInventoryLevels(
   return result;
 }
 
+export type StocktakeVariantMatch = {
+  variantId: string;
+  productId: string;
+  productTitle: string;
+  variantTitle: string;
+  sku: string | null;
+  barcode: string | null;
+  vendor: string | null;
+  inventoryItemId: string;
+  tracked: boolean;
+  unitCost: number | null;
+};
+
+type RawStocktakeVariant = {
+  id: string;
+  title: string;
+  sku: string | null;
+  barcode: string | null;
+  product: { id: string; title: string; vendor: string | null };
+  inventoryItem: { id: string; tracked: boolean; unitCost: { amount: string } | null };
+};
+
+const STOCKTAKE_VARIANT_FIELDS = `
+  id
+  title
+  sku
+  barcode
+  product { id title vendor }
+  inventoryItem { id tracked unitCost { amount } }
+`;
+
+function parseStocktakeVariant(v: RawStocktakeVariant): StocktakeVariantMatch {
+  const cost = v.inventoryItem.unitCost?.amount != null ? parseFloat(v.inventoryItem.unitCost.amount) : null;
+  return {
+    variantId: v.id,
+    productId: v.product.id,
+    productTitle: v.product.title,
+    variantTitle: v.title,
+    sku: v.sku || null,
+    barcode: v.barcode || null,
+    vendor: v.product.vendor,
+    inventoryItemId: v.inventoryItem.id,
+    tracked: v.inventoryItem.tracked,
+    unitCost: cost != null && !isNaN(cost) ? cost : null,
+  };
+}
+
+// Live fallback for a stocktake scan: variants whose barcode, then SKU, exactly
+// equals the scanned code. Read-only.
+export async function findVariantsByCode(code: string): Promise<StocktakeVariantMatch[]> {
+  const safe = code.replace(/["\\]/g, "");
+  if (!safe) return [];
+  for (const field of ["barcode", "sku"] as const) {
+    const data = await shopifyGraphQL<{ productVariants: { nodes: RawStocktakeVariant[] } }>(
+      `query StocktakeFindVariant($q: String!) {
+        productVariants(first: 10, query: $q) {
+          nodes { ${STOCKTAKE_VARIANT_FIELDS} }
+        }
+      }`,
+      { q: `${field}:"${safe}"` }
+    );
+    const exact = data.productVariants.nodes.filter((v) =>
+      field === "barcode" ? v.barcode === code : (v.sku ?? "").toLowerCase() === code.toLowerCase()
+    );
+    if (exact.length > 0) return exact.map(parseStocktakeVariant);
+  }
+  return [];
+}
+
+// Live read of one variant, used when staff link a barcode or add an
+// outside-scope item. Read-only. Returns null if the variant no longer exists.
+export async function fetchVariantForStocktake(variantId: string): Promise<StocktakeVariantMatch | null> {
+  const data = await shopifyGraphQL<{ productVariant: RawStocktakeVariant | null }>(
+    `query StocktakeVariant($id: ID!) {
+      productVariant(id: $id) { ${STOCKTAKE_VARIANT_FIELDS} }
+    }`,
+    { id: variantId }
+  );
+  return data.productVariant ? parseStocktakeVariant(data.productVariant) : null;
+}
+
 // ─── Search (existing) ────────────────────────────────────────────────────────
 
 function buildShopifyQuery(input: string, vendorFilter?: string): string {

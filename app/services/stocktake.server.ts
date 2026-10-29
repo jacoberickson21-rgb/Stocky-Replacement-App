@@ -6,6 +6,7 @@ import {
   getInventoryItemIdsByVariant,
   getLocationId,
 } from "./shopify.server";
+import type { StocktakeScope } from "../utils/stocktake-scope";
 
 // Every nodes()/batch call in the stocktake flow is chunked at this size.
 const SNAPSHOT_CHUNK_SIZE = 200;
@@ -13,32 +14,8 @@ const PREVIEW_PAGE_SIZE = 50;
 
 // ─── Scope ─────────────────────────────────────────────────────────────────────
 
-export type StockLevelFilter = "all" | "in_stock" | "zero_or_negative";
-export type BarcodeFilter = "all" | "has" | "missing";
-
-export type StocktakeScope = {
-  vendor: string;
-  productType: string;
-  tag: string;
-  status: string;
-  stock: StockLevelFilter;
-  barcode: BarcodeFilter;
-  q: string;
-  excludedVariantIds: string[];
-  excludedProductIds: string[];
-};
-
-export const EMPTY_SCOPE: StocktakeScope = {
-  vendor: "",
-  productType: "",
-  tag: "",
-  status: "",
-  stock: "all",
-  barcode: "all",
-  q: "",
-  excludedVariantIds: [],
-  excludedProductIds: [],
-};
+export { EMPTY_SCOPE } from "../utils/stocktake-scope";
+export type { BarcodeFilter, StockLevelFilter, StocktakeScope } from "../utils/stocktake-scope";
 
 // What gets stored in Stocktake.filters. The scope the staff chose, plus the
 // exact variant list resolved at start (so a resumed snapshot covers the same
@@ -408,16 +385,19 @@ export async function runStocktakeSnapshot(stocktakeId: number): Promise<void> {
       finishedAt: null as string | null,
     };
 
-    const saveProgress = async (extra: Prisma.StocktakeUpdateInput = {}) => {
+    // Only writes while the stocktake is still PREPARING, so a cancel during the
+    // snapshot is never overwritten. Returns false once it has been cancelled.
+    const saveProgress = async (extra: Prisma.StocktakeUpdateManyMutationInput = {}) => {
       const done = await db.stocktakeItem.count({ where: { stocktakeId } });
-      await db.stocktake.update({
-        where: { id: stocktakeId },
+      const { count } = await db.stocktake.updateMany({
+        where: { id: stocktakeId, status: "PREPARING" },
         data: {
           snapshotDone: done + snapshot.droppedUntracked.length + snapshot.droppedMissing.length,
           filters: { ...filters, snapshot } as Prisma.InputJsonValue,
           ...extra,
         },
       });
+      return count > 0;
     };
 
     try {
@@ -431,7 +411,7 @@ export async function runStocktakeSnapshot(stocktakeId: number): Promise<void> {
         ...snapshot.droppedMissing,
       ]);
       const remaining = scopeVariantIds.filter((id) => !skip.has(id));
-      await saveProgress();
+      if (!(await saveProgress())) return;
 
       for (const variantIds of chunk(remaining, SNAPSHOT_CHUNK_SIZE)) {
         const cacheRows = await db.productCache.findMany({ where: { variantId: { in: variantIds } } });
@@ -490,7 +470,7 @@ export async function runStocktakeSnapshot(stocktakeId: number): Promise<void> {
             data: { tracked: false },
           });
         }
-        await saveProgress();
+        if (!(await saveProgress())) return;
       }
 
       snapshot.finishedAt = new Date().toISOString();
