@@ -488,6 +488,15 @@ export async function createDraftProduct(
   return created;
 }
 
+// Read-only. Used to show which location a stocktake will write to.
+export async function getLocationName(locationId: string): Promise<string | null> {
+  const data = await shopifyGraphQL<{ location: { name: string } | null }>(
+    `query LocationName($id: ID!) { location(id: $id) { name } }`,
+    { id: locationId }
+  );
+  return data.location?.name ?? null;
+}
+
 export async function getLocationId(): Promise<string> {
   const data = await shopifyGraphQL<{
     locations: { edges: { node: { id: string } }[] };

@@ -48,6 +48,7 @@ export default [
     route("stocktakes/:id", "routes/stocktakes.$id.tsx"),
     route("stocktakes/:id/count", "routes/stocktakes.$id.count.tsx"),
     route("stocktakes/:id/review", "routes/stocktakes.$id.review.tsx"),
+    route("stocktakes/:id/apply", "routes/stocktakes.$id.apply.tsx"),
     route("settings", "routes/settings.tsx"),
     route("settings/po-import", "routes/settings.po-import.tsx"),
   ]),

@@ -445,9 +445,15 @@ export default function StocktakeReviewPage({ loaderData }: Route.ComponentProps
         ) : (
           <p className="text-sm text-green-700 dark:text-green-400">Ready to apply: {totals.itemsChanging.toLocaleString()} items will be set in Shopify.</p>
         )}
-        <button type="button" disabled title="The apply step is built in the next phase" className="text-sm font-medium bg-indigo-600 text-white rounded-lg px-4 py-2 opacity-50 cursor-not-allowed">
-          Continue to apply
-        </button>
+        {blockers.length === 0 ? (
+          <Link to={`/stocktakes/${stocktake.id}/apply`} className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2">
+            Continue to apply →
+          </Link>
+        ) : (
+          <button type="button" disabled className="text-sm font-medium bg-indigo-600 text-white rounded-lg px-4 py-2 opacity-50 cursor-not-allowed">
+            Continue to apply →
+          </button>
+        )}
       </div>
     </main>
   );
