@@ -1886,6 +1886,80 @@ export async function fetchVariantForStocktake(variantId: string): Promise<Stock
   return data.productVariant ? parseStocktakeVariant(data.productVariant) : null;
 }
 
+// ─── Stocktake: inventorySetQuantities (the only stocktake inventory write) ───
+
+export type SetQuantitiesInput = {
+  name: "on_hand";
+  reason: string;
+  referenceDocumentUri: string;
+  quantities: {
+    inventoryItemId: string;
+    locationId: string;
+    quantity: number;
+    // Always a number: the compare-and-set check is never opted out of.
+    changeFromQuantity: number;
+  }[];
+};
+
+export type SetQuantitiesUserError = { code: string | null; field: string[] | null; message: string };
+
+export type SetQuantitiesResponse = {
+  userErrors: SetQuantitiesUserError[];
+  adjustmentGroupId: string | null;
+  // Items Shopify lists in the adjustment group (any quantity name), with the
+  // on_hand quantity after the change when Shopify reports it.
+  changedItems: Map<string, number | null>;
+};
+
+// Sends one inventorySetQuantities call. Throws only on transport/GraphQL-level
+// failures (outcome unknown); Shopify's userErrors are returned for the caller
+// to handle per item. Never retried here — the caller decides, with a new key.
+export async function setInventoryQuantities(
+  input: SetQuantitiesInput,
+  idempotencyKey: string
+): Promise<SetQuantitiesResponse> {
+  for (const q of input.quantities) {
+    if (typeof q.changeFromQuantity !== "number" || !Number.isInteger(q.changeFromQuantity)) {
+      throw new Error(`Refusing to send ${q.inventoryItemId}: changeFromQuantity must be a whole number`);
+    }
+    if (!Number.isInteger(q.quantity) || q.quantity < 0) {
+      throw new Error(`Refusing to send ${q.inventoryItemId}: quantity must be a whole number of 0 or more`);
+    }
+  }
+  const data = await shopifyGraphQL<{
+    inventorySetQuantities: {
+      inventoryAdjustmentGroup: {
+        id: string;
+        changes: { name: string; quantityAfterChange: number | null; item: { id: string } | null }[];
+      } | null;
+      userErrors: SetQuantitiesUserError[];
+    };
+  }>(
+    `mutation StocktakeSetQuantities($input: InventorySetQuantitiesInput!, $key: String!) {
+      inventorySetQuantities(input: $input) @idempotent(key: $key) {
+        inventoryAdjustmentGroup {
+          id
+          changes { name quantityAfterChange item { id } }
+        }
+        userErrors { code field message }
+      }
+    }`,
+    { input, key: idempotencyKey }
+  );
+  const payload = data.inventorySetQuantities;
+  const changedItems = new Map<string, number | null>();
+  for (const c of payload.inventoryAdjustmentGroup?.changes ?? []) {
+    if (!c.item?.id) continue;
+    if (c.name === "on_hand") changedItems.set(c.item.id, c.quantityAfterChange);
+    else if (!changedItems.has(c.item.id)) changedItems.set(c.item.id, null);
+  }
+  return {
+    userErrors: payload.userErrors,
+    adjustmentGroupId: payload.inventoryAdjustmentGroup?.id ?? null,
+    changedItems,
+  };
+}
+
 // ─── Search (existing) ────────────────────────────────────────────────────────
 
 function buildShopifyQuery(input: string, vendorFilter?: string): string {

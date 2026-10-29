@@ -21,6 +21,7 @@ model User {
   stocktakesCompleted Stocktake[]               @relation("StocktakeCompletedBy")
   stocktakeScans      StocktakeScan[]
   stocktakeUnknowns   StocktakeUnknownBarcode[]
+  stocktakeExclusions StocktakeItem[]           @relation("StocktakeItemExcludedBy")
 }
 
 model Supplier {
@@ -310,12 +311,18 @@ model Stocktake {
   snapshotDone  Int?
 
   // Background apply progress (APPLYING)
-  applyTotal     Int?
-  applyDone      Int?
-  applyStartedAt DateTime?
-  applyEndedAt   DateTime?
-  applyError     String?
-  applyAttempt   Int       @default(0)
+  applyTotal       Int?
+  applyDone        Int?
+  applyStartedAt   DateTime?
+  applyEndedAt     DateTime?
+  applyError       String?
+  applyAttempt     Int       @default(0)
+  // Reason Shopify accepted ("cycle_count_available", or "correction" fallback)
+  applyReason      String?
+  // Updated on every step of a running apply; stale for 5 minutes => Resume
+  applyHeartbeatAt DateTime?
+  // "PASSED" once the single test item succeeded, or "SKIPPED" by explicit choice
+  applyTestResult  String?
 
   items           StocktakeItem[]
   scans           StocktakeScan[]
@@ -351,6 +358,13 @@ model StocktakeItem {
   applied               Boolean                   @default(false)
   appliedAt             DateTime?
   applyError            String?
+  // Shopify returned CHANGE_FROM_QUANTITY_STALE: re-run the drift check before retrying
+  applyStale            Boolean                   @default(false)
+  // "Exclude from apply" for items flagged tracking off / gone from Shopify
+  excludedAt            DateTime?
+  excludedById          Int?
+  excludedBy            User?                     @relation("StocktakeItemExcludedBy", fields: [excludedById], references: [id], onDelete: SetNull)
+  excludeReason         String?
   createdAt             DateTime                  @default(now())
   updatedAt             DateTime                  @updatedAt
   scans                 StocktakeScan[]

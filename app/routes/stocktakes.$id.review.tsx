@@ -35,6 +35,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const stocktake = await db.stocktake.findUnique({ where: { id }, include: { startedBy: { select: { name: true } } } });
   if (!stocktake) throw new Response("Not Found", { status: 404 });
   if (stocktake.status === "IN_PROGRESS") throw redirect(`/stocktakes/${id}/count`);
+  if (stocktake.status === "APPLYING") throw redirect(`/stocktakes/${id}/apply`);
   if (stocktake.status !== "REVIEW") throw redirect(`/stocktakes/${id}`);
 
   const review = readFiltersJson(stocktake.filters).review;

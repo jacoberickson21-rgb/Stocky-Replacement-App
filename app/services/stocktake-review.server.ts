@@ -116,8 +116,8 @@ export function computeReviewItem(
 // Recomputes and stores targetQty for every item: the absolute on_hand value to
 // send, set only when the quantity actually changes, else null. Writes are
 // grouped by target value so a large stocktake is a handful of statements.
-export async function recomputeTargets(stocktakeId: number): Promise<void> {
-  const db = getDb();
+export async function recomputeTargets(stocktakeId: number, tx?: Tx): Promise<void> {
+  const db = tx ?? getDb();
   const stocktake = await db.stocktake.findUnique({ where: { id: stocktakeId } });
   if (!stocktake) return;
   const review = readFiltersJson(stocktake.filters).review;
@@ -145,10 +145,38 @@ export async function recomputeTargets(stocktakeId: number): Promise<void> {
     groups.set(stored, ids);
   }
   if (groups.size === 0) return;
-  await db.$transaction(
-    [...groups.entries()].map(([targetQty, ids]) =>
-      db.stocktakeItem.updateMany({ where: { id: { in: ids }, applied: false }, data: { targetQty } })
-    )
+  const writes = [...groups.entries()].map(([targetQty, ids]) => ({ targetQty, ids }));
+  if (tx) {
+    for (const w of writes) {
+      await tx.stocktakeItem.updateMany({ where: { id: { in: w.ids }, applied: false }, data: { targetQty: w.targetQty } });
+    }
+  } else {
+    await getDb().$transaction(
+      writes.map((w) =>
+        getDb().stocktakeItem.updateMany({ where: { id: { in: w.ids }, applied: false }, data: { targetQty: w.targetQty } })
+      )
+    );
+  }
+}
+
+// Runs a review edit while holding a shared lock on the stocktake row and only
+// if it is still in REVIEW. Starting an apply takes an exclusive lock on the
+// same row, so an apply can never begin halfway through a review edit.
+export async function withReviewLock<T>(
+  stocktakeId: number,
+  fn: (tx: Tx, stocktake: { name: string; mode: string; zeroUnscanned: boolean; filters: Prisma.JsonValue }) => Promise<T>
+): Promise<T> {
+  if (isDriftCheckRunning(stocktakeId)) throw new StocktakeReviewError("Wait for the drift check to finish first.");
+  return getDb().$transaction(
+    async (tx) => {
+      const rows = await tx.$queryRaw<{ status: string; name: string; mode: string; zeroUnscanned: boolean; filters: Prisma.JsonValue }[]>`
+        SELECT status::text AS status, name, mode::text AS mode, "zeroUnscanned", filters FROM "Stocktake" WHERE id = ${stocktakeId} FOR SHARE
+      `;
+      if (rows.length === 0) throw new StocktakeReviewError("Stocktake not found.");
+      if (rows[0].status !== "REVIEW") throw new StocktakeReviewError("This stocktake is not in review.");
+      return fn(tx, rows[0]);
+    },
+    { timeout: 30_000 }
   );
 }
 
@@ -188,7 +216,7 @@ export async function runDriftCheck(stocktakeId: number): Promise<void> {
     }));
     // No target survives from an earlier check — if this one fails partway,
     // there is nothing stale for apply to pick up.
-    await db.stocktakeItem.updateMany({ where: { stocktakeId, applied: false }, data: { targetQty: null } });
+    await db.stocktakeItem.updateMany({ where: { stocktakeId, applied: false }, data: { targetQty: null, applyStale: false } });
 
     const issues: Record<string, ReviewIssue> = {};
     try {
@@ -212,6 +240,8 @@ export async function runDriftCheck(stocktakeId: number): Promise<void> {
           const drifted = comparable != null && comparable !== item.expectedQty;
           // A drift decision only stands if Shopify's number hasn't moved since.
           const keepResolution = drifted && item.liveQtyAtReview === live && item.driftResolution != null;
+          // An exclusion only stands while the item is still unsettable.
+          const stillUnsettable = issues[item.id] === "UNTRACKED" || issues[item.id] === "MISSING";
           return db.stocktakeItem.update({
             where: { id: item.id },
             data: {
@@ -219,6 +249,7 @@ export async function runDriftCheck(stocktakeId: number): Promise<void> {
               liveAvailableAtReview: available,
               drifted,
               driftResolution: keepResolution ? item.driftResolution : null,
+              ...(stillUnsettable ? {} : { excludedAt: null, excludedById: null, excludeReason: null }),
             },
           });
         });
@@ -324,14 +355,6 @@ export async function rerunDriftCheck(opts: { stocktakeId: number }): Promise<vo
   runDriftCheck(opts.stocktakeId).catch((err) => console.error("[stocktake] drift check failed:", err));
 }
 
-async function requireEditableReview(stocktakeId: number) {
-  if (isDriftCheckRunning(stocktakeId)) throw new StocktakeReviewError("Wait for the drift check to finish first.");
-  const st = await getDb().stocktake.findUnique({ where: { id: stocktakeId } });
-  if (!st) throw new StocktakeReviewError("Stocktake not found.");
-  if (st.status !== "REVIEW") throw new StocktakeReviewError("This stocktake is not in review.");
-  return st;
-}
-
 // ─── Decisions ─────────────────────────────────────────────────────────────────
 
 export type ResolutionTarget = { itemIds: number[] } | { allDrifted: true; onlyUnresolved: boolean };
@@ -342,25 +365,25 @@ export async function setDriftResolution(opts: {
   target: ResolutionTarget;
   resolution: StocktakeDriftResolution | null;
 }): Promise<number> {
-  const st = await requireEditableReview(opts.stocktakeId);
-  const db = getDb();
-  const where: Prisma.StocktakeItemWhereInput = { stocktakeId: opts.stocktakeId, drifted: true, applied: false };
-  if ("itemIds" in opts.target) where.id = { in: opts.target.itemIds };
-  else if (opts.target.onlyUnresolved) where.driftResolution = null;
+  return withReviewLock(opts.stocktakeId, async (tx, st) => {
+    const where: Prisma.StocktakeItemWhereInput = { stocktakeId: opts.stocktakeId, drifted: true, applied: false };
+    if ("itemIds" in opts.target) where.id = { in: opts.target.itemIds };
+    else if (opts.target.onlyUnresolved) where.driftResolution = null;
 
-  const { count } = await db.stocktakeItem.updateMany({ where, data: { driftResolution: opts.resolution } });
-  await recomputeTargets(opts.stocktakeId);
+    const { count } = await tx.stocktakeItem.updateMany({ where, data: { driftResolution: opts.resolution } });
+    await recomputeTargets(opts.stocktakeId, tx);
 
-  if (count > 0 && !("itemIds" in opts.target && opts.target.itemIds.length === 1)) {
-    await db.auditLog.create({
-      data: {
-        userId: opts.userId,
-        action: "STOCKTAKE_DRIFT_RESOLVED",
-        details: `Stocktake #${st.id} "${st.name}": ${count} drifted item${count === 1 ? "" : "s"} set to ${opts.resolution ?? "undecided"}`,
-      },
-    });
-  }
-  return count;
+    if (count > 0 && !("itemIds" in opts.target && opts.target.itemIds.length === 1)) {
+      await tx.auditLog.create({
+        data: {
+          userId: opts.userId,
+          action: "STOCKTAKE_DRIFT_RESOLVED",
+          details: `Stocktake #${opts.stocktakeId} "${st.name}": ${count} drifted item${count === 1 ? "" : "s"} set to ${opts.resolution ?? "undecided"}`,
+        },
+      });
+    }
+    return count;
+  });
 }
 
 export async function setZeroUnscanned(opts: {
@@ -369,25 +392,27 @@ export async function setZeroUnscanned(opts: {
   on: boolean;
   confirmedCount: number | null;
 }): Promise<void> {
-  const st = await requireEditableReview(opts.stocktakeId);
-  if (st.mode !== "SCOPED") throw new StocktakeReviewError("Only a scoped stocktake has unscanned items.");
-  const db = getDb();
-  const unscanned = await db.stocktakeItem.count({ where: { stocktakeId: opts.stocktakeId, countedQty: null, applied: false } });
-  // The confirmation the staff saw must match what is about to happen.
-  if (opts.on && opts.confirmedCount !== unscanned) {
-    throw new StocktakeReviewError(
-      `The number of unscanned items has changed to ${unscanned}. Review the new number and confirm again.`
-    );
-  }
-  await db.stocktake.update({ where: { id: opts.stocktakeId }, data: { zeroUnscanned: opts.on } });
-  await db.auditLog.create({
-    data: {
-      userId: opts.userId,
-      action: opts.on ? "STOCKTAKE_ZERO_UNSCANNED_ON" : "STOCKTAKE_ZERO_UNSCANNED_OFF",
-      details: opts.on
-        ? `Stocktake #${st.id} "${st.name}": "set unscanned items to 0" turned ON for ${unscanned} unscanned items`
-        : `Stocktake #${st.id} "${st.name}": "set unscanned items to 0" turned OFF`,
-    },
+  await withReviewLock(opts.stocktakeId, async (tx, st) => {
+    if (st.mode !== "SCOPED") throw new StocktakeReviewError("Only a scoped stocktake has unscanned items.");
+    const unscanned = await tx.stocktakeItem.count({ where: { stocktakeId: opts.stocktakeId, countedQty: null, applied: false } });
+    // The confirmation the staff saw must match what is about to happen.
+    if (opts.on && opts.confirmedCount !== unscanned) {
+      throw new StocktakeReviewError(
+        `The number of unscanned items has changed to ${unscanned}. Review the new number and confirm again.`
+      );
+    }
+    await tx.stocktake.update({ where: { id: opts.stocktakeId }, data: { zeroUnscanned: opts.on } });
+    // Targets stay cleared until the re-check below finishes.
+    await tx.stocktakeItem.updateMany({ where: { stocktakeId: opts.stocktakeId, applied: false }, data: { targetQty: null } });
+    await tx.auditLog.create({
+      data: {
+        userId: opts.userId,
+        action: opts.on ? "STOCKTAKE_ZERO_UNSCANNED_ON" : "STOCKTAKE_ZERO_UNSCANNED_OFF",
+        details: opts.on
+          ? `Stocktake #${opts.stocktakeId} "${st.name}": "set unscanned items to 0" turned ON for ${unscanned} unscanned items`
+          : `Stocktake #${opts.stocktakeId} "${st.name}": "set unscanned items to 0" turned OFF`,
+      },
+    });
   });
   // Re-check live so unscanned items get (or lose) their live quantity and target.
   runDriftCheck(opts.stocktakeId).catch((err) => console.error("[stocktake] drift check failed:", err));

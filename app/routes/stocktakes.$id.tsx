@@ -238,6 +238,15 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
         </div>
       )}
 
+      {stocktake.status === "APPLYING" && (
+        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl px-4 py-3 mb-6 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-purple-800 dark:text-purple-300">Applying counts to Shopify.</span>
+          <Link to={`/stocktakes/${stocktake.id}/apply`} className="text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white rounded-lg px-4 py-2">
+            View progress
+          </Link>
+        </div>
+      )}
+
       {stocktake.status === "REVIEW" && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 mb-6 flex flex-wrap items-center justify-between gap-3">
           <span className="text-sm text-amber-800 dark:text-amber-300">Counting is finished. Check variances and drift before applying.</span>
