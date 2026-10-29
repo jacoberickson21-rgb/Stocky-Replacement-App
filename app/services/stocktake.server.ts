@@ -30,6 +30,23 @@ export type StocktakeFiltersJson = {
     error: string | null;
     finishedAt: string | null;
   };
+  review?: StocktakeReviewJson;
+};
+
+// Why an item can't simply be set in Shopify, keyed by StocktakeItem id.
+// Recomputed on every drift check.
+export type ReviewIssue = "NOT_STOCKED" | "UNTRACKED" | "MISSING";
+
+export type StocktakeReviewJson = {
+  // Drift check progress / outcome
+  total: number;
+  done: number;
+  startedAt: string | null;
+  checkedAt: string | null;
+  error: string | null;
+  issues: Record<string, ReviewIssue>;
+  // SCAN rows per user already covered by a STOCKTAKE_SCANS audit entry
+  loggedScans: Record<string, number>;
 };
 
 function str(v: unknown): string {

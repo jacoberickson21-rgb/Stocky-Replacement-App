@@ -218,8 +218,31 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
       {stocktake.status === "IN_PROGRESS" && (
         <div className="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl px-4 py-3 mb-6 flex flex-wrap items-center justify-between gap-3">
           <span className="text-sm text-indigo-800 dark:text-indigo-300">Ready to count. Several people can scan into this stocktake at once.</span>
-          <Link to={`/stocktakes/${stocktake.id}/count`} className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2">
-            Open counting screen
+          <div className="flex gap-2">
+            <Link to={`/stocktakes/${stocktake.id}/count`} className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2">
+              Open counting screen
+            </Link>
+            <Form
+              method="post"
+              action={`/stocktakes/${stocktake.id}/review`}
+              onSubmit={(e) => {
+                if (!window.confirm("Finish counting and move to review? Counting pauses for everyone until someone goes back to counting.")) e.preventDefault();
+              }}
+            >
+              <input type="hidden" name="intent" value="start-review" />
+              <button type="submit" className="text-sm font-medium border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 rounded-lg px-4 py-2 hover:bg-indigo-100/50 dark:hover:bg-indigo-900/30">
+                Finish counting → Review
+              </button>
+            </Form>
+          </div>
+        </div>
+      )}
+
+      {stocktake.status === "REVIEW" && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 mb-6 flex flex-wrap items-center justify-between gap-3">
+          <span className="text-sm text-amber-800 dark:text-amber-300">Counting is finished. Check variances and drift before applying.</span>
+          <Link to={`/stocktakes/${stocktake.id}/review`} className="text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-4 py-2">
+            Open review
           </Link>
         </div>
       )}

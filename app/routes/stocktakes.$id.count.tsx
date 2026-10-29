@@ -397,6 +397,23 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
           </button>
           <Form
             method="post"
+            action={`/stocktakes/${stocktake.id}/review`}
+            onSubmit={(e) => {
+              if (pending > 0) {
+                e.preventDefault();
+                window.alert("Wait until all scans are saved.");
+              } else if (!window.confirm("Finish counting and move to review? Counting pauses for everyone until someone goes back to counting.")) {
+                e.preventDefault();
+              }
+            }}
+          >
+            <input type="hidden" name="intent" value="start-review" />
+            <button type="submit" className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-3 py-2">
+              Finish counting → Review
+            </button>
+          </Form>
+          <Form
+            method="post"
             action={`/stocktakes/${stocktake.id}`}
             onSubmit={(e) => {
               if (!window.confirm(`Cancel "${stocktake.name}"? Counts are kept for the record, but nothing will be applied to Shopify and counting stops.`)) {
