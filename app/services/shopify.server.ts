@@ -1689,6 +1689,113 @@ export async function getInventoryQuantitiesByVariant(
   return result;
 }
 
+// ─── Stocktake: Live Inventory Snapshot (read-only) ───────────────────────────
+
+export type LiveInventoryLevel = {
+  inventoryItemId: string;
+  tracked: boolean;
+  // null when the item isn't stocked at the location at all
+  onHand: number | null;
+  available: number | null;
+  unitCost: number | null;
+};
+
+const LIVE_LEVELS_MAX_ATTEMPTS = 5;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isThrottleError(err: unknown): boolean {
+  if (err instanceof ShopifyAPIError && err.status === 429) return true;
+  return err instanceof ShopifyGraphQLError && /throttl/i.test(err.message);
+}
+
+function isMaxCostError(err: unknown): boolean {
+  return err instanceof ShopifyGraphQLError && /max cost|exceeds the single query/i.test(err.message);
+}
+
+async function fetchLiveInventoryLevelsChunk(
+  inventoryItemIds: string[],
+  locationId: string,
+  result: Map<string, LiveInventoryLevel>
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const data = await shopifyGraphQL<{
+        nodes: (
+          | {
+              id: string;
+              tracked: boolean;
+              unitCost: { amount: string } | null;
+              inventoryLevel: { quantities: { name: string; quantity: number }[] } | null;
+            }
+          | null
+        )[];
+      }>(
+        `query StocktakeLiveLevels($ids: [ID!]!, $locationId: ID!) {
+          nodes(ids: $ids) {
+            ... on InventoryItem {
+              id
+              tracked
+              unitCost { amount }
+              inventoryLevel(locationId: $locationId) {
+                quantities(names: ["on_hand", "available"]) {
+                  name
+                  quantity
+                }
+              }
+            }
+          }
+        }`,
+        { ids: inventoryItemIds, locationId }
+      );
+      for (const node of data.nodes) {
+        if (!node?.id) continue;
+        const qty = (name: string) =>
+          node.inventoryLevel ? (node.inventoryLevel.quantities.find((q) => q.name === name)?.quantity ?? 0) : null;
+        const cost = node.unitCost?.amount != null ? parseFloat(node.unitCost.amount) : null;
+        result.set(node.id, {
+          inventoryItemId: node.id,
+          tracked: node.tracked,
+          onHand: qty("on_hand"),
+          available: qty("available"),
+          unitCost: cost != null && !isNaN(cost) ? cost : null,
+        });
+      }
+      return;
+    } catch (err) {
+      // A chunk whose requested cost is over Shopify's single-query limit is split
+      // in half rather than failing — chunk size stays at or below 200 either way.
+      if (isMaxCostError(err) && inventoryItemIds.length > 1) {
+        const mid = Math.ceil(inventoryItemIds.length / 2);
+        await fetchLiveInventoryLevelsChunk(inventoryItemIds.slice(0, mid), locationId, result);
+        await fetchLiveInventoryLevelsChunk(inventoryItemIds.slice(mid), locationId, result);
+        return;
+      }
+      if (isThrottleError(err) && attempt < LIVE_LEVELS_MAX_ATTEMPTS) {
+        await sleep(1000 * 2 ** attempt);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// Reads on_hand + available, tracked, and unit cost live from Shopify for each
+// inventory item at one location. Read-only — never writes inventory. Items
+// Shopify no longer knows about are simply absent from the returned map.
+export async function fetchLiveInventoryLevels(
+  inventoryItemIds: string[],
+  locationId: string
+): Promise<Map<string, LiveInventoryLevel>> {
+  const result = new Map<string, LiveInventoryLevel>();
+  for (const chunk of chunkArray(inventoryItemIds, NODES_QUERY_CHUNK_SIZE)) {
+    await fetchLiveInventoryLevelsChunk(chunk, locationId, result);
+  }
+  return result;
+}
+
 // ─── Search (existing) ────────────────────────────────────────────────────────
 
 function buildShopifyQuery(input: string, vendorFilter?: string): string {

@@ -17,6 +17,7 @@ import {
   ScrollText,
   BarChart2,
   PackagePlus,
+  ClipboardList,
   Settings,
   RefreshCw,
   Sun,
@@ -330,6 +331,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
           <SidebarLink to="/audit" icon={<ScrollText size={18} />} label="Audit Log" collapsed={collapsed} />
           <SidebarLink to="/reports" icon={<BarChart2 size={18} />} label="Reports" collapsed={collapsed} />
           <SidebarLink to="/reorder" icon={<PackagePlus size={18} />} label="Reorder" collapsed={collapsed} />
+          <SidebarLink to="/stocktakes" icon={<ClipboardList size={18} />} label="Stocktakes" collapsed={collapsed} />
           <SidebarLink to="/settings" icon={<Settings size={18} />} label="Settings" collapsed={collapsed} />
         </nav>
 
