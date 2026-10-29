@@ -14,6 +14,8 @@ export default [
   route("invoices/:id/receiving-summary", "routes/invoices.$id.receiving-summary.tsx"),
   route("invoices/:id/po-print", "routes/invoices.$id.po-print.tsx"),
   route("credits/:id/summary", "routes/credits.$id.summary.tsx"),
+  route("stocktakes/:id/summary", "routes/stocktakes.$id.summary.tsx"),
+  route("stocktakes/:id/export.csv", "routes/stocktakes.$id.export-csv.tsx"),
   route("reorder/preseason-print", "routes/reorder.preseason-print.tsx"),
   layout("routes/app.tsx", [
     route("dashboard", "routes/dashboard.tsx"),

@@ -851,7 +851,7 @@ async function executeRun(kind: "full" | "retry" | "resume", userId: number, sto
     await logFailure("STOCKTAKE_APPLY", `Stocktake #${stocktakeId} ${kind}`, msg);
     await releaseToReview(stocktakeId, `Apply stopped: ${msg}. Use "Retry unapplied items" — it reconciles with Shopify first.`).catch(() => {});
     await db.auditLog.create({
-      data: { userId, action: "STOCKTAKE_APPLY_FAILED", details: `Stocktake #${stocktakeId} "${name}" ${kind} run stopped: ${msg}` },
+      data: { userId, action: "STOCKTAKE_APPLY_FAILED", details: `Stocktake #${stocktakeId} "${name}": ${kind} run stopped: ${msg}` },
     }).catch(() => {});
   }
 }
@@ -868,11 +868,12 @@ export async function returnStalledRunToReview(opts: { stocktakeId: number; user
       AND ("applyHeartbeatAt" IS NULL OR "applyHeartbeatAt" < NOW() - INTERVAL '5 minutes')
   `;
   if (n === 0) throw new StocktakeApplyError("This apply made progress in the last 5 minutes, or has finished. Reload the page.");
+  const st = await getDb().stocktake.findUnique({ where: { id: opts.stocktakeId }, select: { name: true } });
   await getDb().auditLog.create({
     data: {
       userId: opts.userId,
       action: "STOCKTAKE_APPLY_FAILED",
-      details: `Stocktake #${opts.stocktakeId}: interrupted apply returned to review (no progress for 5 minutes).`,
+      details: `Stocktake #${opts.stocktakeId} "${st?.name ?? ""}": interrupted apply returned to review (no progress for 5 minutes).`,
     },
   });
 }

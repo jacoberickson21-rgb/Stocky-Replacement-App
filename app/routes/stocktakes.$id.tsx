@@ -1,4 +1,4 @@
-import { Form, Link, data, redirect, useActionData, useNavigation, useRevalidator } from "react-router";
+import { Form, Link, data, redirect, useActionData, useNavigation, useRevalidator, useSearchParams } from "react-router";
 import { useEffect } from "react";
 import type { Route } from "./+types/stocktakes.$id";
 import { requireUserId } from "../session.server";
@@ -10,9 +10,14 @@ import {
 } from "../services/stocktake.server";
 import { StocktakeCountError, cancelStocktake } from "../services/stocktake-count.server";
 import { logFailure } from "../services/failure-log.server";
-import { modeLabels, statusLabels, statusStyles } from "../utils/stocktake-labels";
+import { auditSearchHref, getStocktakeReport } from "../services/stocktake-report.server";
+import { itemStatusLabels, modeLabels, statusLabels, statusStyles, type ItemStatus } from "../utils/stocktake-labels";
 
 const PAGE_SIZE = 50;
+const VIEWS = ["all", "variances", "applied", "not_applied", "issues"] as const;
+type View = (typeof VIEWS)[number];
+const NOT_APPLIED: ItemStatus[] = ["PENDING", "FAILED", "CHANGED_SINCE_REVIEW", "NEEDS_ACTIVATION", "NOT_SETTABLE"];
+const ISSUES: ItemStatus[] = ["FAILED", "CHANGED_SINCE_REVIEW", "EXCLUDED", "NEEDS_ACTIVATION", "NOT_SETTABLE"];
 
 export async function loader({ request, params }: Route.LoaderArgs) {
   await requireUserId(request);
@@ -20,42 +25,37 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const db = getDb();
   const url = new URL(request.url);
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1") || 1);
+  const viewParam = url.searchParams.get("view") as View | null;
+  const view: View = viewParam && VIEWS.includes(viewParam) ? viewParam : "all";
 
-  const stocktake = await db.stocktake.findUnique({
-    where: { id },
-    include: { startedBy: { select: { name: true } } },
-  });
+  const stocktake = await db.stocktake.findUnique({ where: { id }, select: { status: true, filters: true, snapshotTotal: true, snapshotDone: true } });
   if (!stocktake) throw new Response("Not Found", { status: 404 });
 
-  const [itemCount, items] = await Promise.all([
-    db.stocktakeItem.count({ where: { stocktakeId: id } }),
-    db.stocktakeItem.findMany({
-      where: { stocktakeId: id },
-      orderBy: [{ title: "asc" }, { productId: "asc" }, { variantTitle: "asc" }],
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      select: {
-        id: true, title: true, variantTitle: true, sku: true, barcode: true,
-        expectedQty: true, countedQty: true, cost: true, outsideScope: true,
-      },
-    }),
-  ]);
+  const snapshot = readFiltersJson(stocktake.filters).snapshot ?? null;
+  // While the snapshot is still filling items (and this page polls), skip the item list.
+  const report = await getStocktakeReport(id, { includeItems: stocktake.status !== "PREPARING" });
+  if (!report) throw new Response("Not Found", { status: 404 });
 
-  const filters = readFiltersJson(stocktake.filters);
-  const snapshot = filters.snapshot ?? null;
+  const counts: Record<View, number> = { all: report.items.length, variances: 0, applied: 0, not_applied: 0, issues: 0 };
+  const inView = (v: View, i: (typeof report.items)[number]) =>
+    v === "all" ||
+    (v === "variances" && i.variance != null && i.variance !== 0) ||
+    (v === "applied" && i.status === "APPLIED") ||
+    (v === "not_applied" && NOT_APPLIED.includes(i.status)) ||
+    (v === "issues" && ISSUES.includes(i.status));
+  for (const i of report.items) for (const v of VIEWS) if (v !== "all" && inView(v, i)) counts[v]++;
+
+  const filtered = report.items.filter((i) => inView(view, i));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
 
   return {
     stocktake: {
-      id: stocktake.id,
-      name: stocktake.name,
-      mode: stocktake.mode,
-      status: stocktake.status,
-      notes: stocktake.notes,
-      startedBy: stocktake.startedBy.name,
-      startedAt: stocktake.startedAt.toISOString(),
+      ...report.stocktake,
       snapshotTotal: stocktake.snapshotTotal,
       snapshotDone: stocktake.snapshotDone,
     },
+    totals: report.totals,
     snapshot: snapshot && {
       droppedUntracked: snapshot.droppedUntracked.length,
       droppedMissing: snapshot.droppedMissing.length,
@@ -64,8 +64,9 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       finishedAt: snapshot.finishedAt,
     },
     snapshotRunning: isSnapshotRunning(id),
-    items: items.map((i) => ({ ...i, cost: i.cost == null ? null : Number(i.cost) })),
-    pagination: { page, totalPages: Math.max(1, Math.ceil(itemCount / PAGE_SIZE)), itemCount },
+    auditHref: auditSearchHref(id),
+    items: filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    list: { view, page: safePage, totalPages, matching: filtered.length, counts },
   };
 }
 
@@ -103,9 +104,34 @@ export async function action({ request, params }: Route.ActionArgs) {
 }
 
 const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD" });
+const signed = (n: number) => (n > 0 ? `+${n.toLocaleString()}` : n.toLocaleString());
+const signedMoney = (n: number) => (n > 0 ? `+${money(n)}` : money(n));
+const tone = (n: number | null) => (n == null || n === 0 ? "text-gray-500 dark:text-gray-400" : n > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400");
+
+const statusBadge: Record<ItemStatus, string> = {
+  APPLIED: "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300",
+  PENDING: "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300",
+  FAILED: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
+  CHANGED_SINCE_REVIEW: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300",
+  EXCLUDED: "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300",
+  NEEDS_ACTIVATION: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  NOT_SETTABLE: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300",
+  SKIPPED_DRIFT: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400",
+  NO_CHANGE: "bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400",
+  NOT_COUNTED: "bg-gray-100 dark:bg-gray-800 text-gray-400",
+};
+
+const viewLabels: Record<View, string> = {
+  all: "All",
+  variances: "Variances",
+  applied: "Applied",
+  not_applied: "Not applied",
+  issues: "Errors & exclusions",
+};
 
 export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps) {
-  const { stocktake, snapshot, snapshotRunning, items, pagination } = loaderData;
+  const { stocktake, totals, snapshot, snapshotRunning, auditHref, items, list } = loaderData;
+  const [searchParams, setSearchParams] = useSearchParams();
   const revalidator = useRevalidator();
   const navigation = useNavigation();
   const actionData = useActionData<typeof action>();
@@ -137,10 +163,23 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
         </span>
       </div>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
-        <p className="text-sm text-gray-500 dark:text-gray-400">
-          {modeLabels[stocktake.mode]} · started by {stocktake.startedBy} on {new Date(stocktake.startedAt).toLocaleString()}
-          {stocktake.notes && <> · {stocktake.notes}</>}
-        </p>
+        <div className="text-sm text-gray-500 dark:text-gray-400 space-y-0.5">
+          <p>
+            {modeLabels[stocktake.mode]} · started by {stocktake.startedBy} on {new Date(stocktake.startedAt).toLocaleString()}
+            {stocktake.notes && <> · {stocktake.notes}</>}
+          </p>
+          {stocktake.completedAt && (
+            <p>Completed by {stocktake.completedBy ?? "—"} on {new Date(stocktake.completedAt).toLocaleString()}</p>
+          )}
+          {stocktake.applyReason && <p>Applied to Shopify with reason <span className="font-mono">{stocktake.applyReason}</span> (on_hand, absolute quantities)</p>}
+          {stocktake.status !== "PREPARING" && (
+            <p className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
+              <a href={`/stocktakes/${stocktake.id}/summary`} target="_blank" rel="noreferrer" className="text-indigo-600 dark:text-indigo-400 hover:underline">Printable summary ↗</a>
+              <a href={`/stocktakes/${stocktake.id}/export.csv`} className="text-indigo-600 dark:text-indigo-400 hover:underline">Download CSV (all items)</a>
+              <Link to={auditHref} className="text-indigo-600 dark:text-indigo-400 hover:underline">Audit entries</Link>
+            </p>
+          )}
+        </div>
         {cancellable && (
           <Form
             method="post"
@@ -256,54 +295,104 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
         </div>
       )}
 
-      {items.length > 0 ? (
-        <>
-          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
-                  <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Product</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Variant</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">SKU</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Barcode</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Expected (on hand)</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Counted</th>
-                  <th className="text-right px-4 py-3 font-medium text-gray-600 dark:text-gray-400">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item, i) => (
-                  <tr key={item.id} className={i < items.length - 1 ? "border-b border-gray-100 dark:border-gray-700" : ""}>
-                    <td className="px-4 py-2 text-gray-800 dark:text-gray-100">{item.title}</td>
-                    <td className="px-4 py-2 text-gray-600 dark:text-gray-400">{item.variantTitle}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{item.sku ?? "—"}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{item.barcode || "—"}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{item.expectedQty}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-gray-700 dark:text-gray-300">{item.countedQty ?? "—"}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{item.cost != null ? money(item.cost) : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {!preparing && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-5 py-4 mb-4">
+          <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+            <Stat label="Items counted" value={`${totals.itemsCounted.toLocaleString()} / ${totals.items.toLocaleString()}`} />
+            <Stat label="Variance units" value={signed(totals.varianceUnits)} cls={tone(totals.varianceUnits)} />
+            <Stat label="Variance value (at cost)" value={signedMoney(totals.varianceValue)} cls={tone(totals.varianceValue)} />
+            <Stat label="Items applied" value={totals.itemsApplied.toLocaleString()} />
+            <Stat label="Applied units" value={`+${totals.unitsUp.toLocaleString()} / −${totals.unitsDown.toLocaleString()}`} />
+            <Stat label="Net dollar impact" value={signedMoney(totals.netAppliedValue)} cls={tone(totals.netAppliedValue)} />
           </div>
-          {pagination.totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4">
+          <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+            Variance = counted − expected on hand at the start. Applied change = target − live on hand at review, for items Shopify confirmed.
+            {totals.varianceNoCost > 0 && ` ${totals.varianceNoCost} item${totals.varianceNoCost === 1 ? " has" : "s have"} no cost and ${totals.varianceNoCost === 1 ? "is" : "are"} left out of the dollar figures.`}
+          </p>
+        </div>
+      )}
+
+      {!preparing && list.counts.all > 0 ? (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700">
+          <div className="flex flex-wrap gap-1 px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+            {(Object.keys(viewLabels) as View[]).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => {
+                  const p = new URLSearchParams(searchParams);
+                  p.set("view", v);
+                  p.set("page", "1");
+                  setSearchParams(p, { preventScrollReset: true });
+                }}
+                className={`text-xs font-medium px-2.5 py-1 rounded-full ${list.view === v ? "bg-indigo-600 text-white" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+              >
+                {viewLabels[v]} <span className="opacity-70">{list.counts[v]}</span>
+              </button>
+            ))}
+          </div>
+          {items.length === 0 ? (
+            <p className="px-4 py-10 text-center text-sm text-gray-400">No items in this view.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700">
+                    <th className="text-left px-3 py-2 font-medium">Product / SKU</th>
+                    <th className="text-right px-3 py-2 font-medium">Expected</th>
+                    <th className="text-right px-3 py-2 font-medium">Counted</th>
+                    <th className="text-right px-3 py-2 font-medium">Live at review</th>
+                    <th className="text-right px-3 py-2 font-medium">Target</th>
+                    <th className="text-right px-3 py-2 font-medium">Variance</th>
+                    <th className="text-right px-3 py-2 font-medium">Variance $</th>
+                    <th className="text-left px-3 py-2 font-medium">Applied</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((i) => (
+                    <tr key={i.id} className="border-b border-gray-50 dark:border-gray-800 align-top">
+                      <td className="px-3 py-2">
+                        <div className="text-gray-800 dark:text-gray-100">{i.title}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          {i.variantTitle}
+                          {i.sku && <span className="ml-2 font-mono">{i.sku}</span>}
+                        </div>
+                        {i.notes.map((n) => (
+                          <div key={n} className={`text-xs mt-0.5 ${i.status === "FAILED" || i.status === "CHANGED_SINCE_REVIEW" ? "text-red-600 dark:text-red-400" : "text-gray-500 dark:text-gray-400"}`}>{n}</div>
+                        ))}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{i.expected}</td>
+                      <td className="px-3 py-2 text-right tabular-nums font-semibold text-gray-800 dark:text-gray-100">{i.counted ?? (i.zeroedUnscanned ? "0" : "—")}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{i.liveAtReview ?? "—"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-800 dark:text-gray-100">{i.target ?? "—"}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${tone(i.variance)}`}>{i.variance != null ? signed(i.variance) : "—"}</td>
+                      <td className={`px-3 py-2 text-right tabular-nums ${tone(i.varianceValue)}`}>{i.varianceValue != null ? signedMoney(i.varianceValue) : "—"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusBadge[i.status]}`}>{itemStatusLabels[i.status]}</span>
+                        {i.appliedAt && <div className="text-xs text-gray-400 mt-0.5">{new Date(i.appliedAt).toLocaleString()}</div>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {list.totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 text-sm">
               <div>
-                {pagination.page > 1 && (
-                  <Link to={`?page=${pagination.page - 1}`} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Previous</Link>
+                {list.page > 1 && (
+                  <Link to={`?view=${list.view}&page=${list.page - 1}`} preventScrollReset className="text-indigo-600 dark:text-indigo-400 hover:underline">← Previous</Link>
                 )}
               </div>
-              <span className="text-sm text-gray-500 dark:text-gray-400">
-                Page {pagination.page} of {pagination.totalPages} · {pagination.itemCount.toLocaleString()} items
-              </span>
+              <span className="text-gray-500 dark:text-gray-400">Page {list.page} of {list.totalPages} · {list.matching.toLocaleString()} items</span>
               <div>
-                {pagination.page < pagination.totalPages && (
-                  <Link to={`?page=${pagination.page + 1}`} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">Next →</Link>
+                {list.page < list.totalPages && (
+                  <Link to={`?view=${list.view}&page=${list.page + 1}`} preventScrollReset className="text-indigo-600 dark:text-indigo-400 hover:underline">Next →</Link>
                 )}
               </div>
             </div>
           )}
-        </>
+        </div>
       ) : (
         !preparing && (
           <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 px-6 py-12 text-center text-sm text-gray-400 dark:text-gray-500">
@@ -312,5 +401,14 @@ export default function StocktakeDetailPage({ loaderData }: Route.ComponentProps
         )
       )}
     </main>
+  );
+}
+
+function Stat({ label, value, cls }: { label: string; value: string; cls?: string }) {
+  return (
+    <div>
+      <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums ${cls ?? "text-gray-800 dark:text-gray-100"}`}>{value}</div>
+    </div>
   );
 }

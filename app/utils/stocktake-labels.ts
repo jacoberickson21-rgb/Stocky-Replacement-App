@@ -17,3 +17,29 @@ export const statusLabels: Record<string, string> = {
 };
 
 export const modeLabels: Record<string, string> = { SCOPED: "Scoped", FREE_SCAN: "Free scan" };
+
+// Per-item outcome shown on the detail page, summary and CSV.
+export type ItemStatus =
+  | "APPLIED"
+  | "PENDING"
+  | "FAILED"
+  | "CHANGED_SINCE_REVIEW"
+  | "EXCLUDED"
+  | "NEEDS_ACTIVATION"
+  | "NOT_SETTABLE"
+  | "SKIPPED_DRIFT"
+  | "NO_CHANGE"
+  | "NOT_COUNTED";
+
+export const itemStatusLabels: Record<ItemStatus, string> = {
+  APPLIED: "Applied",
+  PENDING: "Not applied yet",
+  FAILED: "Failed",
+  CHANGED_SINCE_REVIEW: "Changed since review",
+  EXCLUDED: "Excluded",
+  NEEDS_ACTIVATION: "Needs activation",
+  NOT_SETTABLE: "Not settable",
+  SKIPPED_DRIFT: "Skipped (drift)",
+  NO_CHANGE: "No change",
+  NOT_COUNTED: "Not counted",
+};

@@ -581,7 +581,7 @@ export async function linkUnknownBarcode(opts: {
         data: {
           userId: opts.userId,
           action: "STOCKTAKE_BARCODE_SAVED",
-          details: `Shopify barcode for ${item.title} — ${item.variantTitle} (SKU ${item.sku ?? "none"}) changed from ${candidate.liveBarcode ?? "(none)"} to ${unknown.barcode} during stocktake #${stocktake.id}`,
+          details: `Stocktake #${stocktake.id} "${stocktake.name}": Shopify barcode for ${item.title} — ${item.variantTitle} (SKU ${item.sku ?? "none"}) changed from ${candidate.liveBarcode ?? "(none)"} to ${unknown.barcode}`,
         },
       });
     } catch (err) {
