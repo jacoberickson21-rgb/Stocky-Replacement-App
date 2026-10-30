@@ -390,9 +390,13 @@ model StocktakeScan {
   scannedBy   User              @relation(fields: [scannedById], references: [id])
   scannedAt   DateTime          @default(now())
   undoneAt    DateTime?
+  // Shared by every row written in one bulk action (e.g. "Zero all unscanned
+  // in this product") so a single undo can reverse the whole action.
+  batchId     String?
 
   @@index([stocktakeId, scannedById, scannedAt])
   @@index([itemId])
+  @@index([stocktakeId, batchId])
 }
 
 model StocktakeUnknownBarcode {
