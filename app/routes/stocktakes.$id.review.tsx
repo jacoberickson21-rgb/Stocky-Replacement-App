@@ -17,6 +17,7 @@ import {
   startReview,
 } from "../services/stocktake-review.server";
 import { modeLabels, statusLabels, statusStyles } from "../utils/stocktake-labels";
+import { getFlaggedSiblings } from "../services/stocktake-zero.server";
 
 const PAGE_SIZE = 50;
 const VIEWS = ["all", "changing", "variances", "drifted", "uncounted", "flagged"] as const;
@@ -42,7 +43,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
   const checking = isDriftCheckRunning(id);
   const checked = review?.checkedAt != null && !checking;
 
-  const [items, openUnknowns] = await Promise.all([
+  const [items, openUnknowns, flaggedSummary] = await Promise.all([
     db.stocktakeItem.findMany({
       where: { stocktakeId: id },
       orderBy: [{ title: "asc" }, { productId: "asc" }, { variantTitle: "asc" }],
@@ -53,6 +54,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       },
     }),
     db.stocktakeUnknownBarcode.count({ where: { stocktakeId: id, resolvedAt: null } }),
+    getFlaggedSiblings(id),
   ]);
 
   const ctxBase = { zeroUnscanned: stocktake.zeroUnscanned, scoped: stocktake.mode === "SCOPED", checked };
@@ -152,6 +154,7 @@ export async function loader({ request, params }: Route.LoaderArgs) {
     counts,
     zeroPreview,
     openUnknowns,
+    flaggedCount: { variants: flaggedSummary.totalVariants, units: flaggedSummary.totalUnits, products: flaggedSummary.products.length, checking: flaggedSummary.checking },
     blockers,
     rows: filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
     list: { view, page: safePage, totalPages, matching: filtered.length },
@@ -173,7 +176,7 @@ export async function action({ request, params }: Route.ActionArgs) {
         return redirect(`/stocktakes/${stocktakeId}/review`);
       case "back-to-counting":
         await backToCounting({ stocktakeId });
-        return redirect(`/stocktakes/${stocktakeId}/count`);
+        return redirect(`/stocktakes/${stocktakeId}/count${form.get("view") === "flagged" ? "?view=flagged" : ""}`);
       case "rerun-check":
         await rerunDriftCheck({ stocktakeId });
         return { ok: true };
@@ -231,7 +234,7 @@ const issueText: Record<ReviewIssue, { short: string; long: string }> = {
 };
 
 export default function StocktakeReviewPage({ loaderData }: Route.ComponentProps) {
-  const { stocktake, check, totals, counts, zeroPreview, openUnknowns, blockers, rows, list } = loaderData;
+  const { stocktake, check, totals, counts, zeroPreview, openUnknowns, flaggedCount, blockers, rows, list } = loaderData;
   const actionData = useActionData<typeof action>();
   const actionError = actionData && "error" in actionData ? actionData.error : null;
   const navigation = useNavigation();
@@ -330,6 +333,27 @@ export default function StocktakeReviewPage({ loaderData }: Route.ComponentProps
       {openUnknowns > 0 && (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800 dark:text-amber-300">
           {openUnknowns} unrecognised barcode{openUnknowns === 1 ? " is" : "s are"} still in Needs attention. Their scans aren't counted. Go back to counting to link them.
+        </div>
+      )}
+
+      {flaggedCount.variants > 0 && (
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-xl px-4 py-3 mb-4 flex flex-wrap items-center justify-between gap-3 text-sm text-amber-900 dark:text-amber-200">
+          <span>
+            <span className="font-semibold">{flaggedCount.variants} variant{flaggedCount.variants === 1 ? "" : "s"} not scanned</span> in {flaggedCount.products} product{flaggedCount.products === 1 ? "" : "s"} you started counting
+            ({flaggedCount.units} unit{flaggedCount.units === 1 ? "" : "s"} expected on hand). They stay unchanged unless you count them or set them to 0.
+          </span>
+          <Form method="post">
+            <input type="hidden" name="intent" value="back-to-counting" />
+            <input type="hidden" name="view" value="flagged" />
+            <button type="submit" disabled={busy || check.running} className="text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-1.5 disabled:opacity-50">
+              Back to counting → Flagged
+            </button>
+          </Form>
+        </div>
+      )}
+      {flaggedCount.variants === 0 && flaggedCount.checking && (
+        <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-2 mb-4 text-xs text-gray-500 dark:text-gray-400">
+          Checking for unscanned variants in the products you counted… reload in a moment.
         </div>
       )}
 

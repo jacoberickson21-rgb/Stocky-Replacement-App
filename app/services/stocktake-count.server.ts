@@ -49,7 +49,7 @@ export type ScanResult =
 
 export class StocktakeCountError extends Error {}
 
-function toView(item: StocktakeItem): CountItemView {
+export function toView(item: StocktakeItem): CountItemView {
   return {
     id: item.id,
     title: item.title,
@@ -62,14 +62,14 @@ function toView(item: StocktakeItem): CountItemView {
   };
 }
 
-function isUniqueViolation(err: unknown): boolean {
+export function isUniqueViolation(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
 }
 
 // Takes a shared lock on the stocktake row and checks it's still countable.
 // Cancel takes an exclusive lock on the same row, so a scan and a cancel can
 // never interleave.
-async function lockCountable(tx: Tx, stocktakeId: number) {
+export async function lockCountable(tx: Tx, stocktakeId: number) {
   const rows = await tx.$queryRaw<{ status: string; name: string }[]>`
     SELECT status, name FROM "Stocktake" WHERE id = ${stocktakeId} FOR SHARE
   `;
@@ -80,7 +80,7 @@ async function lockCountable(tx: Tx, stocktakeId: number) {
   return rows[0];
 }
 
-async function lockItem(tx: Tx, itemId: number, stocktakeId: number) {
+export async function lockItem(tx: Tx, itemId: number, stocktakeId: number) {
   const rows = await tx.$queryRaw<{ countedQty: number | null; applied: boolean }[]>`
     SELECT "countedQty", applied FROM "StocktakeItem"
     WHERE id = ${itemId} AND "stocktakeId" = ${stocktakeId} FOR UPDATE
@@ -173,35 +173,119 @@ export async function setExactQty(opts: {
   return toView(item);
 }
 
-// Reverses the user's most recent scan that hasn't been undone. The scan row is
-// kept (undoneAt is set). Its own change is reversed as a delta, so other
-// people's scans on the same item since then are preserved. If no live scans
-// remain on the item it goes back to "not counted" (null), not 0.
+export type UndoResult =
+  | { mode: "single"; item: CountItemView; undoneKind: StocktakeScanKind }
+  | { mode: "batch"; undone: CountItemView[]; skipped: { label: string; reason: string }[] };
+
+// Bulk actions whose remaining rows can't be undone (every variant left in them
+// was scanned since) and have already been reported. Undo moves past them, so
+// one superseded zero can never block undoing earlier scans.
+const exhaustedBatches = new Set<string>();
+
+// Reverses the user's most recent action that hasn't been undone. Scan rows are
+// kept (undoneAt is set), never deleted.
+// - A single scan: its own change is reversed as a delta, so other people's
+//   scans on the same item since then are preserved. If no live scans remain on
+//   the item it goes back to "not counted" (null), not 0.
+// - A bulk action (batchId): only this user's rows in that batch are reversed,
+//   in one transaction. A variant scanned since the bulk action is skipped and
+//   reported, never overwritten.
 export async function undoLastScan(opts: {
   stocktakeId: number;
   userId: number;
-}): Promise<{ item: CountItemView; undoneKind: StocktakeScanKind }> {
+}): Promise<UndoResult> {
   const db = getDb();
-  return db.$transaction(async (tx) => {
-    await lockCountable(tx, opts.stocktakeId);
-    const scan = await tx.stocktakeScan.findFirst({
-      where: { stocktakeId: opts.stocktakeId, scannedById: opts.userId, undoneAt: null },
-      orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
-    });
-    if (!scan) throw new StocktakeCountError("You have no scans to undo.");
-    const locked = await lockItem(tx, scan.itemId, opts.stocktakeId);
+  return db.$transaction(
+    async (tx) => {
+      const st = await lockCountable(tx, opts.stocktakeId);
+      const recent = await tx.stocktakeScan.findMany({
+        where: { stocktakeId: opts.stocktakeId, scannedById: opts.userId, undoneAt: null },
+        orderBy: [{ scannedAt: "desc" }, { id: "desc" }],
+        select: { id: true, batchId: true },
+        take: 1000,
+      });
+      if (recent.length === 0) throw new StocktakeCountError("You have no scans to undo.");
 
-    await tx.stocktakeScan.update({ where: { id: scan.id }, data: { undoneAt: new Date() } });
-    const remaining = await tx.stocktakeScan.count({ where: { itemId: scan.itemId, undoneAt: null } });
+      const seen = new Set<string>();
+      for (const candidate of recent) {
+        if (!candidate.batchId) return undoSingle(tx, opts.stocktakeId, candidate.id);
+        if (seen.has(candidate.batchId) || exhaustedBatches.has(candidate.batchId)) continue;
+        seen.add(candidate.batchId);
+        return undoBatch(tx, { stocktakeId: opts.stocktakeId, userId: opts.userId, batchId: candidate.batchId, stocktakeName: st.name });
+      }
+      throw new StocktakeCountError("You have no scans left that can be undone.");
+    },
+    { timeout: 30_000 }
+  );
+}
 
-    const delta = scan.qtyAfter - (scan.qtyBefore ?? 0);
+async function undoSingle(tx: Tx, stocktakeId: number, scanId: number): Promise<UndoResult> {
+  const scan = await tx.stocktakeScan.findUniqueOrThrow({ where: { id: scanId } });
+  const locked = await lockItem(tx, scan.itemId, stocktakeId);
+
+  await tx.stocktakeScan.update({ where: { id: scan.id }, data: { undoneAt: new Date() } });
+  const remaining = await tx.stocktakeScan.count({ where: { itemId: scan.itemId, undoneAt: null } });
+
+  const delta = scan.qtyAfter - (scan.qtyBefore ?? 0);
+  const reversed = Math.max(0, (locked.countedQty ?? 0) - delta);
+  const item = await tx.stocktakeItem.update({
+    where: { id: scan.itemId },
+    data: { countedQty: remaining === 0 ? null : reversed },
+  });
+  return { mode: "single", item: toView(item), undoneKind: scan.kind };
+}
+
+async function undoBatch(
+  tx: Tx,
+  opts: { stocktakeId: number; userId: number; batchId: string; stocktakeName: string }
+): Promise<UndoResult> {
+  const rows = await tx.stocktakeScan.findMany({
+    where: { stocktakeId: opts.stocktakeId, scannedById: opts.userId, batchId: opts.batchId, undoneAt: null },
+    orderBy: { id: "asc" },
+    include: { item: { select: { title: true, variantTitle: true, sku: true } } },
+  });
+
+  const undone: CountItemView[] = [];
+  const skipped: { label: string; reason: string }[] = [];
+  const now = new Date();
+  for (const row of rows) {
+    const label = `${row.item.title} — ${row.item.variantTitle}`;
+    const locked = await lockItem(tx, row.itemId, opts.stocktakeId);
+    const newer = await tx.stocktakeScan.count({ where: { itemId: row.itemId, undoneAt: null, id: { gt: row.id } } });
+    if (newer > 0) {
+      skipped.push({ label, reason: `scanned since (now counted ${locked.countedQty ?? 0})` });
+      continue;
+    }
+    await tx.stocktakeScan.update({ where: { id: row.id }, data: { undoneAt: now } });
+    const remaining = await tx.stocktakeScan.count({ where: { itemId: row.itemId, undoneAt: null } });
+    const delta = row.qtyAfter - (row.qtyBefore ?? 0);
     const reversed = Math.max(0, (locked.countedQty ?? 0) - delta);
     const item = await tx.stocktakeItem.update({
-      where: { id: scan.itemId },
+      where: { id: row.itemId },
       data: { countedQty: remaining === 0 ? null : reversed },
     });
-    return { item: toView(item), undoneKind: scan.kind };
+    undone.push(toView(item));
+  }
+
+  if (undone.length === 0) {
+    exhaustedBatches.add(opts.batchId);
+    throw new StocktakeCountError(
+      `Nothing undone: every variant in your last bulk action (${rows.length}) has been scanned since. Press Undo again to undo your action before that.`
+    );
+  }
+  // What's left in this batch can't be undone, so the next Undo moves past it.
+  if (skipped.length > 0) exhaustedBatches.add(opts.batchId);
+
+  await tx.auditLog.create({
+    data: {
+      userId: opts.userId,
+      action: "STOCKTAKE_ZERO_UNDONE",
+      details:
+        `Stocktake #${opts.stocktakeId} "${opts.stocktakeName}": undid bulk action ${opts.batchId} — ${undone.length} variant${undone.length === 1 ? "" : "s"} back to not counted` +
+        (skipped.length ? `; ${skipped.length} skipped because scanned since: ${skipped.map((s) => s.label).slice(0, 20).join("; ")}` : ""),
+    },
   });
+  return { mode: "batch", undone, skipped };
 }
 
 // ─── Lookup and item creation ──────────────────────────────────────────────────

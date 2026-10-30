@@ -10,6 +10,7 @@ import {
   setExactQty,
   undoLastScan,
 } from "../services/stocktake-count.server";
+import { previewZero, zeroUnscanned } from "../services/stocktake-zero.server";
 
 // JSON endpoint for the counting screen, called with plain fetch() from a
 // one-at-a-time queue. Every call is saved to the database before it responds —
@@ -63,6 +64,26 @@ async function handle(request: Request, params: { id: string }): Promise<[unknow
           saveBarcodeToShopify: form.get("saveBarcode") === "true",
         });
         return [{ kind: "linked", ...result }];
+      }
+
+      case "zero-preview": {
+        // Read-only: lists what would be zeroed, with live on hand for information.
+        const preview = await previewZero({
+          stocktakeId,
+          productId: String(form.get("productId") ?? ""),
+          variantIds: form.getAll("variantId").map(String),
+        });
+        return [{ kind: "zero-preview", ...preview }];
+      }
+
+      case "zero": {
+        const result = await zeroUnscanned({
+          stocktakeId,
+          userId,
+          productId: String(form.get("productId") ?? ""),
+          variantIds: form.getAll("variantId").map(String),
+        });
+        return [{ kind: "zeroed", ...result }];
       }
 
       case "dismiss":

@@ -8,11 +8,12 @@ import { getDb } from "../db.server";
 import { BarcodeInput } from "../components/BarcodeInput";
 import { modeLabels } from "../utils/stocktake-labels";
 import type { CountItemView, ScanResult, VariantCandidate } from "../services/stocktake-count.server";
+import { getFlaggedSiblings, type FlaggedProduct, type FlaggedSummary, type ZeroPreviewRow, type ZeroResult } from "../services/stocktake-zero.server";
 import type { ProductSearchResult } from "../services/shopify.server";
 
 const PAGE_SIZE = 50;
 const POLL_MS = 4000;
-const VIEWS = ["all", "counted", "uncounted", "outside"] as const;
+const VIEWS = ["all", "counted", "uncounted", "outside", "flagged"] as const;
 type View = (typeof VIEWS)[number];
 
 export async function loader({ request, params }: Route.LoaderArgs) {
@@ -75,10 +76,12 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       take: PAGE_SIZE,
       select: {
         id: true, title: true, variantTitle: true, sku: true, barcode: true,
-        expectedQty: true, countedQty: true, outsideScope: true,
+        expectedQty: true, countedQty: true, outsideScope: true, productId: true, variantId: true,
       },
     }),
   ]);
+  // Unscanned variants (expected on hand > 0) in products that have a count.
+  const flagged = await getFlaggedSiblings(id);
 
   return {
     stocktake: { id: stocktake.id, name: stocktake.name, mode: stocktake.mode },
@@ -110,17 +113,27 @@ export async function loader({ request, params }: Route.LoaderArgs) {
       lastScannedAt: u.lastScannedAt.toISOString(),
       lastScannedBy: u.lastScannedBy?.name ?? "—",
     })),
-    items: items as CountItemView[],
+    items: items as ListItem[],
+    flagged,
     list: { view, q, page, totalPages: Math.max(1, Math.ceil(matching / PAGE_SIZE)), matching },
   };
 }
 
 // ─── Client helpers ────────────────────────────────────────────────────────────
 
+type ListItem = CountItemView & { productId: string | null; variantId: string };
+type Fields = Record<string, string | string[]>;
+
+type ZeroPreview = { productTitle: string | null; rows: ZeroPreviewRow[]; skipped: { label: string; reason: string }[]; units: number };
+type ZeroRequest = { productId: string; title: string; variantIds: string[] };
+
 type ApiResult =
   | ScanResult
   | { kind: "set"; item: CountItemView }
-  | { kind: "undone"; item: CountItemView; undoneKind: string }
+  | { kind: "undone"; mode: "single"; item: CountItemView; undoneKind: string }
+  | { kind: "undone"; mode: "batch"; undone: CountItemView[]; skipped: { label: string; reason: string }[] }
+  | ({ kind: "zero-preview" } & ZeroPreview)
+  | ({ kind: "zeroed" } & ZeroResult)
   | { kind: "linked"; item: CountItemView; barcodeSaved: boolean; warning?: string }
   | { kind: "dismissed" };
 
@@ -181,7 +194,7 @@ function isTypingTarget(el: Element | null): boolean {
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function StocktakeCountPage({ loaderData }: Route.ComponentProps) {
-  const { stocktake, totals, myLastScan, recent, unknowns, items, list } = loaderData;
+  const { stocktake, totals, myLastScan, recent, unknowns, items, flagged, list } = loaderData;
   const revalidator = useRevalidator();
   const revalidatorRef = useRef(revalidator);
   revalidatorRef.current = revalidator;
@@ -193,6 +206,10 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
     setCodeState(v);
   }, []);
   const [scanReady, setScanReady] = useState(true);
+  const [zeroReq, setZeroReq] = useState<ZeroRequest | null>(null);
+  // While a confirmation dialog is open, keystrokes and focus belong to it.
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = zeroReq != null;
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [flash, setFlash] = useState<Tone | null>(null);
   const [outside, setOutside] = useState<OutsidePrompt[]>([]);
@@ -219,6 +236,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
   const focusScan = useCallback((force = false) => {
     const scan = scanRef.current;
     if (!scan) return;
+    if (modalOpenRef.current) return;
     const active = document.activeElement;
     if (active === scan) return;
     if (!force && isTypingTarget(active)) return;
@@ -227,7 +245,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
 
   const updateReady = useCallback(() => {
     const active = document.activeElement;
-    setScanReady(document.hasFocus() && (active === scanRef.current || !isTypingTarget(active)));
+    setScanReady(!modalOpenRef.current && document.hasFocus() && (active === scanRef.current || !isTypingTarget(active)));
   }, []);
 
   const signal = useCallback(
@@ -243,7 +261,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
   // Requests are sent strictly in order and never cancelled, so a fast run of
   // USB scans can't drop one. Failed requests are reported, not retried — a
   // retry could double-count if the server saved it but the response was lost.
-  const queueRef = useRef<{ fields: Record<string, string>; onResult: (r: ApiResult) => void }[]>([]);
+  const queueRef = useRef<{ fields: Fields; onResult: (r: ApiResult) => void }[]>([]);
   const busyRef = useRef(false);
   const revalidateTimer = useRef<number | null>(null);
 
@@ -264,7 +282,10 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
     let result: ApiResult;
     try {
       const body = new FormData();
-      for (const [k, v] of Object.entries(job.fields)) body.set(k, v);
+      for (const [k, v] of Object.entries(job.fields)) {
+        if (Array.isArray(v)) for (const x of v) body.append(k, x);
+        else body.set(k, v);
+      }
       const res = await fetch(`/api/stocktakes/${stocktake.id}/scan`, { method: "POST", body });
       const isJson = (res.headers.get("content-type") ?? "").includes("application/json");
       result = isJson
@@ -282,7 +303,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
   }, [stocktake.id, scheduleRevalidate]);
 
   const send = useCallback(
-    (fields: Record<string, string>, onResult: (r: ApiResult) => void) => {
+    (fields: Fields, onResult: (r: ApiResult) => void) => {
       queueRef.current.push({ fields, onResult });
       setPending(queueRef.current.length + (busyRef.current ? 1 : 0));
       void pump();
@@ -348,7 +369,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
     // so no character is lost — including the first one.
     const onKeyDown = (e: KeyboardEvent) => {
       const scan = scanRef.current;
-      if (!scan || e.defaultPrevented) return;
+      if (!scan || e.defaultPrevented || modalOpenRef.current) return;
       const active = document.activeElement;
       if (active === scan) return;
       if (isTypingTarget(active)) {
@@ -425,7 +446,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
 
   function undo() {
     send({ intent: "undo" }, (r) => {
-      if (r.kind === "undone") {
+      if (r.kind === "undone" && r.mode === "single") {
         signal("ok");
         setFeedback({
           tone: "ok",
@@ -433,12 +454,47 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
           item: r.item,
           note: r.item.countedQty == null ? "This item is now back to not counted." : undefined,
         });
+      } else if (r.kind === "undone" && r.mode === "batch") {
+        signal(r.skipped.length ? "warn" : "ok");
+        setFeedback({
+          tone: r.skipped.length ? "warn" : "ok",
+          title: `Undid your zero: ${r.undone.length} variant${r.undone.length === 1 ? "" : "s"} back to not counted`,
+          note: r.skipped.length
+            ? `Skipped ${r.skipped.length} scanned since then (left as counted): ${r.skipped.slice(0, 5).map((x) => `${x.label} — ${x.reason}`).join("; ")}${r.skipped.length > 5 ? "…" : ""}`
+            : undefined,
+        });
       } else if (r.kind === "error") {
         signal("err");
         setFeedback({ tone: "err", title: "Nothing undone", note: r.message });
       }
       focusScan();
     });
+  }
+
+  function confirmZero(req: ZeroRequest, variantIds: string[]) {
+    setZeroReq(null);
+    send({ intent: "zero", productId: req.productId, variantId: variantIds }, (r) => {
+      if (r.kind === "zeroed") {
+        signal(r.skipped.length ? "warn" : "ok");
+        setFeedback({
+          tone: r.skipped.length ? "warn" : "ok",
+          title: `${req.title}: ${r.zeroed.length} unscanned variant${r.zeroed.length === 1 ? "" : "s"} counted as 0 (${r.units} unit${r.units === 1 ? "" : "s"} expected)`,
+          note:
+            (r.skipped.length ? `Skipped ${r.skipped.length}: ${r.skipped.slice(0, 5).map((x) => `${x.label} — ${x.reason}`).join("; ")}${r.skipped.length > 5 ? "…" : ""}. ` : "") +
+            "Nothing changes in Shopify until apply. “Undo my last scan” reverses this whole action.",
+        });
+      } else if (r.kind === "error") {
+        signal("err");
+        setFeedback({ tone: "err", title: "Nothing zeroed", note: r.message });
+      }
+      focusScan();
+    });
+  }
+
+  function closeZero() {
+    setZeroReq(null);
+    modalOpenRef.current = false;
+    window.setTimeout(() => { focusScan(true); updateReady(); }, 0);
   }
 
   function addOutside(prompt: OutsidePrompt) {
@@ -630,10 +686,19 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
         />
       )}
 
+      {zeroReq && (
+        <ZeroDialog
+          stocktakeId={stocktake.id}
+          request={zeroReq}
+          onCancel={closeZero}
+          onConfirm={(ids) => { confirmZero(zeroReq, ids); modalOpenRef.current = false; }}
+        />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Items */}
         <div className="lg:col-span-2">
-          <ItemsList items={items} list={list} mode={stocktake.mode} onSetQty={setQty} />
+          <ItemsList items={items} flagged={flagged} list={list} mode={stocktake.mode} onSetQty={setQty} onZero={setZeroReq} />
         </div>
 
         {/* Recent activity */}
@@ -741,7 +806,7 @@ function FeedbackCard({ feedback, onSetQty }: {
 }
 
 type UnknownRow = { id: number; barcode: string; scanCount: number; lastScannedAt: string; lastScannedBy: string };
-type Send = (fields: Record<string, string>, onResult: (r: ApiResult) => void) => void;
+type Send = (fields: Fields, onResult: (r: ApiResult) => void) => void;
 
 function NeedsAttention({ unknowns, send, onDone, refocus }: {
   unknowns: UnknownRow[];
@@ -926,11 +991,23 @@ function LinkPanel({ unknown, onLink, refocus }: {
   );
 }
 
-function ItemsList({ items, list, mode, onSetQty }: {
-  items: CountItemView[];
+const FREE_SCAN_SYNC_NOTE = "Variants added since the last sync may not appear. Run a sync if you expect new ones.";
+
+function NotScannedLabel({ onHand }: { onHand: number }) {
+  return <span className="ml-2 text-amber-700 dark:text-amber-400 font-medium">Not scanned: {onHand} on hand</span>;
+}
+
+function zeroAllRequest(p: FlaggedProduct): ZeroRequest {
+  return { productId: p.productId, title: p.title, variantIds: p.variants.map((v) => v.variantId) };
+}
+
+function ItemsList({ items, flagged, list, mode, onSetQty, onZero }: {
+  items: ListItem[];
+  flagged: FlaggedSummary;
   list: { view: View; q: string; page: number; totalPages: number; matching: number };
   mode: string;
   onSetQty: (item: CountItemView, qty: string, after?: () => void) => void;
+  onZero: (req: ZeroRequest) => void;
 }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -950,29 +1027,56 @@ function ItemsList({ items, list, mode, onSetQty }: {
     navigate(`?${params.toString()}`, { replace: true, preventScrollReset: true });
   }
 
-  const views: { key: View; label: string }[] = [
+  const views: { key: View; label: string; badge?: string }[] = [
     { key: "all", label: "All" },
     { key: "counted", label: "Counted" },
     ...(mode === "SCOPED"
       ? [{ key: "uncounted" as View, label: "Not counted" }, { key: "outside" as View, label: "Outside scope" }]
       : []),
+    { key: "flagged", label: "Flagged", badge: flagged.checking && flagged.totalVariants === 0 ? "…" : String(flagged.totalVariants) },
   ];
+
+  const flaggedByProduct = new Map(flagged.products.map((p) => [p.productId, p]));
+  const flaggedItemOnHand = new Map<number, number>();
+  for (const p of flagged.products) for (const v of p.variants) if (v.itemId != null) flaggedItemOnHand.set(v.itemId, v.onHand);
+
+  // Consecutive rows of the same product form one group (rows arrive ordered by product).
+  const groups: { productId: string | null; title: string; rows: ListItem[] }[] = [];
+  for (const item of items) {
+    const last = groups[groups.length - 1];
+    if (last && last.productId === item.productId) last.rows.push(item);
+    else groups.push({ productId: item.productId, title: item.title, rows: [item] });
+  }
+
+  const tabs = (
+    <div className="flex flex-wrap gap-1">
+      {views.map((v) => (
+        <button
+          key={v.key}
+          type="button"
+          onClick={() => go({ view: v.key, q: list.q })}
+          className={`text-xs font-medium px-2.5 py-1 rounded-full ${list.view === v.key ? "bg-indigo-600 text-white" : v.key === "flagged" && flagged.totalVariants > 0 ? "text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+        >
+          {v.label}
+          {v.badge != null && <span className="ml-1 opacity-80">{v.badge}</span>}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (list.view === "flagged") {
+    return (
+      <div className={card}>
+        <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">{tabs}</div>
+        <FlaggedList flagged={flagged} mode={mode} onZero={onZero} />
+      </div>
+    );
+  }
 
   return (
     <div className={card}>
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700">
-        <div className="flex gap-1">
-          {views.map((v) => (
-            <button
-              key={v.key}
-              type="button"
-              onClick={() => go({ view: v.key, q: list.q })}
-              className={`text-xs font-medium px-2.5 py-1 rounded-full ${list.view === v.key ? "bg-indigo-600 text-white" : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"}`}
-            >
-              {v.label}
-            </button>
-          ))}
-        </div>
+        {tabs}
         <input
           value={search}
           onChange={(e) => {
@@ -996,53 +1100,110 @@ function ItemsList({ items, list, mode, onSetQty }: {
                 <th className="text-left px-4 py-2 font-medium">SKU</th>
                 <th className="text-right px-4 py-2 font-medium">Expected</th>
                 <th className="text-right px-4 py-2 font-medium">Counted</th>
-                <th className="px-4 py-2 w-28"></th>
+                <th className="px-4 py-2 w-36"></th>
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id} className="border-b border-gray-50 dark:border-gray-800">
-                  <td className="px-4 py-2">
-                    <div className="text-gray-800 dark:text-gray-100">{item.title}</div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      {item.variantTitle}
-                      {item.outsideScope && <span className="ml-2 text-amber-600 dark:text-amber-400">outside scope</span>}
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{item.sku ?? "—"}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{item.expectedQty}</td>
-                  <td className="px-4 py-2 text-right tabular-nums font-semibold text-gray-800 dark:text-gray-100">{item.countedQty ?? "—"}</td>
-                  <td className="px-4 py-2 text-right">
-                    {editingId === item.id ? (
-                      <form
-                        className="flex justify-end gap-1"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          onSetQty(item, editValue, () => setEditingId(null));
-                        }}
-                      >
-                        <input
-                          autoFocus
-                          inputMode="numeric"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value.replace(/[^0-9]/g, ""))}
-                          onKeyDown={(e) => e.key === "Escape" && setEditingId(null)}
-                          className={`${inputCls} w-16 py-1`}
-                        />
-                        <button type="submit" className="text-xs font-medium text-indigo-600 dark:text-indigo-400">Save</button>
-                      </form>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => { setEditingId(item.id); setEditValue(item.countedQty != null ? String(item.countedQty) : ""); }}
-                        className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
-                      >
-                        Set qty
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {groups.map((g, gi) => {
+                const fp = g.productId ? flaggedByProduct.get(g.productId) : undefined;
+                // Free-scan siblings that aren't items yet appear inside their product group.
+                const siblings = fp ? fp.variants.filter((v) => v.itemId == null) : [];
+                return [
+                  <tr key={`g-${gi}`} className="bg-gray-50/70 dark:bg-gray-800/50 border-y border-gray-100 dark:border-gray-700">
+                    <td colSpan={5} className="px-4 py-1.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">{g.title}</span>
+                        {fp && fp.variants.length > 0 && (
+                          <span className="flex items-center gap-2 text-xs">
+                            <span className="text-amber-700 dark:text-amber-400">{fp.variants.length} not scanned · {fp.units} on hand</span>
+                            <button type="button" onClick={() => onZero(zeroAllRequest(fp))} className="font-medium text-red-600 dark:text-red-400 hover:underline">
+                              Zero all unscanned in this product
+                            </button>
+                          </span>
+                        )}
+                        {fp && fp.checking && fp.variants.length === 0 && <span className="text-xs text-gray-400">Checking unscanned variants…</span>}
+                      </div>
+                      {fp && mode === "FREE_SCAN" && <p className="text-[11px] text-gray-400 mt-0.5">{FREE_SCAN_SYNC_NOTE}</p>}
+                    </td>
+                  </tr>,
+                  ...g.rows.map((item) => {
+                    const onHand = flaggedItemOnHand.get(item.id);
+                    return (
+                      <tr key={item.id} className="border-b border-gray-50 dark:border-gray-800">
+                        <td className="px-4 py-2">
+                          <div className="text-xs text-gray-700 dark:text-gray-300">
+                            {item.variantTitle}
+                            {item.outsideScope && <span className="ml-2 text-amber-600 dark:text-amber-400">outside scope</span>}
+                            {onHand != null && <NotScannedLabel onHand={onHand} />}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{item.sku ?? "—"}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{item.expectedQty}</td>
+                        <td className="px-4 py-2 text-right tabular-nums font-semibold text-gray-800 dark:text-gray-100">{item.countedQty ?? "—"}</td>
+                        <td className="px-4 py-2 text-right whitespace-nowrap">
+                          {editingId === item.id ? (
+                            <form
+                              className="flex justify-end gap-1"
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                onSetQty(item, editValue, () => setEditingId(null));
+                              }}
+                            >
+                              <input
+                                autoFocus
+                                inputMode="numeric"
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value.replace(/[^0-9]/g, ""))}
+                                onKeyDown={(e) => e.key === "Escape" && setEditingId(null)}
+                                className={`${inputCls} w-16 py-1`}
+                              />
+                              <button type="submit" className="text-xs font-medium text-indigo-600 dark:text-indigo-400">Save</button>
+                            </form>
+                          ) : (
+                            <span className="inline-flex gap-3">
+                              {onHand != null && fp && (
+                                <button
+                                  type="button"
+                                  onClick={() => onZero({ productId: fp.productId, title: fp.title, variantIds: [item.variantId] })}
+                                  className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline"
+                                >
+                                  Set to 0
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => { setEditingId(item.id); setEditValue(item.countedQty != null ? String(item.countedQty) : ""); }}
+                                className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+                              >
+                                Set qty
+                              </button>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  }),
+                  ...siblings.map((v) => (
+                    <tr key={`s-${v.variantId}`} className="border-b border-gray-50 dark:border-gray-800 bg-amber-50/40 dark:bg-amber-900/10">
+                      <td className="px-4 py-2">
+                        <div className="text-xs text-gray-700 dark:text-gray-300">{v.variantTitle}<NotScannedLabel onHand={v.onHand} /></div>
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-gray-600 dark:text-gray-400">{v.sku ?? "—"}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-gray-600 dark:text-gray-400">{v.onHand}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-gray-400">—</td>
+                      <td className="px-4 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => fp && onZero({ productId: fp.productId, title: fp.title, variantIds: [v.variantId] })}
+                          className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline"
+                        >
+                          Set to 0
+                        </button>
+                      </td>
+                    </tr>
+                  )),
+                ];
+              })}
             </tbody>
           </table>
         </div>
@@ -1054,6 +1215,185 @@ function ItemsList({ items, list, mode, onSetQty }: {
           <div>{list.page < list.totalPages && <button type="button" onClick={() => go({ page: list.page + 1 })} className="text-indigo-600 dark:text-indigo-400 hover:underline">Next →</button>}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+const FLAGGED_PREVIEW_COUNT = 10;
+
+function FlaggedList({ flagged, mode, onZero }: { flagged: FlaggedSummary; mode: string; onZero: (req: ZeroRequest) => void }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  if (flagged.products.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-sm text-gray-400">
+        {flagged.checking ? "Checking unscanned variants…" : "No unscanned variants with stock in the products you've scanned."}
+        {mode === "FREE_SCAN" && <p className="text-xs mt-1">{FREE_SCAN_SYNC_NOTE}</p>}
+      </div>
+    );
+  }
+  return (
+    <div className="divide-y divide-gray-100 dark:divide-gray-800">
+      <p className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
+        {flagged.totalVariants} variant{flagged.totalVariants === 1 ? "" : "s"} with stock haven't been scanned in products you've started counting ({flagged.totalUnits} units).
+        Zeroing records a count of 0 here; Shopify only changes at apply.
+      </p>
+      {flagged.products.map((p) => {
+        const open = expanded.has(p.productId);
+        const shown = open ? p.variants : p.variants.slice(0, FLAGGED_PREVIEW_COUNT);
+        return (
+          <div key={p.productId} className="px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="text-sm font-medium text-gray-800 dark:text-gray-100">{p.title}</span>
+                {p.vendor && <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">{p.vendor}</span>}
+                <span className="ml-2 text-xs text-amber-700 dark:text-amber-400">{p.variants.length} not scanned · {p.units} on hand</span>
+                {p.checking && <span className="ml-2 text-xs text-gray-400">checking…</span>}
+              </div>
+              {p.variants.length > 0 && (
+                <button type="button" onClick={() => onZero(zeroAllRequest(p))} className="text-xs font-medium text-red-600 dark:text-red-400 hover:underline">
+                  Zero all unscanned in this product
+                </button>
+              )}
+            </div>
+            <ul className="mt-1.5 space-y-1">
+              {shown.map((v) => (
+                <li key={v.variantId} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-gray-700 dark:text-gray-300">
+                    {v.variantTitle}
+                    {v.sku && <span className="ml-2 font-mono text-gray-500">{v.sku}</span>}
+                    <NotScannedLabel onHand={v.onHand} />
+                  </span>
+                  <button type="button" onClick={() => onZero({ productId: p.productId, title: p.title, variantIds: [v.variantId] })} className="font-medium text-red-600 dark:text-red-400 hover:underline">
+                    Set to 0
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {p.variants.length > FLAGGED_PREVIEW_COUNT && (
+              <button
+                type="button"
+                onClick={() => setExpanded((prev) => { const n = new Set(prev); if (open) n.delete(p.productId); else n.add(p.productId); return n; })}
+                className="mt-1 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                {open ? "Show fewer" : `+${p.variants.length - FLAGGED_PREVIEW_COUNT} more`}
+              </button>
+            )}
+            {mode === "FREE_SCAN" && <p className="text-[11px] text-gray-400 mt-1">{FREE_SCAN_SYNC_NOTE}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Lists exactly what will be zeroed (live on hand shown for information only)
+// and needs an explicit confirm. Keystrokes stay in the dialog while it's open.
+function ZeroDialog({ stocktakeId, request, onCancel, onConfirm }: {
+  stocktakeId: number;
+  request: ZeroRequest;
+  onCancel: () => void;
+  onConfirm: (variantIds: string[]) => void;
+}) {
+  const [preview, setPreview] = useState<ZeroPreview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const body = new FormData();
+        body.set("intent", "zero-preview");
+        body.set("productId", request.productId);
+        for (const id of request.variantIds) body.append("variantId", id);
+        const res = await fetch(`/api/stocktakes/${stocktakeId}/scan`, { method: "POST", body });
+        const data = (await res.json()) as ApiResult;
+        if (cancelled) return;
+        if (data.kind === "zero-preview") setPreview(data);
+        else if (data.kind === "error") setError(data.message);
+        else setError("Unexpected response.");
+      } catch {
+        if (!cancelled) setError("Could not load the variants. Check the connection and try again.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [stocktakeId, request]);
+
+  useEffect(() => {
+    if (preview) confirmRef.current?.focus();
+  }, [preview]);
+
+  const willZero = preview?.rows.filter((r) => !r.note || !r.note.includes("will be skipped")) ?? [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } }}
+    >
+      <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-gray-900 shadow-xl border border-gray-200 dark:border-gray-700 p-5">
+        <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100">
+          {request.variantIds.length === 1 ? "Set this variant to 0?" : `Zero all unscanned in ${request.title}?`}
+        </h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          Records a count of 0 for each variant below (logged and undoable). Nothing changes in Shopify until the stocktake is applied, after review and the drift check.
+        </p>
+        {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+        {!preview && !error && <p className="mt-3 text-sm text-gray-400">Loading variants…</p>}
+        {preview && (
+          <>
+            <div className="mt-3 max-h-72 overflow-y-auto border border-gray-100 dark:border-gray-700 rounded-lg">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
+                    <th className="text-left px-3 py-1.5 font-medium">Variant</th>
+                    <th className="text-right px-3 py-1.5 font-medium">Expected</th>
+                    <th className="text-right px-3 py-1.5 font-medium" title="Live on hand in Shopify right now — for information only">Live now</th>
+                    <th className="text-right px-3 py-1.5 font-medium">Count</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.map((r) => (
+                    <tr key={r.variantId} className="border-t border-gray-50 dark:border-gray-800">
+                      <td className="px-3 py-1.5 text-gray-700 dark:text-gray-300">
+                        {r.variantTitle}
+                        {r.sku && <span className="ml-1 font-mono text-gray-500">{r.sku}</span>}
+                        {r.note && <div className="text-amber-700 dark:text-amber-400">{r.note}</div>}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{r.snapshotOnHand ?? "—"}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-gray-500">{r.liveOnHand ?? "—"}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums font-semibold">0</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-sm text-gray-700 dark:text-gray-200">
+              {willZero.length} variant{willZero.length === 1 ? "" : "s"} · {preview.units} unit{preview.units === 1 ? "" : "s"} expected on hand will be counted as 0.
+            </p>
+            {preview.skipped.length > 0 && (
+              <p className="mt-1 text-xs text-gray-500">
+                Not included: {preview.skipped.slice(0, 5).map((x) => `${x.label} (${x.reason})`).join("; ")}{preview.skipped.length > 5 ? "…" : ""}
+              </p>
+            )}
+          </>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="text-sm font-medium border border-gray-200 dark:border-gray-600 text-gray-700 dark:text-gray-200 rounded-lg px-3 py-1.5">
+            Cancel
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            disabled={!preview || willZero.length === 0}
+            onClick={() => onConfirm(willZero.map((r) => r.variantId))}
+            className="text-sm font-medium bg-red-600 hover:bg-red-700 text-white rounded-lg px-3 py-1.5 disabled:opacity-50"
+          >
+            Count {willZero.length} as 0
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
