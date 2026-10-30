@@ -213,7 +213,6 @@ export async function getStocktakeReport(stocktakeId: number, opts: { includeIte
       completedBy: stocktake.completedBy?.name ?? null,
       completedAt: stocktake.completedAt?.toISOString() ?? null,
       applyReason: stocktake.applyReason,
-      applyTestResult: stocktake.applyTestResult,
       applyError: stocktake.applyError,
       reviewCheckedAt: review?.checkedAt ?? null,
     },

@@ -61,7 +61,7 @@ export type ExcludedItem = {
 export type ApplyPlan = {
   stocktake: {
     id: number; name: string; mode: string; status: string; locationId: string; applyAttempt: number;
-    applyReason: string | null; applyTestResult: string | null; applyError: string | null;
+    applyReason: string | null; applyError: string | null;
     applyTotal: number | null; applyDone: number | null; applyHeartbeatAt: string | null;
   };
   checkedAt: string | null;
@@ -212,7 +212,7 @@ export async function getApplyPlan(
     stocktake: {
       id: stocktake.id, name: stocktake.name, mode: stocktake.mode, status: stocktake.status,
       locationId: stocktake.locationId, applyAttempt: stocktake.applyAttempt,
-      applyReason: stocktake.applyReason, applyTestResult: stocktake.applyTestResult, applyError: stocktake.applyError,
+      applyReason: stocktake.applyReason, applyError: stocktake.applyError,
       applyTotal: stocktake.applyTotal, applyDone: stocktake.applyDone,
       applyHeartbeatAt: stocktake.applyHeartbeatAt?.toISOString() ?? null,
     },
@@ -344,7 +344,7 @@ export function isHeartbeatStale(heartbeatAt: string | null): boolean {
   return heartbeatAt == null || Date.now() - new Date(heartbeatAt).getTime() > HEARTBEAT_STALE_MS;
 }
 
-type RunKind = "test" | "full" | "retry" | "resume";
+type RunKind = "full" | "retry" | "resume";
 
 // Moves REVIEW → APPLYING (or claims a stalled APPLYING run for resume) in one
 // conditional UPDATE and bumps applyAttempt. Two clicks can't both succeed.
@@ -413,6 +413,8 @@ type RunCtx = {
   attempt: number;
   reason: string;
   reasonFallbackUsed: boolean;
+  // applyReason is saved once Shopify has accepted a batch (or on fallback)
+  reasonSaved: boolean;
   keysUsed: string[];
   applied: number;
   reconciled: number;
@@ -516,6 +518,10 @@ async function confirmFromResponse(ctx: RunCtx, items: ApplyPlanItem[], res: Set
     else unconfirmed.push(item);
   }
   await markApplied(ctx, confirmed, "shopify");
+  if (confirmed.length > 0 && !ctx.reasonSaved) {
+    await getDb().stocktake.update({ where: { id: ctx.stocktakeId }, data: { applyReason: ctx.reason } });
+    ctx.reasonSaved = true;
+  }
   if (unconfirmed.length === 0) return;
 
   const levels = await fetchLiveInventoryLevels(unconfirmed.map((i) => i.inventoryItemId), ctx.locationId);
@@ -531,6 +537,7 @@ async function confirmFromResponse(ctx: RunCtx, items: ApplyPlanItem[], res: Set
 async function switchToFallbackReason(ctx: RunCtx): Promise<void> {
   ctx.reason = FALLBACK_REASON;
   ctx.reasonFallbackUsed = true;
+  ctx.reasonSaved = true;
   await getDb().stocktake.update({ where: { id: ctx.stocktakeId }, data: { applyReason: FALLBACK_REASON } });
   ctx.attempt = await nextAttempt(ctx.stocktakeId);
 }
@@ -634,25 +641,21 @@ async function finishRun(ctx: RunCtx, opts: { userId: number; kind: RunKind; sto
   }
 
   const summary =
-    opts.kind === "test" && ctx.failed === 0 && ctx.stale === 0
-      ? null
-      : `${remaining} item${remaining === 1 ? "" : "s"} not applied` +
-        (ctx.stale ? `, ${ctx.stale} changed since review` : "") +
-        (ctx.failed ? `, ${ctx.failed} failed` : "") +
-        (ctx.errors.length ? `. ${ctx.errors.slice(0, 3).join("; ")}` : "");
+    `${remaining} item${remaining === 1 ? "" : "s"} not applied` +
+    (ctx.stale ? `, ${ctx.stale} changed since review` : "") +
+    (ctx.failed ? `, ${ctx.failed} failed` : "") +
+    (ctx.errors.length ? `. ${ctx.errors.slice(0, 3).join("; ")}` : "");
   await releaseToReview(ctx.stocktakeId, summary);
-  if (opts.kind !== "test") {
-    await db.auditLog.create({
-      data: {
-        userId: opts.userId,
-        action: "STOCKTAKE_APPLY_FAILED",
-        details:
-          `Stocktake #${ctx.stocktakeId} "${opts.stocktakeName}" ${opts.kind} run ended with ${remaining} items unapplied. ` +
-          `This run: ${ctx.applied} confirmed, ${ctx.reconciled} reconciled, ${ctx.stale} changed since review, ${ctx.failed} failed. ` +
-          `Reason: ${ctx.reason}. First errors: ${ctx.errors.slice(0, 5).join("; ") || "none"}`,
-      },
-    });
-  }
+  await db.auditLog.create({
+    data: {
+      userId: opts.userId,
+      action: "STOCKTAKE_APPLY_FAILED",
+      details:
+        `Stocktake #${ctx.stocktakeId} "${opts.stocktakeName}" ${opts.kind} run ended with ${remaining} items unapplied. ` +
+        `This run: ${ctx.applied} confirmed, ${ctx.reconciled} reconciled, ${ctx.stale} changed since review, ${ctx.failed} failed. ` +
+        `Reason: ${ctx.reason}${ctx.reasonFallbackUsed ? ` (fell back from ${APPLY_REASON})` : ""}. First errors: ${ctx.errors.slice(0, 5).join("; ") || "none"}`,
+    },
+  });
   return "REVIEW";
 }
 
@@ -676,13 +679,10 @@ async function assertCanWrite(kind: RunKind, opts: WriteOpts): Promise<ApplyPlan
   const plan = await getApplyPlan(opts.stocktakeId, { expectStatus: kind === "resume" ? "APPLYING" : "REVIEW" });
   const blockers = writeBlockers(plan, kind);
   if (blockers.length > 0) throw new StocktakeApplyError(blockers.join(" "));
-  if (kind !== "test" && plan.stocktake.applyTestResult !== "PASSED" && plan.stocktake.applyTestResult !== "SKIPPED") {
-    throw new StocktakeApplyError("Apply the test item first, or choose to skip the test.");
-  }
   if (kind === "resume" && !isHeartbeatStale(plan.stocktake.applyHeartbeatAt)) {
     throw new StocktakeApplyError("This apply made progress in the last 5 minutes. Wait before resuming.");
   }
-  if (kind !== "test" && plan.requiresNameConfirm && (opts.typedName ?? "").trim() !== plan.stocktake.name.trim()) {
+  if (plan.requiresNameConfirm && (opts.typedName ?? "").trim() !== plan.stocktake.name.trim()) {
     throw new StocktakeApplyError("This is a large change. Type the stocktake name exactly to confirm.");
   }
   return plan;
@@ -695,100 +695,11 @@ function newCtx(plan: ApplyPlan, attempt: number): RunCtx {
     attempt,
     reason: plan.stocktake.applyReason ?? APPLY_REASON,
     reasonFallbackUsed: false,
+    reasonSaved: plan.stocktake.applyReason != null,
     keysUsed: [],
     applied: 0, reconciled: 0, stale: 0, failed: 0,
     errors: [],
   };
-}
-
-export type TestResult = {
-  outcome: "applied" | "stale" | "failed";
-  item: ApplyPlanItem;
-  reasonUsed: string;
-  reasonFallbackUsed: boolean;
-  keysUsed: string[];
-  message: string | null;
-  status: "COMPLETED" | "REVIEW";
-};
-
-// Sends exactly one item, synchronously, and reports what happened. Verifies
-// that the reason is accepted with name "on_hand" (falls back to "correction").
-export async function applyTestItem(opts: WriteOpts): Promise<TestResult> {
-  const plan = await assertCanWrite("test", opts);
-  const chosen = plan.sendable[0];
-  const attempt = await claimRun(opts.stocktakeId, "test", 1);
-  runningApplies.add(opts.stocktakeId);
-  try {
-    // Re-plan under APPLYING: this is what is actually sent.
-    const locked = await getApplyPlan(opts.stocktakeId, { expectStatus: "APPLYING" });
-    const item = locked.sendable.find((i) => i.itemId === chosen.itemId);
-    if (locked.blockers.length > 0 || !item || item.targetQty !== chosen.targetQty || item.changeFromQuantity !== chosen.changeFromQuantity) {
-      await releaseToReview(opts.stocktakeId, null);
-      throw new StocktakeApplyError("The stocktake changed while starting the test. Nothing was sent. Reload and try again.");
-    }
-
-    const ctx = newCtx(locked, attempt);
-    const payload = buildSetQuantitiesInput(ctx.stocktakeId, ctx.locationId, [item], ctx.reason);
-    await getDb().auditLog.create({
-      data: {
-        userId: opts.userId,
-        action: "STOCKTAKE_APPLY_STARTED",
-        details: `Stocktake #${ctx.stocktakeId} "${locked.stocktake.name}" test item (1 of ${locked.sendable.length}), attempt ${attempt}. ` +
-          `Key ${buildIdempotencyKey(ctx.stocktakeId, attempt, [item])}. Payload: ${JSON.stringify(payload)}`,
-      },
-    });
-
-    try {
-      await sendSingle(ctx, item);
-    } catch (err) {
-      // Shopify unreachable even for the read-back: outcome unknown.
-      await markFailed(ctx, item, `Test could not be confirmed: ${err instanceof Error ? err.message : String(err)}. Retry will reconcile first.`);
-    }
-
-    const after = await getDb().stocktakeItem.findUnique({ where: { id: item.itemId }, select: { applied: true, applyStale: true, applyError: true } });
-    const outcome: TestResult["outcome"] = after?.applied ? "applied" : after?.applyStale ? "stale" : "failed";
-    if (outcome === "applied") {
-      await getDb().stocktake.update({ where: { id: ctx.stocktakeId }, data: { applyTestResult: "PASSED", applyReason: ctx.reason } });
-    }
-    await getDb().auditLog.create({
-      data: {
-        userId: opts.userId,
-        action: "STOCKTAKE_APPLY_TEST_ITEM",
-        details:
-          `Stocktake #${ctx.stocktakeId} "${locked.stocktake.name}" test item ${item.title} — ${item.variantTitle} (SKU ${item.sku ?? "none"}): ` +
-          `${outcome.toUpperCase()}. on_hand ${item.changeFromQuantity} → ${item.targetQty}. ` +
-          `Reason used: ${ctx.reason}${ctx.reasonFallbackUsed ? ` (Shopify rejected ${APPLY_REASON}, fell back to ${FALLBACK_REASON})` : " (accepted with name on_hand)"}. ` +
-          `Keys: ${ctx.keysUsed.join(", ")}.${after?.applyError ? ` Error: ${after.applyError}` : ""}`,
-      },
-    });
-
-    const status = await finishRun(ctx, { userId: opts.userId, kind: "test", stocktakeName: locked.stocktake.name });
-    return {
-      outcome, item, reasonUsed: ctx.reason, reasonFallbackUsed: ctx.reasonFallbackUsed,
-      keysUsed: ctx.keysUsed, message: after?.applyError ?? null, status,
-    };
-  } catch (err) {
-    if (!(err instanceof StocktakeApplyError)) {
-      await logFailure("STOCKTAKE_APPLY", `Stocktake #${opts.stocktakeId} test`, err instanceof Error ? err.message : String(err));
-      await releaseToReview(opts.stocktakeId, `Test item run failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    throw err;
-  } finally {
-    runningApplies.delete(opts.stocktakeId);
-  }
-}
-
-export async function skipTestItem(opts: { stocktakeId: number; userId: number }): Promise<void> {
-  await withReviewLock(opts.stocktakeId, async (tx, st) => {
-    await tx.stocktake.update({ where: { id: opts.stocktakeId }, data: { applyTestResult: "SKIPPED" } });
-    await tx.auditLog.create({
-      data: {
-        userId: opts.userId,
-        action: "STOCKTAKE_APPLY_TEST_ITEM",
-        details: `Stocktake #${opts.stocktakeId} "${st.name}": test item SKIPPED by explicit choice. Full apply will use reason ${APPLY_REASON} (falls back to ${FALLBACK_REASON} if Shopify rejects it).`,
-      },
-    });
-  });
 }
 
 // Full apply, retry, or resume: validated and claimed in the request, then run

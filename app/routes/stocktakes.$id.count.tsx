@@ -167,6 +167,17 @@ const card = "bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray
 const inputCls =
   "text-sm border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500";
 
+// Elements that take typed text. Scanner keystrokes are never taken from these.
+function isTypingTarget(el: Element | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
+  if (el instanceof HTMLInputElement) {
+    return !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image"].includes(el.type);
+  }
+  return false;
+}
+
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function StocktakeCountPage({ loaderData }: Route.ComponentProps) {
@@ -175,7 +186,13 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
   const revalidatorRef = useRef(revalidator);
   revalidatorRef.current = revalidator;
 
-  const [code, setCode] = useState("");
+  const [code, setCodeState] = useState("");
+  const codeRef = useRef("");
+  const setCode = useCallback((v: string) => {
+    codeRef.current = v;
+    setCodeState(v);
+  }, []);
+  const [scanReady, setScanReady] = useState(true);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [flash, setFlash] = useState<Tone | null>(null);
   const [outside, setOutside] = useState<OutsidePrompt[]>([]);
@@ -196,9 +213,21 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
     });
   }
 
-  const focusScan = useCallback(() => {
+  // Puts focus back in the scan box. Never takes it from a field the user is
+  // typing in (Set qty, item filter, link search) unless `force` is set — which
+  // is only used once that field is finished (Enter/Esc) or on first load.
+  const focusScan = useCallback((force = false) => {
+    const scan = scanRef.current;
+    if (!scan) return;
     const active = document.activeElement;
-    if (!active || active === document.body || active === scanRef.current) scanRef.current?.focus();
+    if (active === scan) return;
+    if (!force && isTypingTarget(active)) return;
+    scan.focus({ preventScroll: true });
+  }, []);
+
+  const updateReady = useCallback(() => {
+    const active = document.activeElement;
+    setScanReady(document.hasFocus() && (active === scanRef.current || !isTypingTarget(active)));
   }, []);
 
   const signal = useCallback(
@@ -303,6 +332,77 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
     });
   }
 
+  const submitScanRef = useRef(submitScan);
+  submitScanRef.current = submitScan;
+
+  useEffect(() => {
+    // React does not run autoFocus when it hydrates server-rendered HTML, so
+    // focus explicitly once the page is interactive.
+    const raf = window.requestAnimationFrame(() => {
+      focusScan(true);
+      updateReady();
+    });
+
+    // A USB scanner is a keyboard: if a keystroke arrives while nothing
+    // editable has focus (body, a button, a link), route it into the scan box
+    // so no character is lost — including the first one.
+    const onKeyDown = (e: KeyboardEvent) => {
+      const scan = scanRef.current;
+      if (!scan || e.defaultPrevented) return;
+      const active = document.activeElement;
+      if (active === scan) return;
+      if (isTypingTarget(active)) {
+        // That field is finished: hand focus back after it handles the key.
+        if (e.key === "Enter" || e.key === "Escape") {
+          window.setTimeout(() => {
+            const now = document.activeElement;
+            if (now === active || now === document.body || now == null) focusScan(true);
+            updateReady();
+          }, 0);
+        }
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      const isEnter = e.key === "Enter";
+      if (!isEnter && e.key.length !== 1) return;
+      // Let Space press a focused button; scanners don't send spaces.
+      if (e.key === " " && active && active !== document.body) return;
+      e.preventDefault();
+      scan.focus({ preventScroll: true });
+      if (isEnter) submitScanRef.current(codeRef.current);
+      else setCode(codeRef.current + e.key);
+      updateReady();
+    };
+
+    // Focus that drops to the page background (a field closed, a row editor
+    // unmounted, a click on empty space) goes straight back to the scan box.
+    const onFocusOut = () => {
+      window.setTimeout(() => {
+        const active = document.activeElement;
+        if (document.hasFocus() && (active == null || active === document.body)) focusScan();
+        updateReady();
+      }, 0);
+    };
+    const onWindowFocus = () => {
+      focusScan();
+      updateReady();
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("focusin", updateReady);
+    document.addEventListener("focusout", onFocusOut);
+    window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("blur", updateReady);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.removeEventListener("focusin", updateReady);
+      document.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("blur", updateReady);
+    };
+  }, [focusScan, updateReady, setCode]);
+
   function setQty(item: CountItemView, qtyText: string, after?: () => void) {
     const qty = Number(qtyText);
     if (qtyText.trim() === "" || !Number.isInteger(qty) || qty < 0) {
@@ -337,7 +437,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
         signal("err");
         setFeedback({ tone: "err", title: "Nothing undone", note: r.message });
       }
-      scanRef.current?.focus();
+      focusScan();
     });
   }
 
@@ -353,14 +453,14 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
           signal("err");
           setFeedback({ tone: "err", title: "Not added", note: r.message });
         }
-        scanRef.current?.focus();
+        focusScan();
       }
     );
   }
 
   function ignoreOutside(prompt: OutsidePrompt) {
     setOutside((prev) => prev.filter((p) => p.candidate.variantId !== prompt.candidate.variantId));
-    scanRef.current?.focus();
+    focusScan();
   }
 
   const progressPct = totals.totalItems > 0 ? Math.round((totals.countedItems / totals.totalItems) * 100) : 0;
@@ -402,8 +502,10 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
               if (pending > 0) {
                 e.preventDefault();
                 window.alert("Wait until all scans are saved.");
+                focusScan();
               } else if (!window.confirm("Finish counting and move to review? Counting pauses for everyone until someone goes back to counting.")) {
                 e.preventDefault();
+                focusScan();
               }
             }}
           >
@@ -418,6 +520,7 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
             onSubmit={(e) => {
               if (!window.confirm(`Cancel "${stocktake.name}"? Counts are kept for the record, but nothing will be applied to Shopify and counting stops.`)) {
                 e.preventDefault();
+                focusScan();
               }
             }}
           >
@@ -456,7 +559,22 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
           inputClassName={`${inputCls} w-full text-lg py-3 font-mono`}
         />
         <div className="mt-2 flex items-center justify-between gap-3 text-xs text-gray-500 dark:text-gray-400">
-          <span>{pending > 0 ? `Saving ${pending}…` : "All scans saved"}</span>
+          <span className="flex flex-wrap items-center gap-3">
+            {scanReady ? (
+              <span className="inline-flex items-center gap-1.5 font-medium text-green-700 dark:text-green-400">
+                <span className="h-2 w-2 rounded-full bg-green-500" /> Ready to scan
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { focusScan(true); updateReady(); }}
+                className="inline-flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400 hover:underline"
+              >
+                <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" /> Click to resume scanning
+              </button>
+            )}
+            <span>{pending > 0 ? `Saving ${pending}…` : "All scans saved"}</span>
+          </span>
           <button
             type="button"
             onClick={undo}
@@ -507,7 +625,8 @@ export default function StocktakeCountPage({ loaderData }: Route.ComponentProps)
         <NeedsAttention
           unknowns={unknowns}
           send={send}
-          onDone={(tone, f) => { signal(tone); setFeedback(f); scanRef.current?.focus(); }}
+          onDone={(tone, f) => { signal(tone); setFeedback(f); focusScan(); }}
+          refocus={() => focusScan()}
         />
       )}
 
@@ -624,10 +743,11 @@ function FeedbackCard({ feedback, onSetQty }: {
 type UnknownRow = { id: number; barcode: string; scanCount: number; lastScannedAt: string; lastScannedBy: string };
 type Send = (fields: Record<string, string>, onResult: (r: ApiResult) => void) => void;
 
-function NeedsAttention({ unknowns, send, onDone }: {
+function NeedsAttention({ unknowns, send, onDone, refocus }: {
   unknowns: UnknownRow[];
   send: Send;
   onDone: (tone: Tone, feedback: Feedback) => void;
+  refocus: () => void;
 }) {
   const [openId, setOpenId] = useState<number | null>(null);
 
@@ -658,7 +778,9 @@ function NeedsAttention({ unknowns, send, onDone }: {
                 <button
                   type="button"
                   onClick={() => {
-                    if (!window.confirm(`Dismiss ${u.barcode}? Its ${u.scanCount} scan${u.scanCount === 1 ? "" : "s"} won't be counted.`)) return;
+                    const ok = window.confirm(`Dismiss ${u.barcode}? Its ${u.scanCount} scan${u.scanCount === 1 ? "" : "s"} won't be counted.`);
+                    refocus();
+                    if (!ok) return;
                     send({ intent: "dismiss", unknownId: String(u.id) }, (r) => {
                       if (r.kind === "error") onDone("err", { tone: "err", title: "Not dismissed", note: r.message });
                     });
@@ -672,6 +794,7 @@ function NeedsAttention({ unknowns, send, onDone }: {
             {openId === u.id && (
               <LinkPanel
                 unknown={u}
+                refocus={refocus}
                 onLink={(result, saveBarcode) => {
                   const label = `${result.productTitle} — ${result.variantTitle}`;
                   send(
@@ -700,8 +823,9 @@ function NeedsAttention({ unknowns, send, onDone }: {
   );
 }
 
-function LinkPanel({ unknown, onLink }: {
+function LinkPanel({ unknown, onLink, refocus }: {
   unknown: UnknownRow;
+  refocus: () => void;
   onLink: (result: ProductSearchResult, saveBarcode: boolean) => void;
 }) {
   const searchFetcher = useFetcher<ProductSearchResult[]>();
@@ -736,7 +860,9 @@ function LinkPanel({ unknown, onLink }: {
       const msg = differentBarcode
         ? `Link ${unknown.barcode} to ${label}, AND REPLACE its Shopify barcode ${existing} with ${unknown.barcode}?`
         : `Link ${unknown.barcode} to ${label}, and save ${unknown.barcode} as its barcode in Shopify?`;
-      if (!window.confirm(msg)) return;
+      const ok = window.confirm(msg);
+      refocus();
+      if (!ok) return;
     }
     onLink(selected, save);
   }

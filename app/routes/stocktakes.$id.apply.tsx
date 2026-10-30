@@ -9,7 +9,6 @@ import { StocktakeReviewError } from "../services/stocktake-review.server";
 import { APPLY_CHUNK_SIZE, APPLY_REASON } from "../utils/stocktake-apply-constants";
 import {
   StocktakeApplyError,
-  applyTestItem,
   buildDryRun,
   excludeItem,
   getApplyPlan,
@@ -17,12 +16,10 @@ import {
   isApplyRunning,
   isHeartbeatStale,
   returnStalledRunToReview,
-  skipTestItem,
   startApplyRun,
   type ApplyPlanItem,
   type DryRunChunk,
   type ExcludedItem,
-  type TestResult,
 } from "../services/stocktake-apply.server";
 
 const PAGE_SIZE = 50;
@@ -60,7 +57,7 @@ type DryRunResult = {
 };
 
 type ActionResult =
-  | { ok: true; dryRun?: DryRunResult; test?: TestResult; message?: string }
+  | { ok: true; dryRun?: DryRunResult; message?: string }
   | { ok: false; error: string };
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -96,13 +93,6 @@ export async function action({ request, params }: Route.ActionArgs) {
       case "include":
         await includeItem({ stocktakeId, userId, itemId: Number(form.get("itemId")) });
         return result({ ok: true, message: "Item included again." });
-      case "test": {
-        const test = await applyTestItem({ stocktakeId, userId, understood });
-        return result({ ok: true, test });
-      }
-      case "skip-test":
-        await skipTestItem({ stocktakeId, userId });
-        return result({ ok: true, message: "Test skipped. The full apply is now available." });
       case "apply":
         await startApplyRun(form.get("kind") === "retry" ? "retry" : "full", { stocktakeId, userId, understood, typedName });
         return result({ ok: true, message: "Apply started." });
@@ -142,15 +132,11 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
   const revalidator = useRevalidator();
   const [understood, setUnderstood] = useState(false);
   const [typedName, setTypedName] = useState("");
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const busy = fetcher.state !== "idle";
   const last = fetcher.data;
   const applying = stocktake.status === "APPLYING";
-
-  useEffect(() => {
-    if (last && last.ok && last.test) setTestResult(last.test);
-  }, [last]);
 
   useEffect(() => {
     if (!applying) return;
@@ -161,11 +147,9 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
   const dryRun = dryFetcher.data && dryFetcher.data.ok ? dryFetcher.data.dryRun ?? null : null;
   const dryError = dryFetcher.data && !dryFetcher.data.ok ? dryFetcher.data.error : null;
 
-  const testDone = stocktake.applyTestResult === "PASSED" || stocktake.applyTestResult === "SKIPPED";
   const retryMode = stocktake.applyError != null;
   const nameOk = !plan.requiresNameConfirm || typedName.trim() === stocktake.name.trim();
   const canWrite = understood && blockers.length === 0 && !busy && !applying;
-  const testItem = plan.sendable[0];
 
   function submit(intent: string, extra: Record<string, string> = {}) {
     fetcher.submit(
@@ -228,7 +212,7 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
         <dl className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
           <div><dt className="inline font-medium">Location: </dt><dd className="inline">{locationName ?? "(name unavailable)"} <span className="font-mono">{stocktake.locationId}</span></dd></div>
           <div><dt className="inline font-medium">Drift check: </dt><dd className="inline">{plan.checkedAt ? new Date(plan.checkedAt).toLocaleString() : "not run"}</dd></div>
-          <div><dt className="inline font-medium">Sets: </dt><dd className="inline">on_hand (absolute quantities), reason <span className="font-mono">{stocktake.applyReason ?? APPLY_REASON}</span>{stocktake.applyReason ? " (confirmed)" : " (not yet confirmed)"}</dd></div>
+          <div><dt className="inline font-medium">Sets: </dt><dd className="inline">on_hand (absolute quantities), reason <span className="font-mono">{stocktake.applyReason ?? APPLY_REASON}</span>{stocktake.applyReason ? " (accepted by Shopify)" : " (switches to correction automatically if Shopify rejects it)"}</dd></div>
           <div><dt className="inline font-medium">Batches: </dt><dd className="inline">{Math.ceil(plan.sendable.length / APPLY_CHUNK_SIZE)} of up to {APPLY_CHUNK_SIZE}</dd></div>
           {plan.alreadyApplied > 0 && <div><dt className="inline font-medium">Already applied: </dt><dd className="inline">{plan.alreadyApplied} (never sent again)</dd></div>}
         </dl>
@@ -266,24 +250,6 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
         <SimpleList tone="amber" title={`${plan.failed.length} failed on the last attempt — will be retried`} items={plan.failed} />
       )}
 
-      {/* Dry run */}
-      <div className={`${card} px-5 py-4 mb-4`}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Dry run</h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Builds the exact payload per item and per batch. Makes no Shopify calls.</p>
-          </div>
-          <dryFetcher.Form method="post">
-            <input type="hidden" name="intent" value="dry-run" />
-            <button type="submit" disabled={dryFetcher.state !== "idle"} className="text-sm font-medium bg-gray-800 dark:bg-gray-700 hover:bg-gray-900 text-white rounded-lg px-4 py-2 disabled:opacity-50">
-              {dryFetcher.state !== "idle" ? "Building…" : dryRun ? "Rebuild dry run" : "Dry run"}
-            </button>
-          </dryFetcher.Form>
-        </div>
-        {dryError && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{dryError}</p>}
-        {dryRun && <DryRunView dryRun={dryRun} stocktakeId={stocktake.id} />}
-      </div>
-
       {/* Apply to Shopify */}
       {!applying && (
         <div className={`${card} px-5 py-4 space-y-4`}>
@@ -294,46 +260,8 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
             <span>I understand this writes to <strong>live Shopify inventory</strong> at {locationName ?? "this location"}.</span>
           </label>
 
-          {/* Step 1: test item */}
-          <div className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-3">
-            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 1 — test with one item</p>
-            {stocktake.applyTestResult === "PASSED" ? (
-              <p className="text-sm text-green-700 dark:text-green-400 mt-1">Test passed. Shopify accepted reason <span className="font-mono">{stocktake.applyReason}</span> with name on_hand.</p>
-            ) : stocktake.applyTestResult === "SKIPPED" ? (
-              <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">Test skipped by choice. The full apply falls back to <span className="font-mono">correction</span> if Shopify rejects <span className="font-mono">{APPLY_REASON}</span>.</p>
-            ) : testItem ? (
-              <>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  Sends a single inventorySetQuantities call for: <span className="text-gray-800 dark:text-gray-100">{testItem.title} — {testItem.variantTitle}</span>
-                  {testItem.sku && <span className="font-mono"> ({testItem.sku})</span>}, on_hand {testItem.changeFromQuantity} → <strong>{testItem.targetQty}</strong>.
-                  It also checks that Shopify accepts reason <span className="font-mono">{APPLY_REASON}</span> with name on_hand.
-                </p>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <button type="button" disabled={!canWrite} onClick={() => submit("test")} className="text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg px-4 py-2 disabled:opacity-50">
-                    {busy && fetcher.formData?.get("intent") === "test" ? "Applying test item…" : "Apply first 1 item as a test"}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy || blockers.length > 0}
-                    onClick={() => {
-                      if (window.confirm("Skip the single-item test? The full apply will be the first write to Shopify for this stocktake.")) submit("skip-test");
-                    }}
-                    className="text-sm text-gray-500 dark:text-gray-400 hover:underline disabled:opacity-50"
-                  >
-                    Skip the test
-                  </button>
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-gray-500 mt-1">No item available to test.</p>
-            )}
-            {testResult && <TestResultView result={testResult} />}
-          </div>
-
-          {/* Step 2: full apply / retry */}
-          <div className={`rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-3 ${testDone ? "" : "opacity-50"}`}>
-            <p className="text-sm font-medium text-gray-800 dark:text-gray-100">Step 2 — {retryMode ? "retry unapplied items" : "apply everything else"}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          <div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               {retryMode
                 ? "Only items not yet applied are touched. Each one's live quantity is read back first: items already at their target are marked applied without sending anything."
                 : `Sends ${plan.sendable.length.toLocaleString()} items in batches of ${APPLY_CHUNK_SIZE} in the background. You can leave this page.`}
@@ -346,7 +274,7 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
             )}
             <button
               type="button"
-              disabled={!canWrite || !testDone || !nameOk}
+              disabled={!canWrite || !nameOk}
               onClick={() => {
                 const msg = `${retryMode ? "Retry" : "Apply"} ${plan.sendable.length} items to live Shopify inventory?\n\n+${totals.unitsUp} / −${totals.unitsDown} units, net ${signedMoney(totals.netValue)} at cost.`;
                 if (window.confirm(msg)) submit("apply", { kind: retryMode ? "retry" : "full" });
@@ -358,6 +286,28 @@ export default function StocktakeApplyPage({ loaderData }: Route.ComponentProps)
           </div>
         </div>
       )}
+
+      {/* Optional payload preview — never required */}
+      <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+        <button
+          type="button"
+          onClick={() => {
+            const next = !previewOpen;
+            setPreviewOpen(next);
+            if (next) dryFetcher.submit({ intent: "dry-run" }, { method: "post" });
+          }}
+          className="hover:underline"
+        >
+          {previewOpen ? "Hide payload preview" : "Preview payload (no Shopify calls)"}
+        </button>
+        {previewOpen && (
+          <div className={`${card} px-5 py-4 mt-2`}>
+            {dryFetcher.state !== "idle" && <p className="text-xs text-gray-400">Building…</p>}
+            {dryError && <p className="text-sm text-red-600 dark:text-red-400">{dryError}</p>}
+            {dryRun && dryFetcher.state === "idle" && <DryRunView dryRun={dryRun} stocktakeId={stocktake.id} />}
+          </div>
+        )}
+      </div>
     </main>
   );
 }
@@ -411,25 +361,6 @@ function ApplyProgress(props: {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function TestResultView({ result }: { result: TestResult }) {
-  const ok = result.outcome === "applied";
-  return (
-    <div className={`mt-3 rounded-lg px-3 py-2 text-sm ${ok ? "bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300" : "bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300"}`}>
-      <p className="font-semibold">
-        {ok ? "Test item applied." : result.outcome === "stale" ? "Test item not applied — it changed in Shopify since review." : "Test item not applied."}
-      </p>
-      <p>{result.item.title} — {result.item.variantTitle}: on_hand {result.item.changeFromQuantity} → {result.item.targetQty}</p>
-      <p>
-        Reason used: <span className="font-mono">{result.reasonUsed}</span>
-        {result.reasonFallbackUsed ? ` (Shopify rejected ${APPLY_REASON}, fell back to correction)` : ok ? " (accepted with name on_hand)" : ""}
-      </p>
-      {result.message && <p className="mt-1">{result.message}</p>}
-      <p className="mt-1 text-xs opacity-75 font-mono break-all">Key{result.keysUsed.length === 1 ? "" : "s"}: {result.keysUsed.join(", ")}</p>
-      {ok && <p className="mt-1 text-xs">Check this item in Shopify admin before applying the rest.</p>}
     </div>
   );
 }
